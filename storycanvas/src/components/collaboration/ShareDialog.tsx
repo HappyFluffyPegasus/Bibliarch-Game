@@ -105,14 +105,10 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDi
                   className="pl-9"
                 />
               </div>
-              <select
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value as 'editor' | 'viewer')}
-                className="px-3 py-2 border rounded-md bg-background text-sm"
-              >
-                <option value="editor">Editor</option>
-                <option value="viewer">Viewer</option>
-              </select>
+              {/* Role selector - viewer mode disabled for now */}
+              <div className="px-3 py-2 border rounded-md bg-muted text-sm text-muted-foreground">
+                Editor
+              </div>
             </div>
 
             {/* Search Results */}
@@ -191,17 +187,8 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDi
                         {collab.profile?.username || collab.profile?.email || 'Unknown User'}
                       </div>
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        {collab.role === 'editor' ? (
-                          <>
-                            <Edit3 className="w-3 h-3" />
-                            <span>Invited as Editor</span>
-                          </>
-                        ) : (
-                          <>
-                            <Eye className="w-3 h-3" />
-                            <span>Invited as Viewer</span>
-                          </>
-                        )}
+                        <Edit3 className="w-3 h-3" />
+                        <span>Invited as Editor</span>
                       </div>
                     </div>
                     <Button

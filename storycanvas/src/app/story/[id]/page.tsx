@@ -128,8 +128,8 @@ export default function StoryPage({ params }: PageProps) {
   // Subscribe to realtime canvas changes (always broadcasts when connected)
   const { broadcastChange, connectionStatus } = useRealtimeCanvas(resolvedParams.id, currentCanvasId, handleRemoteCanvasChange)
 
-  // Determine if user is a viewer (can't edit)
-  const isViewer = storyAccess?.role === 'viewer'
+  // Viewer mode disabled for now - causes sync issues
+  const isViewer = false
 
   // Set project context for color palette persistence
   useEffect(() => {

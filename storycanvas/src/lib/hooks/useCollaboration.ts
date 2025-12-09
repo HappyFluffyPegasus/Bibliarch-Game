@@ -118,7 +118,7 @@ export function useCollaborators(storyId: string | null) {
           role,
           invited_at,
           accepted_at,
-          profiles:user_id (
+          profile:profiles!user_id (
             username,
             email
           )
@@ -556,66 +556,101 @@ export function usePresence(
   useEffect(() => {
     if (!storyId) return
 
-    // Get current user ID first
-    const initPresence = async () => {
+    let channel: RealtimeChannel | null = null
+
+    const setupPresence = async () => {
+      // Get current user ID first before setting up channel
       const { data: { user } } = await supabase.auth.getUser()
       if (user) {
         currentUserIdRef.current = user.id
       }
-    }
-    initPresence()
 
-    const channel = supabase.channel(`presence:${storyId}:${canvasType}`, {
-      config: {
-        presence: {
-          key: 'user',
+      channel = supabase.channel(`presence:${storyId}:${canvasType}`, {
+        config: {
+          presence: {
+            key: 'user',
+          },
         },
-      },
-    })
+      })
 
-    channel
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState()
-        const newPresence: Record<string, PresenceState> = {}
+      channel
+        .on('presence', { event: 'sync' }, () => {
+          const state = channel!.presenceState()
+          const newPresence: Record<string, PresenceState> = {}
 
-        Object.entries(state).forEach(([key, value]) => {
-          if (Array.isArray(value) && value.length > 0) {
-            const presence = value[0] as any
-            // Filter out the current user
-            if (presence.odataUserId !== currentUserIdRef.current) {
-              newPresence[presence.odataUserId] = presence
+          console.log('👥 Presence sync - raw state:', JSON.stringify(state))
+          console.log('👥 Current user ID:', currentUserIdRef.current)
+
+          Object.entries(state).forEach(([key, value]) => {
+            if (Array.isArray(value) && value.length > 0) {
+              const presence = value[0] as any
+              console.log('👥 Found presence:', presence.odataUserId, presence.username)
+              // Filter out the current user (currentUserIdRef is now guaranteed to be set)
+              if (presence.odataUserId !== currentUserIdRef.current) {
+                newPresence[presence.odataUserId] = presence
+              }
             }
-          }
-        })
+          })
 
-        setPresenceState(newPresence)
-      })
-      .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-        // Handle user join
-      })
-      .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
-        // Handle user leave
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          const { data: { user } } = await supabase.auth.getUser()
-          if (user) {
-            await channel.track({
+          console.log('👥 Final presence state (excluding self):', Object.keys(newPresence).length, 'users')
+          setPresenceState(newPresence)
+        })
+        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+          console.log('👥 User joined:', newPresences)
+          // Re-sync presence state on join
+          const state = channel!.presenceState()
+          const newPresence: Record<string, PresenceState> = {}
+
+          Object.entries(state).forEach(([k, value]) => {
+            if (Array.isArray(value) && value.length > 0) {
+              const presence = value[0] as any
+              if (presence.odataUserId !== currentUserIdRef.current) {
+                newPresence[presence.odataUserId] = presence
+              }
+            }
+          })
+
+          setPresenceState(newPresence)
+        })
+        .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+          console.log('👥 User left:', leftPresences)
+          // Re-sync presence state on leave
+          const state = channel!.presenceState()
+          const newPresence: Record<string, PresenceState> = {}
+
+          Object.entries(state).forEach(([k, value]) => {
+            if (Array.isArray(value) && value.length > 0) {
+              const presence = value[0] as any
+              if (presence.odataUserId !== currentUserIdRef.current) {
+                newPresence[presence.odataUserId] = presence
+              }
+            }
+          })
+
+          setPresenceState(newPresence)
+        })
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED' && user) {
+            await channel!.track({
               odataUserId: user.id,
               username: username || 'Anonymous',
               color: userColorRef.current,
               lastSeen: Date.now(),
             })
           }
-        }
-      })
+        })
 
-    channelRef.current = channel
+      channelRef.current = channel
+    }
+
+    setupPresence()
 
     return () => {
-      channel.unsubscribe()
+      if (channel) {
+        channel.unsubscribe()
+      }
     }
-  }, [storyId, canvasType, username])
+  }, [storyId, canvasType, username, supabase])
 
   return {
     presenceState,

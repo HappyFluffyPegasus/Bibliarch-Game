@@ -949,13 +949,15 @@ export default function HTMLCanvas({
   // Notify parent when state changes (for navigation saves, without auto-saving)
   // onStateChange excluded from deps to prevent cursor jumping from constant re-renders
   // Skip if applying remote changes to prevent echo/re-broadcast
+  // Skip if viewer to prevent any state changes from propagating
   useEffect(() => {
     if (isApplyingRemote.current) return
+    if (isViewer) return // Viewers should never trigger state changes
     if (onStateChange) {
       onStateChange(nodes, connections)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, connections])
+  }, [nodes, connections, isViewer])
 
   // Update visible nodes when nodes change - memoized to prevent infinite loops
   const nodeIdsSnapshot = useMemo(() =>
@@ -1318,6 +1320,9 @@ export default function HTMLCanvas({
       return
     }
 
+    // Viewers cannot create nodes
+    if (isViewer) return
+
     // Only create nodes when a creation tool is selected
     if (!['text', 'character', 'event', 'location', 'folder', 'list', 'image', 'table', 'relationship-canvas', 'line', 'compact-text'].includes(tool)) {
       return
@@ -1410,6 +1415,7 @@ export default function HTMLCanvas({
   // Helper function to handle node drag start for both mouse and touch events
   const handleNodeDragStart = useCallback((node: Node, clientX: number, clientY: number, isTouch: boolean = false) => {
     if (tool !== 'select') return false
+    if (isViewer) return false // Viewers cannot drag nodes
 
     // For touch events, check for double-tap to open context menu
     if (isTouch) {
@@ -3701,13 +3707,13 @@ export default function HTMLCanvas({
         </div>
       )}
 
-      {/* Connection Status Indicator */}
-      {Object.keys(collaborators).length > 0 && (
-        <div className="absolute top-2 right-2 z-[100] flex items-center gap-2 bg-background/90 backdrop-blur-sm rounded-full px-3 py-1.5 shadow border">
+      {/* Connection Status Indicator - bottom right, always visible when connected */}
+      {connectionStatus !== 'disconnected' && (
+        <div className="absolute bottom-4 right-4 z-[100] flex items-center gap-2 bg-background/90 backdrop-blur-sm rounded-full px-3 py-1.5 shadow border">
           {connectionStatus === 'connected' && (
             <>
               <Wifi className="w-4 h-4 text-green-500" />
-              <span className="text-xs text-green-600">Connected</span>
+              <span className="text-xs text-green-600">Live</span>
             </>
           )}
           {connectionStatus === 'connecting' && (
@@ -3716,15 +3722,6 @@ export default function HTMLCanvas({
               <span className="text-xs text-yellow-600">Connecting...</span>
             </>
           )}
-          {connectionStatus === 'disconnected' && (
-            <>
-              <CloudOff className="w-4 h-4 text-red-500" />
-              <span className="text-xs text-red-600">Disconnected</span>
-            </>
-          )}
-          <span className="text-xs text-muted-foreground ml-1">
-            ({Object.keys(collaborators).length} online)
-          </span>
         </div>
       )}
 

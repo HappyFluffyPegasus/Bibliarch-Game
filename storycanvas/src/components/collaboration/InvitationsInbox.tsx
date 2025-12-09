@@ -71,17 +71,8 @@ export function InvitationsInbox() {
                 <span>from {invitation.inviter?.username || invitation.inviter?.email || 'Unknown'}</span>
                 <span className="text-xs">•</span>
                 <span className="flex items-center gap-1">
-                  {invitation.role === 'editor' ? (
-                    <>
-                      <Edit3 className="w-3 h-3" />
-                      Editor
-                    </>
-                  ) : (
-                    <>
-                      <Eye className="w-3 h-3" />
-                      Viewer
-                    </>
-                  )}
+                  <Edit3 className="w-3 h-3" />
+                  Editor
                 </span>
               </div>
             </div>
