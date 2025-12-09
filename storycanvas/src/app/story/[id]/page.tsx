@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { Sparkles, ChevronRight, Settings, LogOut, Home as HomeIcon, ChevronLeft, Plus, Minus, RotateCcw, Bitcoin, Users, Cloud, Loader2 } from 'lucide-react'
+import { Sparkles, ChevronRight, Settings, LogOut, Home as HomeIcon, ChevronLeft, Plus, Minus, RotateCcw, Bitcoin, Users, Cloud, Loader2, CloudOff, Wifi } from 'lucide-react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ui/theme-toggle'
 import { useColorContext } from '@/components/providers/color-provider'
@@ -17,7 +17,7 @@ import FeedbackButton from '@/components/feedback/FeedbackButton'
 import { signOut } from '@/lib/auth/actions'
 import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas } from '@/lib/hooks/useSupabaseQuery'
 import { ShareDialog } from '@/components/collaboration/ShareDialog'
-import { useStoryAccess, useRealtimeCanvas, usePresence } from '@/lib/hooks/useCollaboration'
+import { useStoryAccess, useRealtimeCanvas, usePresence, ConnectionStatus } from '@/lib/hooks/useCollaboration'
 
 // Use the HTML canvas instead to avoid Jest worker issues completely
 const Bibliarch = dynamic(
@@ -105,7 +105,7 @@ export default function StoryPage({ params }: PageProps) {
 
     isApplyingRemoteChange.current = true
 
-    // Update ONLY the remote state - don't touch canvasData which is for initial load
+    // Update remote state - full replacement for now (node-level merging can be added later)
     setRemoteUpdate({
       nodes: data.nodes,
       connections: data.connections
@@ -119,44 +119,17 @@ export default function StoryPage({ params }: PageProps) {
   }, [])
 
   // Subscribe to presence (who's online)
-  const { presenceState, updateCursor, userColor } = usePresence(
+  const { presenceState } = usePresence(
     resolvedParams.id,
     currentCanvasId,
     username
   )
 
-  // Check if others are present on this canvas with hysteresis
-  // This prevents flip-flopping when presence briefly disconnects
-  const rawOthersPresent = Object.keys(presenceState || {}).length > 0
-  const [othersPresent, setOthersPresent] = useState(false)
-  const othersPresentTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // Subscribe to realtime canvas changes (always broadcasts when connected)
+  const { broadcastChange, connectionStatus } = useRealtimeCanvas(resolvedParams.id, currentCanvasId, handleRemoteCanvasChange)
 
-  useEffect(() => {
-    if (rawOthersPresent && !othersPresent) {
-      // Someone appeared - update immediately
-      if (othersPresentTimeoutRef.current) {
-        clearTimeout(othersPresentTimeoutRef.current)
-        othersPresentTimeoutRef.current = null
-      }
-      setOthersPresent(true)
-    } else if (!rawOthersPresent && othersPresent) {
-      // Someone left - wait 3 seconds before marking as gone (hysteresis)
-      if (!othersPresentTimeoutRef.current) {
-        othersPresentTimeoutRef.current = setTimeout(() => {
-          setOthersPresent(false)
-          othersPresentTimeoutRef.current = null
-        }, 3000)
-      }
-    }
-    return () => {
-      if (othersPresentTimeoutRef.current) {
-        clearTimeout(othersPresentTimeoutRef.current)
-      }
-    }
-  }, [rawOthersPresent, othersPresent])
-
-  // Subscribe to realtime canvas changes
-  const { broadcastChange } = useRealtimeCanvas(resolvedParams.id, currentCanvasId, handleRemoteCanvasChange, othersPresent)
+  // Determine if user is a viewer (can't edit)
+  const isViewer = storyAccess?.role === 'viewer'
 
   // Set project context for color palette persistence
   useEffect(() => {
@@ -635,11 +608,11 @@ export default function StoryPage({ params }: PageProps) {
     // Skip broadcasting if we're applying remote changes (prevents echo)
     if (isApplyingRemoteChange.current) return
 
-    // Broadcast to collaborators if others are present
-    if (othersPresent && broadcastChange) {
+    // Broadcast to all collaborators
+    if (broadcastChange) {
       broadcastChange(nodes, connections)
     }
-  }, [othersPresent, broadcastChange])
+  }, [broadcastChange])
 
   // Save function that can be called synchronously for browser navigation
   const saveBeforeUnload = useCallback(async () => {
@@ -1075,10 +1048,10 @@ export default function StoryPage({ params }: PageProps) {
           currentFolderTitle={canvasPath.length > 0 ? canvasPath[canvasPath.length - 1].title : null}
           initialNodes={canvasData?.nodes || []}
           initialConnections={canvasData?.connections || []}
-          remoteNodes={othersPresent && remoteUpdate ? remoteUpdate.nodes : undefined}
-          remoteConnections={othersPresent && remoteUpdate ? remoteUpdate.connections : undefined}
+          remoteNodes={remoteUpdate ? remoteUpdate.nodes : undefined}
+          remoteConnections={remoteUpdate ? remoteUpdate.connections : undefined}
           onSave={handleSaveCanvas}
-          onBroadcastChange={othersPresent ? broadcastChange : undefined}
+          onBroadcastChange={broadcastChange}
           onNavigateToCanvas={handleNavigateToCanvas}
           onStateChange={handleStateChange}
           onPaletteSave={savePaletteToDatabase}
@@ -1089,8 +1062,8 @@ export default function StoryPage({ params }: PageProps) {
           eventDepth={canvasPath.filter(item => item.id.startsWith('event-canvas-')).length}
           // Collaboration props
           collaborators={presenceState}
-          onCursorMove={updateCursor}
-          userColor={userColor}
+          isViewer={isViewer}
+          connectionStatus={connectionStatus}
         />
 
         {/* Loading overlay when switching canvases */}

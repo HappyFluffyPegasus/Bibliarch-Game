@@ -4,7 +4,7 @@ import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { flushSync } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Plus, Minus, MousePointer, Hand, Type, Folder, User, MapPin, Calendar, Undo, Redo, X, List, Move, Image as ImageIcon, Table, Heart, Settings, SlidersHorizontal, TextCursor, Palette, ArrowRight, Menu, Grid3x3, Bold, Italic, Underline, ArrowUpRight, StickyNote, LayoutTemplate, Trash2, Copy, Edit3, Smile, Home, Castle, TreePine, Mountain, Building2, Landmark, Church, Store, Hospital, School, Factory, Waves, Palmtree, Tent, Map, Star, Bookmark, Flag, Compass, Globe, Sun, Moon, Cloud, Zap, Flame, Snowflake, Crown, Shield, Sword, Gem, Key, Lock, Gift, Music, Camera, Gamepad2, Trophy, Target, Lightbulb, Rocket, Anchor, Plane, Car, Ship, Train } from 'lucide-react'
+import { Plus, Minus, MousePointer, Hand, Type, Folder, User, MapPin, Calendar, Undo, Redo, X, List, Move, Image as ImageIcon, Table, Heart, Settings, SlidersHorizontal, TextCursor, Palette, ArrowRight, Menu, Grid3x3, Bold, Italic, Underline, ArrowUpRight, StickyNote, LayoutTemplate, Trash2, Copy, Edit3, Smile, Home, Castle, TreePine, Mountain, Building2, Landmark, Church, Store, Hospital, School, Factory, Waves, Palmtree, Tent, Map, Star, Bookmark, Flag, Compass, Globe, Sun, Moon, Cloud, Zap, Flame, Snowflake, Crown, Shield, Sword, Gem, Key, Lock, Gift, Music, Camera, Gamepad2, Trophy, Target, Lightbulb, Rocket, Anchor, Plane, Car, Ship, Train, CloudOff, Wifi, Loader2, Eye } from 'lucide-react'
 import { PaletteSelector } from '@/components/ui/palette-selector'
 import { NodeStylePanel } from '@/components/ui/node-style-panel'
 import { PerformanceOptimizer } from '@/lib/performance-utils'
@@ -160,8 +160,8 @@ interface HTMLCanvasProps {
   eventDepth?: number  // Tracks event-to-event navigation depth (ignores folders/characters/locations)
   // Collaboration props
   collaborators?: Record<string, CollaboratorPresence>
-  onCursorMove?: (x: number, y: number) => void
-  userColor?: string
+  isViewer?: boolean  // If true, user can only view (not edit) the canvas
+  connectionStatus?: 'connected' | 'connecting' | 'disconnected'  // Real-time connection status
 }
 
 // Updated with smaller sidebar and trackpad support
@@ -197,8 +197,8 @@ export default function HTMLCanvas({
   onZoomChange,
   eventDepth = 0,
   collaborators = {},
-  onCursorMove,
-  userColor
+  isViewer = false,
+  connectionStatus = 'disconnected'
 }: HTMLCanvasProps) {
   const colorContext = useColorContext()
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
@@ -207,6 +207,9 @@ export default function HTMLCanvas({
 
   // Track when applying remote changes to prevent re-broadcasting
   const isApplyingRemote = useRef(false)
+
+  // Helper to check if user can edit
+  const canEdit = !isViewer
 
   // Sync remote changes from collaborators
   useEffect(() => {
@@ -290,7 +293,13 @@ export default function HTMLCanvas({
 
   // Wrapper for onSave that skips saving when in template editor mode
   // This prevents template edits from being saved to the actual canvas
+  // Also enforces viewer mode
   const handleSave = useCallback((nodesToSave: Node[], connectionsToSave: Connection[]) => {
+    // Viewers cannot save changes
+    if (isViewer) {
+      console.log('📡 Viewer mode - save blocked')
+      return
+    }
     if (templateEditorMode) {
       // Don't save to parent when editing a template
       return
@@ -302,7 +311,7 @@ export default function HTMLCanvas({
     if (onBroadcastChange) {
       onBroadcastChange(nodesToSave, connectionsToSave)
     }
-  }, [templateEditorMode, onSave, onBroadcastChange])
+  }, [templateEditorMode, onSave, onBroadcastChange, isViewer])
 
   // Use controlled zoom if provided, otherwise use internal state
   const [internalZoom, setInternalZoom] = useState(1)
@@ -1466,17 +1475,6 @@ export default function HTMLCanvas({
     const clientY = 'touches' in e ? (e.touches.length > 0 ? e.touches[0].clientY : 0) : e.clientY
     const buttons = 'touches' in e ? (e.touches.length > 0 ? 1 : 0) : e.buttons
 
-    // Broadcast cursor position to collaborators (throttled)
-    // Must account for scroll position and zoom to get canvas-space coordinates
-    if (onCursorMove && scrollContainerRef.current) {
-      const scrollContainer = scrollContainerRef.current
-      const rect = scrollContainer.getBoundingClientRect()
-      // Convert screen coords to canvas coords: add scroll offset, divide by zoom
-      const canvasX = (clientX - rect.left + scrollContainer.scrollLeft) / zoom
-      const canvasY = (clientY - rect.top + scrollContainer.scrollTop) / zoom
-      onCursorMove(canvasX, canvasY)
-    }
-
     // CRITICAL: If no mouse buttons are pressed while in "ready" state, cancel it
     // This fixes Mac trackpad sticky behavior where you can click to grab without holding
     // BUT: Don't interrupt active drags (draggingNode/resizingNode) as Mac trackpads may report buttons=0 momentarily
@@ -1833,7 +1831,7 @@ export default function HTMLCanvas({
       }
     }
 
-  }, [isPanning, lastPanPoint, draggingNode, isDragReady, dragOffset, dragStartPos, resizingNode, resizeStartPos, resizeStartSize, isDraggingCharacter, isSelecting, tool, selectionStart, nodes, draggingLineVertex, onCursorMove, zoom])
+  }, [isPanning, lastPanPoint, draggingNode, isDragReady, dragOffset, dragStartPos, resizingNode, resizeStartPos, resizeStartSize, isDraggingCharacter, isSelecting, tool, selectionStart, nodes, draggingLineVertex, zoom])
 
   const handleCanvasMouseUp = useCallback((e?: React.MouseEvent) => {
     setIsPanning(false)
@@ -3692,6 +3690,41 @@ export default function HTMLCanvas({
               Save Template
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Viewer Mode Banner */}
+      {isViewer && (
+        <div className="w-full h-10 bg-amber-500 text-white flex items-center justify-center gap-2 z-[100] shadow flex-shrink-0">
+          <Eye className="w-4 h-4" />
+          <span className="text-sm font-medium">View Only Mode - You cannot edit this canvas</span>
+        </div>
+      )}
+
+      {/* Connection Status Indicator */}
+      {Object.keys(collaborators).length > 0 && (
+        <div className="absolute top-2 right-2 z-[100] flex items-center gap-2 bg-background/90 backdrop-blur-sm rounded-full px-3 py-1.5 shadow border">
+          {connectionStatus === 'connected' && (
+            <>
+              <Wifi className="w-4 h-4 text-green-500" />
+              <span className="text-xs text-green-600">Connected</span>
+            </>
+          )}
+          {connectionStatus === 'connecting' && (
+            <>
+              <Loader2 className="w-4 h-4 text-yellow-500 animate-spin" />
+              <span className="text-xs text-yellow-600">Connecting...</span>
+            </>
+          )}
+          {connectionStatus === 'disconnected' && (
+            <>
+              <CloudOff className="w-4 h-4 text-red-500" />
+              <span className="text-xs text-red-600">Disconnected</span>
+            </>
+          )}
+          <span className="text-xs text-muted-foreground ml-1">
+            ({Object.keys(collaborators).length} online)
+          </span>
         </div>
       )}
 
@@ -8776,52 +8809,6 @@ export default function HTMLCanvas({
             />
           )}
 
-          {/* Collaborator cursors */}
-          {Object.entries(collaborators).map(([odataUserId, presence]) => {
-            if (!presence.cursor) return null
-            return (
-              <div
-                key={odataUserId}
-                className="pointer-events-none"
-                style={{
-                  position: 'absolute',
-                  left: `${presence.cursor.x}px`,
-                  top: `${presence.cursor.y}px`,
-                  zIndex: 10000,
-                  transition: 'left 0.1s ease-out, top 0.1s ease-out'
-                }}
-              >
-                {/* Cursor arrow SVG */}
-                <svg
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  style={{ transform: 'rotate(-15deg)' }}
-                >
-                  <path
-                    d="M5 3L19 12L12 13L9 20L5 3Z"
-                    fill={presence.color}
-                    stroke="white"
-                    strokeWidth="1.5"
-                  />
-                </svg>
-                {/* Username label */}
-                <div
-                  className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap"
-                  style={{
-                    backgroundColor: presence.color,
-                    color: 'white',
-                    marginLeft: '12px',
-                    marginTop: '-4px',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
-                  }}
-                >
-                  {presence.username}
-                </div>
-              </div>
-            )
-          })}
         </div>
         </div>
       </div>

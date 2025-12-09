@@ -35,7 +35,8 @@
       "Bash(find:*)",
       "Bash(git log:*)",
       "Bash(git remote set-url:*)",
-      "Bash(npm run build:check)"
+      "Bash(npm run build:check)",
+      "Bash(git merge:*)"
     ],
     "deny": [],
     "ask": []

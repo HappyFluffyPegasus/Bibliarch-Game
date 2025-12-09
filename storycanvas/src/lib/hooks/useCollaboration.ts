@@ -445,25 +445,23 @@ export function useDeclineInvitation() {
   })
 }
 
+// Connection status type
+export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected'
+
 // Real-time canvas collaboration hook using Broadcast (no database dependency)
-// Always stays connected when on a canvas - broadcasts when othersPresent
+// Always stays connected when on a canvas and broadcasts all changes
 export function useRealtimeCanvas(
   storyId: string | null,
   canvasType: string,
-  onRemoteChange: (data: { nodes: any[]; connections: any[]; userId: string }) => void,
-  othersPresent: boolean = false
+  onRemoteChange: (data: { nodes: any[]; connections: any[]; userId: string }) => void
 ) {
   const supabase = createClient()
   const channelRef = useRef<RealtimeChannel | null>(null)
   const userIdRef = useRef<string | null>(null)
-  const othersPresentRef = useRef(othersPresent)
   const onRemoteChangeRef = useRef(onRemoteChange)
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
 
-  // Keep refs in sync with props (avoid re-running effects)
-  useEffect(() => {
-    othersPresentRef.current = othersPresent
-  }, [othersPresent])
-
+  // Keep ref in sync with prop (avoid re-running effects)
   useEffect(() => {
     onRemoteChangeRef.current = onRemoteChange
   }, [onRemoteChange])
@@ -478,8 +476,12 @@ export function useRealtimeCanvas(
   // Subscribe to broadcast channel - stays connected while on canvas
   // Only depends on storyId and canvasType (not othersPresent or callbacks)
   useEffect(() => {
-    if (!storyId) return
+    if (!storyId) {
+      setConnectionStatus('disconnected')
+      return
+    }
 
+    setConnectionStatus('connecting')
     console.log('📡 Subscribing to broadcast channel:', `canvas-collab:${storyId}:${canvasType}`)
 
     const channel = supabase
@@ -497,6 +499,13 @@ export function useRealtimeCanvas(
       })
       .subscribe((status) => {
         console.log('📡 Broadcast channel status:', status)
+        if (status === 'SUBSCRIBED') {
+          setConnectionStatus('connected')
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          setConnectionStatus('disconnected')
+        } else {
+          setConnectionStatus('connecting')
+        }
       })
 
     channelRef.current = channel
@@ -505,13 +514,16 @@ export function useRealtimeCanvas(
       console.log('📡 Cleaning up broadcast channel')
       channel.unsubscribe()
       channelRef.current = null
+      setConnectionStatus('disconnected')
     }
   }, [storyId, canvasType, supabase])
 
   // Return a function to broadcast changes
+  // Always broadcast when connected - the channel filters out messages when no listeners
   const broadcastChange = useCallback((nodes: any[], connections: any[]) => {
-    if (channelRef.current && othersPresentRef.current) {
-      console.log('📡 Broadcasting:', nodes.length, 'nodes')
+    console.log('📡 broadcastChange called, channelRef:', !!channelRef.current, 'userId:', userIdRef.current)
+    if (channelRef.current) {
+      console.log('📡 Broadcasting:', nodes.length, 'nodes to channel')
       channelRef.current.send({
         type: 'broadcast',
         event: 'canvas-update',
@@ -521,13 +533,15 @@ export function useRealtimeCanvas(
           userId: userIdRef.current
         }
       })
+    } else {
+      console.log('📡 Cannot broadcast - no channel')
     }
   }, [])
 
-  return { broadcastChange }
+  return { broadcastChange, connectionStatus }
 }
 
-// Presence hook for showing online collaborators and cursors
+// Presence hook for showing online collaborators (cursor tracking removed for performance)
 export function usePresence(
   storyId: string | null,
   canvasType: string,
@@ -567,7 +581,7 @@ export function usePresence(
         Object.entries(state).forEach(([key, value]) => {
           if (Array.isArray(value) && value.length > 0) {
             const presence = value[0] as any
-            // Filter out the current user - don't show our own cursor
+            // Filter out the current user
             if (presence.odataUserId !== currentUserIdRef.current) {
               newPresence[presence.odataUserId] = presence
             }
@@ -603,53 +617,8 @@ export function usePresence(
     }
   }, [storyId, canvasType, username])
 
-  // Update cursor position - throttled to reduce network traffic
-  const lastCursorUpdate = useRef<number>(0)
-  const pendingCursorUpdate = useRef<{ x: number; y: number } | null>(null)
-  const cursorThrottleTimer = useRef<NodeJS.Timeout | null>(null)
-
-  const updateCursor = useCallback((x: number, y: number) => {
-    if (!channelRef.current || !currentUserIdRef.current) return
-
-    const now = Date.now()
-    const timeSinceLastUpdate = now - lastCursorUpdate.current
-
-    // Store the latest position
-    pendingCursorUpdate.current = { x, y }
-
-    // Throttle to max 10 updates per second (100ms)
-    if (timeSinceLastUpdate >= 100) {
-      lastCursorUpdate.current = now
-      channelRef.current.track({
-        odataUserId: currentUserIdRef.current,
-        username: username || 'Anonymous',
-        color: userColorRef.current,
-        cursor: { x, y },
-        lastSeen: now,
-      })
-      pendingCursorUpdate.current = null
-    } else if (!cursorThrottleTimer.current) {
-      // Schedule an update for the remaining time
-      cursorThrottleTimer.current = setTimeout(() => {
-        cursorThrottleTimer.current = null
-        if (pendingCursorUpdate.current && channelRef.current && currentUserIdRef.current) {
-          lastCursorUpdate.current = Date.now()
-          channelRef.current.track({
-            odataUserId: currentUserIdRef.current,
-            username: username || 'Anonymous',
-            color: userColorRef.current,
-            cursor: pendingCursorUpdate.current,
-            lastSeen: Date.now(),
-          })
-          pendingCursorUpdate.current = null
-        }
-      }, 100 - timeSinceLastUpdate)
-    }
-  }, [username])
-
   return {
     presenceState,
-    updateCursor,
     userColor: userColorRef.current,
   }
 }
