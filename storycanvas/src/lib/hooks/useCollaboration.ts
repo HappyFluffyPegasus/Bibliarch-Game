@@ -448,23 +448,43 @@ export function useDeclineInvitation() {
 // Connection status type
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected'
 
+// Locked node info
+export interface LockedNode {
+  nodeId: string
+  odataUserId: string
+  username: string
+  field: string // which field is being edited
+}
+
 // Real-time canvas collaboration hook using Broadcast (no database dependency)
 // Always stays connected when on a canvas and broadcasts all changes
 export function useRealtimeCanvas(
   storyId: string | null,
   canvasType: string,
-  onRemoteChange: (data: { nodes: any[]; connections: any[]; userId: string }) => void
+  onRemoteChange: (data: { nodes: any[]; connections: any[]; userId: string }) => void,
+  onNodeLock?: (data: LockedNode) => void,
+  onNodeUnlock?: (data: { nodeId: string; odataUserId: string }) => void
 ) {
   const supabase = createClient()
   const channelRef = useRef<RealtimeChannel | null>(null)
   const userIdRef = useRef<string | null>(null)
   const onRemoteChangeRef = useRef(onRemoteChange)
+  const onNodeLockRef = useRef(onNodeLock)
+  const onNodeUnlockRef = useRef(onNodeUnlock)
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
 
-  // Keep ref in sync with prop (avoid re-running effects)
+  // Keep refs in sync with props (avoid re-running effects)
   useEffect(() => {
     onRemoteChangeRef.current = onRemoteChange
   }, [onRemoteChange])
+
+  useEffect(() => {
+    onNodeLockRef.current = onNodeLock
+  }, [onNodeLock])
+
+  useEffect(() => {
+    onNodeUnlockRef.current = onNodeUnlock
+  }, [onNodeUnlock])
 
   // Get current user ID once
   useEffect(() => {
@@ -495,6 +515,28 @@ export function useRealtimeCanvas(
           nodes: payload.payload?.nodes || [],
           connections: payload.payload?.connections || [],
           userId: payload.payload?.userId || 'remote'
+        })
+      })
+      .on('broadcast', { event: 'node-lock' }, (payload) => {
+        // Don't process our own lock messages
+        if (payload.payload?.odataUserId === userIdRef.current) return
+
+        console.log('🔒 Received node lock:', payload.payload?.nodeId)
+        onNodeLockRef.current?.({
+          nodeId: payload.payload?.nodeId,
+          odataUserId: payload.payload?.odataUserId,
+          username: payload.payload?.username,
+          field: payload.payload?.field
+        })
+      })
+      .on('broadcast', { event: 'node-unlock' }, (payload) => {
+        // Don't process our own unlock messages
+        if (payload.payload?.odataUserId === userIdRef.current) return
+
+        console.log('🔓 Received node unlock:', payload.payload?.nodeId)
+        onNodeUnlockRef.current?.({
+          nodeId: payload.payload?.nodeId,
+          odataUserId: payload.payload?.odataUserId
         })
       })
       .subscribe((status) => {
@@ -538,7 +580,39 @@ export function useRealtimeCanvas(
     }
   }, [])
 
-  return { broadcastChange, connectionStatus }
+  // Broadcast node lock (when user starts editing)
+  const broadcastNodeLock = useCallback((nodeId: string, field: string, username: string) => {
+    if (channelRef.current && userIdRef.current) {
+      console.log('🔒 Broadcasting node lock:', nodeId, field)
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'node-lock',
+        payload: {
+          nodeId,
+          field,
+          odataUserId: userIdRef.current,
+          username
+        }
+      })
+    }
+  }, [])
+
+  // Broadcast node unlock (when user stops editing)
+  const broadcastNodeUnlock = useCallback((nodeId: string) => {
+    if (channelRef.current && userIdRef.current) {
+      console.log('🔓 Broadcasting node unlock:', nodeId)
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'node-unlock',
+        payload: {
+          nodeId,
+          odataUserId: userIdRef.current
+        }
+      })
+    }
+  }, [])
+
+  return { broadcastChange, broadcastNodeLock, broadcastNodeUnlock, connectionStatus }
 }
 
 // Presence hook for showing online collaborators (cursor tracking removed for performance)

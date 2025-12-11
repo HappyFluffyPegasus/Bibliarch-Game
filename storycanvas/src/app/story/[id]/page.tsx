@@ -17,7 +17,7 @@ import FeedbackButton from '@/components/feedback/FeedbackButton'
 import { signOut } from '@/lib/auth/actions'
 import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas } from '@/lib/hooks/useSupabaseQuery'
 import { ShareDialog } from '@/components/collaboration/ShareDialog'
-import { useStoryAccess, useRealtimeCanvas, usePresence, ConnectionStatus } from '@/lib/hooks/useCollaboration'
+import { useStoryAccess, useRealtimeCanvas, usePresence, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
 
 // Use the HTML canvas instead to avoid Jest worker issues completely
 const Bibliarch = dynamic(
@@ -49,6 +49,7 @@ export default function StoryPage({ params }: PageProps) {
   const [currentCanvasId, setCurrentCanvasId] = useState('main')
   const [canvasData, setCanvasData] = useState<any>(null)
   const [remoteUpdate, setRemoteUpdate] = useState<{ nodes: any[], connections: any[] } | null>(null)
+  const [lockedNodes, setLockedNodes] = useState<Record<string, LockedNode>>({})
   const [isLoadingCanvas, setIsLoadingCanvas] = useState(false)
   const [canvasPath, setCanvasPath] = useState<{id: string, title: string}[]>([])
   const [showCanvasSettings, setShowCanvasSettings] = useState(false)
@@ -118,6 +119,25 @@ export default function StoryPage({ params }: PageProps) {
     }, 100)
   }, [])
 
+  // Handle node lock from other collaborators
+  const handleNodeLock = useCallback((data: LockedNode) => {
+    console.log('🔒 Node locked by', data.username, ':', data.nodeId)
+    setLockedNodes(prev => ({
+      ...prev,
+      [data.nodeId]: data
+    }))
+  }, [])
+
+  // Handle node unlock from other collaborators
+  const handleNodeUnlock = useCallback((data: { nodeId: string; odataUserId: string }) => {
+    console.log('🔓 Node unlocked:', data.nodeId)
+    setLockedNodes(prev => {
+      const newLocked = { ...prev }
+      delete newLocked[data.nodeId]
+      return newLocked
+    })
+  }, [])
+
   // Subscribe to presence (who's online)
   const { presenceState } = usePresence(
     resolvedParams.id,
@@ -126,10 +146,36 @@ export default function StoryPage({ params }: PageProps) {
   )
 
   // Subscribe to realtime canvas changes (always broadcasts when connected)
-  const { broadcastChange, connectionStatus } = useRealtimeCanvas(resolvedParams.id, currentCanvasId, handleRemoteCanvasChange)
+  const { broadcastChange, broadcastNodeLock, broadcastNodeUnlock, connectionStatus } = useRealtimeCanvas(
+    resolvedParams.id,
+    currentCanvasId,
+    handleRemoteCanvasChange,
+    handleNodeLock,
+    handleNodeUnlock
+  )
 
   // Viewer mode disabled for now - causes sync issues
   const isViewer = false
+
+  // Auto-unlock nodes when users leave (presence change)
+  useEffect(() => {
+    // Get list of online user IDs
+    const onlineUserIds = new Set(Object.keys(presenceState))
+
+    // Remove locks for users who are no longer present
+    setLockedNodes(prev => {
+      const newLocked: Record<string, LockedNode> = {}
+      for (const [nodeId, lock] of Object.entries(prev)) {
+        if (onlineUserIds.has(lock.odataUserId)) {
+          // User is still online, keep the lock
+          newLocked[nodeId] = lock
+        } else {
+          console.log('🔓 Auto-unlocking node (user left):', nodeId)
+        }
+      }
+      return newLocked
+    })
+  }, [presenceState])
 
   // Set project context for color palette persistence
   useEffect(() => {
@@ -1064,6 +1110,9 @@ export default function StoryPage({ params }: PageProps) {
           collaborators={presenceState}
           isViewer={isViewer}
           connectionStatus={connectionStatus}
+          lockedNodes={lockedNodes}
+          onNodeLock={(nodeId, field) => broadcastNodeLock(nodeId, field, username)}
+          onNodeUnlock={broadcastNodeUnlock}
         />
 
         {/* Loading overlay when switching canvases */}

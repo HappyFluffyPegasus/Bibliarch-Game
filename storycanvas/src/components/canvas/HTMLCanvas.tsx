@@ -137,6 +137,14 @@ interface CollaboratorPresence {
   lastSeen: number
 }
 
+// Locked node info (for collaboration)
+interface LockedNodeInfo {
+  nodeId: string
+  odataUserId: string
+  username: string
+  field: string
+}
+
 interface HTMLCanvasProps {
   storyId: string
   currentCanvasId?: string // Current canvas ID to check depth
@@ -162,6 +170,9 @@ interface HTMLCanvasProps {
   collaborators?: Record<string, CollaboratorPresence>
   isViewer?: boolean  // If true, user can only view (not edit) the canvas
   connectionStatus?: 'connected' | 'connecting' | 'disconnected'  // Real-time connection status
+  lockedNodes?: Record<string, LockedNodeInfo>  // Nodes currently being edited by other users
+  onNodeLock?: (nodeId: string, field: string) => void  // Called when user starts editing a field
+  onNodeUnlock?: (nodeId: string) => void  // Called when user stops editing a field
 }
 
 // Updated with smaller sidebar and trackpad support
@@ -198,7 +209,10 @@ export default function HTMLCanvas({
   eventDepth = 0,
   collaborators = {},
   isViewer = false,
-  connectionStatus = 'disconnected'
+  connectionStatus = 'disconnected',
+  lockedNodes = {},
+  onNodeLock,
+  onNodeUnlock
 }: HTMLCanvasProps) {
   const colorContext = useColorContext()
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
@@ -210,6 +224,16 @@ export default function HTMLCanvas({
 
   // Helper to check if user can edit
   const canEdit = !isViewer
+
+  // Helper to check if a node is locked by another user
+  const isNodeLocked = useCallback((nodeId: string) => {
+    return !!lockedNodes[nodeId]
+  }, [lockedNodes])
+
+  // Get lock info for a node (returns undefined if not locked)
+  const getNodeLockInfo = useCallback((nodeId: string) => {
+    return lockedNodes[nodeId]
+  }, [lockedNodes])
 
   // Sync remote changes from collaborators
   useEffect(() => {
@@ -224,8 +248,29 @@ export default function HTMLCanvas({
     }
   }, [remoteNodes, remoteConnections])
   const [tool, setTool] = useState<'pan' | 'select' | 'text' | 'character' | 'event' | 'location' | 'folder' | 'list' | 'image' | 'table' | 'connect' | 'relationship-canvas' | 'line' | 'compact-text'>('select')
-  const [editingField, setEditingField] = useState<{nodeId: string, field: string} | null>(null)
+  const [editingField, setEditingFieldState] = useState<{nodeId: string, field: string} | null>(null)
   const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Wrapper for setEditingField that handles lock/unlock broadcasting
+  const setEditingField = useCallback((newValue: {nodeId: string, field: string} | null) => {
+    // If trying to edit a node that's locked by another user, don't allow it
+    if (newValue && lockedNodes[newValue.nodeId]) {
+      console.log('🔒 Cannot edit - node is locked by', lockedNodes[newValue.nodeId].username)
+      return // Don't allow editing locked nodes
+    }
+
+    setEditingFieldState(prev => {
+      // Unlock the previous node if we were editing something
+      if (prev && onNodeUnlock) {
+        onNodeUnlock(prev.nodeId)
+      }
+      // Lock the new node if we're starting to edit
+      if (newValue && onNodeLock) {
+        onNodeLock(newValue.nodeId, newValue.field)
+      }
+      return newValue
+    })
+  }, [onNodeLock, onNodeUnlock, lockedNodes])
   const [isPanning, setIsPanning] = useState(false)
   const [lastPanPoint, setLastPanPoint] = useState({ x: 0, y: 0 })
   const [showHelp, setShowHelp] = useState(initialShowHelp)
@@ -2722,8 +2767,28 @@ export default function HTMLCanvas({
     }
   }
 
+  // Render lock indicator for nodes being edited by other users
+  const renderLockIndicator = (nodeId: string) => {
+    const lockInfo = lockedNodes[nodeId]
+    if (!lockInfo) return null
 
-
+    return (
+      <div
+        className="absolute -top-6 left-0 right-0 flex items-center justify-center z-50 pointer-events-none"
+      >
+        <div
+          className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium shadow-lg"
+          style={{
+            backgroundColor: 'rgba(239, 68, 68, 0.9)',
+            color: 'white',
+          }}
+        >
+          <Lock className="w-3 h-3" />
+          <span>{lockInfo.username} is editing</span>
+        </div>
+      </div>
+    )
+  }
 
   const calculateAutoSize = (node: Node, content: string) => {
     // Auto-sizing logic based on node type and content
@@ -5152,6 +5217,8 @@ export default function HTMLCanvas({
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
                   } ${
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500 opacity-75' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -5161,10 +5228,10 @@ export default function HTMLCanvas({
                     maxHeight: '400px',
                     overflow: 'hidden',
                     backgroundColor: getNodeColor('text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor('text') : getNodeBorderColor('text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor('text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor('text'),
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor('text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     padding: '8px',
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
@@ -5232,6 +5299,8 @@ export default function HTMLCanvas({
                   }}
                   onClick={(e) => handleNodeClick(node, e)}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   <div
                     contentEditable={editingField?.nodeId === node.id && editingField?.field === 'content'}
                     suppressContentEditableWarning
@@ -5315,6 +5384,8 @@ export default function HTMLCanvas({
                   data-node-id={node.id}
                   className={`absolute cursor-move ${
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -5328,7 +5399,7 @@ export default function HTMLCanvas({
                     userSelect: 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'image')}` : 'none',
                     outlineOffset: '-1px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -5393,6 +5464,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   <div className="w-full h-full flex flex-col">
                     {/* Header */}
                     {(node.settings?.show_header ?? false) && (
@@ -5712,19 +5785,21 @@ export default function HTMLCanvas({
                   data-node-id={node.id}
                   className={`absolute cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm ${
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
                     top: getNodeDragPosition(node).y,
                     width: node.width || 240,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    border: `1px solid ${getNodeBorderColor(node.type || 'text')}`,
+                    border: `1px solid ${lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text')}`,
                     padding: '0',
                     overflow: 'visible',
                     userSelect: 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-1px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -5789,6 +5864,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   <div className="w-full h-auto relative">
                     <table className="w-full border-collapse" style={{ tableLayout: 'fixed' }}>
                       {(node.settings?.show_header_row ?? true) && node.tableData && node.tableData.length > 0 && (
@@ -6084,6 +6161,8 @@ export default function HTMLCanvas({
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
                     renderSettings.skipAnimations ? '' : 'transition-all'
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -6091,11 +6170,11 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     userSelect: tool === 'textedit' ? 'auto' : 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -6168,6 +6247,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Location node layout similar to character but without profile picture */}
                   <div className="flex h-full items-center">
                     {/* Location icon area - show custom lucide icon if set, otherwise MapPin */}
@@ -6312,6 +6393,8 @@ export default function HTMLCanvas({
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
                     renderSettings.skipAnimations ? '' : 'transition-all'
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -6319,11 +6402,11 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     userSelect: tool === 'textedit' ? 'auto' : 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -6394,6 +6477,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Event node storyboard layout */}
                   <div className="flex flex-col h-full">
                     {/* Title area with icon */}
@@ -6658,6 +6743,8 @@ export default function HTMLCanvas({
                     'rounded-lg'
                   } ${
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -6665,12 +6752,12 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     padding: '12px',
                     overflow: 'hidden',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -6724,6 +6811,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Header */}
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
@@ -7129,6 +7218,8 @@ export default function HTMLCanvas({
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
                     renderSettings.skipAnimations ? '' : 'transition-all'
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -7136,11 +7227,11 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     userSelect: tool === 'textedit' ? 'auto' : 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -7210,6 +7301,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Character node layout with profile picture */}
                   <div className="flex h-full items-center">
                     {/* Profile picture area */}
@@ -7403,6 +7496,8 @@ export default function HTMLCanvas({
                 isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
               } ${
                 renderSettings.skipAnimations ? '' : 'transition-all'
+              } ${
+                lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
               }`}
               style={{
                 left: getNodeDragPosition(node).x,
@@ -7410,11 +7505,11 @@ export default function HTMLCanvas({
                 width: node.width || 240,
                 height: node.height || 120,
                 backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                 userSelect: tool === 'textedit' ? 'auto' : 'none',
                 outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                 outlineOffset: '-3px',
-                opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                 overflow: 'hidden',
                 transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                 touchAction: 'none'
@@ -7495,6 +7590,8 @@ export default function HTMLCanvas({
                 }
               }}
             >
+              {/* Lock indicator for collaboration */}
+              {renderLockIndicator(node.id)}
               {/* Extended draggable border strips for easier grabbing - only around edges */}
               {/* Top border strip */}
               <div className="absolute left-0 right-0 cursor-move" style={{ top: '-8px', height: '14px', pointerEvents: 'auto' }}
