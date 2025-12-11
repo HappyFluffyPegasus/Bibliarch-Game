@@ -1,5 +1,214 @@
 import React, { useEffect, useRef, useState } from 'react'
+import {
+  ChevronRight,
+  // General icons
+  FileText, File, ClipboardList, Pin, Paperclip, Bookmark, Lightbulb, Star, Sparkles, Zap,
+  // Object icons
+  Folder, FolderOpen, Book, BookOpen, Library, Archive, Package, Box, Notebook, FileStack,
+  // Symbol icons
+  Heart, Circle, Square, Triangle, Diamond, Hexagon, Octagon, Pentagon, Check, X,
+  // Nature icons
+  Sun, Moon, Cloud, Snowflake, Flame, Droplet, Flower, Leaf, TreeDeciduous, Mountain,
+  // Activity icons
+  Gamepad2, Palette, Drama, Film, Mic, Music, Dice5, Trophy, Sword, Shield,
+  // People icons
+  User, Users, UserCircle, Crown, Skull, Ghost, Bot, Orbit, Wand2, Baby,
+  // Animal/creature icons
+  Bird, Bug, Cat, Dog, Fish, Rabbit, Snail, Turtle, Squirrel, Rat,
+  // Misc icons
+  Castle, Home, Building, Gem, Key, Crosshair, Target, Map, ScrollText, Compass,
+  // Additional useful icons
+  Calendar, MapPin, List, ImageIcon, Table, type LucideIcon
+} from 'lucide-react'
 import { Node } from '../../types'
+
+// Icon options using Lucide React icons
+const ICON_OPTIONS: { name: string; icon: LucideIcon }[] = [
+  // General
+  { name: 'FileText', icon: FileText },
+  { name: 'File', icon: File },
+  { name: 'ClipboardList', icon: ClipboardList },
+  { name: 'Pin', icon: Pin },
+  { name: 'Paperclip', icon: Paperclip },
+  { name: 'Bookmark', icon: Bookmark },
+  { name: 'Lightbulb', icon: Lightbulb },
+  { name: 'Star', icon: Star },
+  { name: 'Sparkles', icon: Sparkles },
+  { name: 'Zap', icon: Zap },
+  // Objects
+  { name: 'Folder', icon: Folder },
+  { name: 'FolderOpen', icon: FolderOpen },
+  { name: 'Book', icon: Book },
+  { name: 'BookOpen', icon: BookOpen },
+  { name: 'Library', icon: Library },
+  { name: 'Archive', icon: Archive },
+  { name: 'Package', icon: Package },
+  { name: 'Box', icon: Box },
+  { name: 'Notebook', icon: Notebook },
+  { name: 'FileStack', icon: FileStack },
+  // Symbols
+  { name: 'Heart', icon: Heart },
+  { name: 'Circle', icon: Circle },
+  { name: 'Square', icon: Square },
+  { name: 'Triangle', icon: Triangle },
+  { name: 'Diamond', icon: Diamond },
+  { name: 'Hexagon', icon: Hexagon },
+  { name: 'Octagon', icon: Octagon },
+  { name: 'Pentagon', icon: Pentagon },
+  { name: 'Check', icon: Check },
+  { name: 'X', icon: X },
+  // Nature
+  { name: 'Sun', icon: Sun },
+  { name: 'Moon', icon: Moon },
+  { name: 'Cloud', icon: Cloud },
+  { name: 'Snowflake', icon: Snowflake },
+  { name: 'Flame', icon: Flame },
+  { name: 'Droplet', icon: Droplet },
+  { name: 'Flower', icon: Flower },
+  { name: 'Leaf', icon: Leaf },
+  { name: 'TreeDeciduous', icon: TreeDeciduous },
+  { name: 'Mountain', icon: Mountain },
+  // Activities
+  { name: 'Gamepad2', icon: Gamepad2 },
+  { name: 'Palette', icon: Palette },
+  { name: 'Drama', icon: Drama },
+  { name: 'Film', icon: Film },
+  { name: 'Mic', icon: Mic },
+  { name: 'Music', icon: Music },
+  { name: 'Dice5', icon: Dice5 },
+  { name: 'Trophy', icon: Trophy },
+  { name: 'Sword', icon: Sword },
+  { name: 'Shield', icon: Shield },
+  // People
+  { name: 'User', icon: User },
+  { name: 'Users', icon: Users },
+  { name: 'UserCircle', icon: UserCircle },
+  { name: 'Crown', icon: Crown },
+  { name: 'Skull', icon: Skull },
+  { name: 'Ghost', icon: Ghost },
+  { name: 'Bot', icon: Bot },
+  { name: 'Orbit', icon: Orbit },
+  { name: 'Wand2', icon: Wand2 },
+  { name: 'Baby', icon: Baby },
+  // Animals
+  { name: 'Bird', icon: Bird },
+  { name: 'Bug', icon: Bug },
+  { name: 'Cat', icon: Cat },
+  { name: 'Dog', icon: Dog },
+  { name: 'Fish', icon: Fish },
+  { name: 'Rabbit', icon: Rabbit },
+  { name: 'Snail', icon: Snail },
+  { name: 'Turtle', icon: Turtle },
+  { name: 'Squirrel', icon: Squirrel },
+  { name: 'Rat', icon: Rat },
+  // Misc
+  { name: 'Castle', icon: Castle },
+  { name: 'Home', icon: Home },
+  { name: 'Building', icon: Building },
+  { name: 'Gem', icon: Gem },
+  { name: 'Key', icon: Key },
+  { name: 'Crosshair', icon: Crosshair },
+  { name: 'Target', icon: Target },
+  { name: 'Map', icon: Map },
+  { name: 'ScrollText', icon: ScrollText },
+  { name: 'Compass', icon: Compass },
+]
+
+// Map icon names to components for rendering saved icons
+const ICON_MAP: Record<string, LucideIcon> = Object.fromEntries(
+  ICON_OPTIONS.map(opt => [opt.name, opt.icon])
+)
+
+// Get the Lucide icon component by name
+export const getIconByName = (name: string): LucideIcon | null => {
+  return ICON_MAP[name] || null
+}
+
+// Icon picker component
+const IconPicker = ({
+  currentIcon,
+  nodeType,
+  onSelect,
+  isReady
+}: {
+  currentIcon?: string
+  nodeType?: string
+  onSelect: (icon: string | null) => void
+  isReady: boolean
+}) => {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  // Get current icon component
+  const CurrentIconComponent = currentIcon ? ICON_MAP[currentIcon] : null
+
+  if (!isExpanded) {
+    return (
+      <button
+        className="w-full text-left px-3 py-2.5 text-sm hover:bg-accent active:bg-accent transition-colors text-foreground flex items-center justify-between"
+        onClick={() => {
+          if (!isReady) return
+          setIsExpanded(true)
+        }}
+        onTouchEnd={(e) => {
+          if (!isReady) return
+          e.preventDefault()
+          setIsExpanded(true)
+        }}
+      >
+        <span className="flex items-center gap-2">
+          {CurrentIconComponent ? <CurrentIconComponent className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+          <span>Change Icon</span>
+        </span>
+        <ChevronRight className="w-4 h-4 text-muted-foreground" />
+      </button>
+    )
+  }
+
+  return (
+    <div className="px-2 py-2">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Select Icon</span>
+        <button
+          className="text-xs text-muted-foreground hover:text-foreground"
+          onClick={() => {
+            if (!isReady) return
+            onSelect(null) // Reset to default
+          }}
+          onTouchEnd={(e) => {
+            if (!isReady) return
+            e.preventDefault()
+            onSelect(null)
+          }}
+        >
+          Reset
+        </button>
+      </div>
+      <div className="grid grid-cols-5 gap-1 max-h-[200px] overflow-y-auto">
+        {ICON_OPTIONS.map((opt) => {
+          const IconComponent = opt.icon
+          return (
+            <button
+              key={opt.name}
+              className={`w-8 h-8 flex items-center justify-center rounded hover:bg-accent active:bg-accent ${currentIcon === opt.name ? 'bg-primary/20 ring-1 ring-primary' : ''}`}
+              onClick={() => {
+                if (!isReady) return
+                onSelect(opt.name)
+              }}
+              onTouchEnd={(e) => {
+                if (!isReady) return
+                e.preventDefault()
+                onSelect(opt.name)
+              }}
+              title={opt.name}
+            >
+              <IconComponent className="w-4 h-4" />
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 interface NodeContextMenuProps {
   node: Node
@@ -285,15 +494,6 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
 
       {node.type === 'folder' && (
         <>
-          <SubMenuItem
-            label="Icon"
-            options={[
-              { label: '📁 Folder', value: 'folder', current: (node.settings?.icon ?? 'folder') === 'folder' },
-              { label: '📚 Book', value: 'book', current: (node.settings?.icon ?? 'folder') === 'book' },
-              { label: '📦 Archive', value: 'archive', current: (node.settings?.icon ?? 'folder') === 'archive' },
-              { label: '📦 Box', value: 'box', current: (node.settings?.icon ?? 'folder') === 'box' }
-            ]}
-          />
           <ToggleMenuItem
             label="Expand by Default"
             settingKey="expand_by_default"
@@ -319,6 +519,18 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
           <Divider />
         </>
       )}
+
+      {/* Icon picker for all node types */}
+      <IconPicker
+        currentIcon={node.settings?.icon}
+        nodeType={node.type}
+        onSelect={(icon) => {
+          onSettingChange(node.id, 'icon', icon)
+          onClose()
+        }}
+        isReady={isReady}
+      />
+      <Divider />
 
       {/* Global settings for all nodes */}
       <MenuItem label="Duplicate" onClick={() => onDuplicate(node.id)} />
