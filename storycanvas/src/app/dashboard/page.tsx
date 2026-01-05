@@ -16,6 +16,7 @@ import { storyTemplates } from '@/lib/templates'
 import { ensureDatabaseSetup } from '@/lib/database-init'
 import FeedbackButton from '@/components/feedback/FeedbackButton'
 import { useUser, useProfile, useStoriesPaginated, useCreateStory, useDeleteStory } from '@/lib/hooks/useSupabaseQuery'
+import { InvitationsInbox } from '@/components/collaboration/InvitationsInbox'
 
 type Story = {
   id: string
@@ -227,10 +228,7 @@ export default function DashboardPage() {
         }
       }
 
-      // Add to local state
-      setStories([newStory as Story, ...stories])
-
-      // Navigate to the new story
+      // Navigate to the new story (React Query will refetch on next visit)
       router.push(`/story/${(newStory as any).id}`)
     } catch (error) {
       console.error('Unexpected error duplicating story:', error)
@@ -309,6 +307,9 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
+        {/* Invitations Inbox */}
+        <InvitationsInbox />
+
         <div className="mb-8">
           <h2 className="text-3xl font-bold mb-2">Your Stories</h2>
           <p className="text-muted-foreground">

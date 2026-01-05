@@ -77,6 +77,7 @@ export function useStories(userId: string | null | undefined) {
 }
 
 // Get stories with pagination (20 per page)
+// RLS handles filtering - shows owned stories + collaborated stories
 const STORIES_PER_PAGE = 20
 
 export function useStoriesPaginated(userId: string | null | undefined) {
@@ -90,10 +91,11 @@ export function useStoriesPaginated(userId: string | null | undefined) {
       const from = pageParam * STORIES_PER_PAGE
       const to = from + STORIES_PER_PAGE - 1
 
+      // Don't filter by user_id - RLS handles access control
+      // This returns both owned stories and collaborated stories
       const { data, error, count } = await supabase
         .from('stories')
-        .select('id, title, bio, created_at, updated_at', { count: 'exact' })
-        .eq('user_id', userId)
+        .select('id, title, bio, created_at, updated_at, user_id', { count: 'exact' })
         .order('updated_at', { ascending: false })
         .range(from, to)
 
@@ -118,26 +120,25 @@ export function useStoriesPaginated(userId: string | null | undefined) {
   })
 }
 
-// Get a single story
-export function useStory(storyId: string | null | undefined, userId: string | null | undefined) {
+// Get a single story (RLS handles access control for owners and collaborators)
+export function useStory(storyId: string | null | undefined) {
   const supabase = createClient()
 
   return useQuery({
     queryKey: storyId ? queryKeys.story(storyId) : ['story', 'null'],
     queryFn: async () => {
-      if (!storyId || !userId) return null
+      if (!storyId) return null
 
       const { data, error } = await supabase
         .from('stories')
         .select('id, title, bio')
         .eq('id', storyId)
-        .eq('user_id', userId)
         .single()
 
       if (error) throw error
       return data
     },
-    enabled: !!storyId && !!userId,
+    enabled: !!storyId,
     staleTime: 5 * 60 * 1000, // Individual story metadata, cache for 5 min
   })
 }
@@ -146,10 +147,20 @@ export function useStory(storyId: string | null | undefined, userId: string | nu
 export function useCanvas(storyId: string | null | undefined, canvasType: string) {
   const supabase = createClient()
 
+  // Validate storyId is a proper UUID, not "undefined" string
+  const isValidUUID = storyId &&
+    typeof storyId === 'string' &&
+    storyId !== 'undefined' &&
+    storyId !== 'null' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storyId)
+
   return useQuery({
-    queryKey: storyId ? queryKeys.canvas(storyId, canvasType) : ['canvas', 'null', canvasType],
+    queryKey: isValidUUID ? queryKeys.canvas(storyId, canvasType) : ['canvas', 'invalid', canvasType],
     queryFn: async () => {
-      if (!storyId) return null
+      if (!isValidUUID) {
+        console.error('Invalid storyId passed to useCanvas:', storyId, typeof storyId)
+        return null
+      }
 
       const { data, error } = await supabase
         .from('canvas_data')
@@ -162,12 +173,12 @@ export function useCanvas(storyId: string | null | undefined, canvasType: string
 
       // PGRST116 means no rows found, which is normal for new canvases
       if (error && error.code !== 'PGRST116') {
-        console.error('Error loading canvas:', error)
+        console.error('Error loading canvas:', error.code, error.message, error.details, error.hint)
       }
 
       return data || null
     },
-    enabled: !!storyId,
+    enabled: !!isValidUUID,
     staleTime: 5 * 1000, // Canvas data changes frequently, cache for only 5 seconds to prevent stale data
   })
 }
