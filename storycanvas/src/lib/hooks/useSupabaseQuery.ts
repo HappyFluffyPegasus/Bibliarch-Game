@@ -179,7 +179,8 @@ export function useCanvas(storyId: string | null | undefined, canvasType: string
       return data || null
     },
     enabled: !!isValidUUID,
-    staleTime: 5 * 1000, // Canvas data changes frequently, cache for only 5 seconds to prevent stale data
+    staleTime: 0, // Always consider canvas data stale to ensure fresh data on navigation
+    refetchOnMount: 'always', // Always refetch when component mounts (critical for collaboration)
   })
 }
 
