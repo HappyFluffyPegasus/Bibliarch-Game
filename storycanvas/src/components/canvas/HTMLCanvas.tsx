@@ -221,6 +221,17 @@ export default function HTMLCanvas({
   onNodeUnlock
 }: HTMLCanvasProps) {
   const colorContext = useColorContext()
+
+  // Keep refs for callbacks to avoid stale closures in useEffects
+  const onStateChangeRef = useRef(onStateChange)
+  const onBroadcastChangeRef = useRef(onBroadcastChange)
+  useEffect(() => {
+    onStateChangeRef.current = onStateChange
+  }, [onStateChange])
+  useEffect(() => {
+    onBroadcastChangeRef.current = onBroadcastChange
+  }, [onBroadcastChange])
+
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
   const [connections, setConnections] = useState<Connection[]>(initialConnections)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -243,10 +254,14 @@ export default function HTMLCanvas({
 
   // Sync remote changes from collaborators
   useEffect(() => {
+    console.log('📡 HTMLCanvas remote sync effect - remoteNodes:', remoteNodes?.length, 'remoteConnections:', remoteConnections?.length)
     if (remoteNodes !== undefined && remoteConnections !== undefined) {
+      console.log('📡 HTMLCanvas APPLYING remote changes:', remoteNodes.length, 'nodes')
       isApplyingRemote.current = true
       setNodes(remoteNodes)
       setConnections(remoteConnections)
+      // Also update visible nodes to include any new nodes
+      setVisibleNodeIds(remoteNodes.map((n: any) => n.id))
       // Reset flag after React processes the state update
       requestAnimationFrame(() => {
         isApplyingRemote.current = false
@@ -368,8 +383,9 @@ export default function HTMLCanvas({
   // Wrapper for onSave that skips saving when in template editor mode or when realtimeSave is disabled
   // When realtimeSave is false, saves only happen on navigation/manual button (parent handles via onStateChange)
   // Also enforces viewer mode - viewers cannot save changes
+  // Broadcasting for realtime collaboration happens regardless of realtimeSave flag
   const handleSave = useCallback((nodesToSave: Node[], connectionsToSave: Connection[]) => {
-    // Viewers cannot save changes
+    // Viewers cannot save or broadcast changes
     if (isViewer) {
       console.log('📡 Viewer mode - save blocked')
       return
@@ -378,18 +394,24 @@ export default function HTMLCanvas({
       // Don't save to parent when editing a template
       return
     }
-    if (!realtimeSave) {
-      // Don't auto-save on every change - parent will save on navigation/manual
-      return
+
+    // Always broadcast to collaborators for real-time sync (regardless of realtimeSave)
+    // Use ref to always get the latest callback
+    if (onBroadcastChangeRef.current) {
+      onBroadcastChangeRef.current(nodesToSave, connectionsToSave)
     }
-    if (onSave) {
+
+    // Only auto-save to database if realtimeSave is enabled
+    if (realtimeSave && onSave) {
       onSave(nodesToSave, connectionsToSave)
     }
-    // Broadcast to collaborators for real-time sync
-    if (onBroadcastChange) {
-      onBroadcastChange(nodesToSave, connectionsToSave)
-    }
-  }, [templateEditorMode, realtimeSave, onSave, onBroadcastChange, isViewer])
+  }, [templateEditorMode, realtimeSave, onSave, isViewer])
+
+  // Keep a ref to handleSave so callbacks can always access the latest version
+  const handleSaveRef = useRef(handleSave)
+  useEffect(() => {
+    handleSaveRef.current = handleSave
+  }, [handleSave])
 
   // Use controlled zoom if provided, otherwise use internal state
   const [internalZoom, setInternalZoom] = useState(1)
@@ -638,7 +660,7 @@ export default function HTMLCanvas({
 
     const handleMouseUp = () => {
       saveToHistory(nodesRef.current, connectionsRef.current)
-      handleSave(nodesRef.current, connectionsRef.current)
+      handleSaveRef.current(nodesRef.current, connectionsRef.current)
       columnWidthsRef.current = null
       setResizingColumn(null)
     }
@@ -661,7 +683,7 @@ export default function HTMLCanvas({
       document.removeEventListener('touchmove', handleTouchMove)
       document.removeEventListener('touchend', handleMouseUp)
     }
-  }, [resizingColumn, onSave])
+  }, [resizingColumn])
 
   // Undo/Redo system - completely rebuilt
   const [history, setHistory] = useState<{ nodes: Node[], connections: Connection[] }[]>([])
@@ -971,7 +993,7 @@ export default function HTMLCanvas({
   useEffect(() => {
     const timeoutId = setTimeout(async () => {
       if (onSave && (nodes.length > 0 || connections.length > 0)) {
-        await handleSave(nodes, connections)
+        await handleSaveRef.current(nodes, connections)
 
         // Check if any character nodes exist in current canvas
         const hasCharacters = nodes.some(node => node.type === 'character')
@@ -1065,16 +1087,15 @@ export default function HTMLCanvas({
   }, [initialNodes, initialConnections])
 
   // Notify parent when state changes (for navigation saves, without auto-saving)
-  // onStateChange excluded from deps to prevent cursor jumping from constant re-renders
+  // Uses ref to always get the latest callback without triggering re-renders
   // Skip if applying remote changes to prevent echo/re-broadcast
   // Skip if viewer to prevent any state changes from propagating
   useEffect(() => {
     if (isApplyingRemote.current) return
     if (isViewer) return // Viewers should never trigger state changes
-    if (onStateChange) {
-      onStateChange(nodes, connections)
+    if (onStateChangeRef.current) {
+      onStateChangeRef.current(nodes, connections)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, connections, isViewer])
 
   // Update visible nodes when nodes change - memoized to prevent infinite loops
@@ -1409,7 +1430,7 @@ export default function HTMLCanvas({
           setNodes(newNodes)
           setConnections(newConnections)
           saveToHistory(newNodes, newConnections)
-          handleSave(newNodes, newConnections)
+          handleSaveRef.current(newNodes, newConnections)
           setSelectedId(null)
           setSelectedIds([])
         }
@@ -1426,7 +1447,7 @@ export default function HTMLCanvas({
           const newNodes = [...nodes, ...pastedNodes]
           setNodes(newNodes)
           saveToHistory(newNodes, connections)
-          handleSave(newNodes, connections)
+          handleSaveRef.current(newNodes, connections)
           // Select the pasted nodes
           setSelectedIds(pastedNodes.map(n => n.id))
           if (pastedNodes.length === 1) {
@@ -1449,7 +1470,7 @@ export default function HTMLCanvas({
           const newNodes = [...nodes, ...dupedNodes]
           setNodes(newNodes)
           saveToHistory(newNodes, connections)
-          handleSave(newNodes, connections)
+          handleSaveRef.current(newNodes, connections)
           // Select the duplicated nodes
           setSelectedIds(dupedNodes.map(n => n.id))
           if (dupedNodes.length === 1) {
@@ -1587,7 +1608,15 @@ export default function HTMLCanvas({
     setNodes(newNodes)
     setVisibleNodeIds([...visibleNodeIds, newNode.id])  // Add to visible nodes so it renders!
     saveToHistory(newNodes, connections)
-    handleSave(newNodes, connections)  // Save to database immediately
+
+    // CRITICAL: Broadcast immediately for real-time collaboration
+    // Call broadcast directly to ensure it happens
+    if (onBroadcastChangeRef.current) {
+      console.log('📡 Node creation - broadcasting directly:', newNodes.length, 'nodes')
+      onBroadcastChangeRef.current(newNodes, connections)
+    }
+
+    handleSaveRef.current(newNodes, connections)  // Also save to database
 
     // Clear any multi-selection and select only the newly created node
     // Use flushSync to prevent the auto-sync useEffect from interfering
@@ -1597,7 +1626,7 @@ export default function HTMLCanvas({
     })
     setTool('select')  // Switch to select tool after creating node for immediate interaction
 
-  }, [tool, nodes, connections, saveToHistory, editingField, onSave, visibleNodeIds])
+  }, [tool, nodes, connections, saveToHistory, editingField, visibleNodeIds])
 
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
     // Blur any active text field when clicking on canvas background
@@ -2208,7 +2237,7 @@ export default function HTMLCanvas({
             setDragPosition({ x: 0, y: 0 })
             saveToHistory(updatedNodes, connections)
             // Save drop into list to database
-            handleSave(updatedNodes, connections)
+            handleSaveRef.current(updatedNodes, connections)
 
             droppedIntoList = true
             break
@@ -2346,7 +2375,7 @@ export default function HTMLCanvas({
         setDragPosition({ x: 0, y: 0 })
         saveToHistory(updatedNodes, connections)
         // Save node position to database
-        handleSave(updatedNodes, connections)
+        handleSaveRef.current(updatedNodes, connections)
       }
     }
 
@@ -2359,7 +2388,7 @@ export default function HTMLCanvas({
       // Re-enable text selection after resize
       document.body.style.userSelect = ''
       // Save resize to database
-      handleSave(nodes, connections)
+      handleSaveRef.current(nodes, connections)
     }
 
     if (draggingLineVertex) {
@@ -2367,7 +2396,7 @@ export default function HTMLCanvas({
       saveToHistory(nodes, connections)
       setDraggingLineVertex(null)
       if (onSave) {
-        handleSave(nodes, connections)
+        handleSaveRef.current(nodes, connections)
       }
     }
 
@@ -2375,7 +2404,7 @@ export default function HTMLCanvas({
       // Delay to allow final render with high quality after movement stops
       setTimeout(() => setIsMoving(false), 100)
     }
-  }, [isMoving, draggingNode, isDragReady, isResizeReady, resizingNode, nodes, connections, saveToHistory, dragPosition, tool, selectedIds, zoom, isSelecting, selectionStart, zoomCenter, draggingLineVertex, onSave])
+  }, [isMoving, draggingNode, isDragReady, isResizeReady, resizingNode, nodes, connections, saveToHistory, dragPosition, tool, selectedIds, zoom, isSelecting, selectionStart, zoomCenter, draggingLineVertex])
 
   // Note: Mouse wheel zoom is now handled by native event listener with passive:false (see useEffect above)
   // This ensures preventDefault() works to stop browser zoom
@@ -3242,7 +3271,7 @@ export default function HTMLCanvas({
     saveToHistory(newNodes, newConnections)
     setSelectedId(null)
     // Save deletion to database
-    handleSave(newNodes, newConnections)
+    handleSaveRef.current(newNodes, newConnections)
   }
 
   const handleDeleteConnection = (connectionId: string) => {
@@ -3251,7 +3280,7 @@ export default function HTMLCanvas({
     saveToHistory(nodes, newConnections)
     setConnectionContextMenu(null)
     // Save deletion to database
-    handleSave(nodes, newConnections)
+    handleSaveRef.current(nodes, newConnections)
   }
 
   const handleColorChange = (nodeId: string, color: string) => {
@@ -3265,7 +3294,7 @@ export default function HTMLCanvas({
 
     // Save color change to database
     if (onSave) {
-      handleSave(newNodes, connections)
+      handleSaveRef.current(newNodes, connections)
     }
   }
 
@@ -3293,7 +3322,7 @@ export default function HTMLCanvas({
 
     // Save setting change to database
     if (onSave) {
-      handleSave(newNodes, connections)
+      handleSaveRef.current(newNodes, connections)
     }
   }
 
@@ -3325,7 +3354,7 @@ export default function HTMLCanvas({
 
     // Save immediately to database
     if (onSave) {
-      handleSave(newNodes, connections)
+      handleSaveRef.current(newNodes, connections)
     }
 
   }
@@ -3520,7 +3549,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   const addTableColumn = (nodeId: string) => {
@@ -3543,7 +3572,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   const deleteTableRow = (nodeId: string, rowIndex: number) => {
@@ -3556,7 +3585,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   const deleteTableColumn = (nodeId: string, colKey: string) => {
@@ -3600,7 +3629,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   // Template system functions
@@ -3717,7 +3746,7 @@ export default function HTMLCanvas({
     const updatedNodes = [...nodes, newNode]
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
 
     // Save template interior nodes to the linked canvas
     // Always create the canvas record so it can be edited later
@@ -5780,7 +5809,7 @@ export default function HTMLCanvas({
                         setNodes(updatedNodes)
                         saveToHistory(updatedNodes, connections)
                         if (onSave) {
-                          handleSave(updatedNodes, connections)
+                          handleSaveRef.current(updatedNodes, connections)
                         }
                         // Use flushSync to ensure editing mode exits AFTER history updates complete
                         flushSync(() => {
@@ -5952,7 +5981,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -6173,7 +6202,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -6764,7 +6793,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -7016,7 +7045,7 @@ export default function HTMLCanvas({
                           setNodes(updatedNodes)
                           saveToHistory(updatedNodes, connections)
                           if (onSave) {
-                            handleSave(updatedNodes, connections)
+                            handleSaveRef.current(updatedNodes, connections)
                           }
                           // Use flushSync to ensure editing mode exits AFTER history updates complete
                           flushSync(() => {
@@ -7100,7 +7129,7 @@ export default function HTMLCanvas({
                           setNodes(updatedNodes)
                           saveToHistory(updatedNodes, connections)
                           if (onSave) {
-                            handleSave(updatedNodes, connections)
+                            handleSaveRef.current(updatedNodes, connections)
                           }
                           // Use flushSync to ensure editing mode exits AFTER history updates complete
                           flushSync(() => {
@@ -7912,7 +7941,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -8240,7 +8269,7 @@ export default function HTMLCanvas({
                       setNodes(updatedNodes)
                       saveToHistory(updatedNodes, connections)
                       setEditingField(null)
-                      handleSave(updatedNodes, connections)
+                      handleSaveRef.current(updatedNodes, connections)
                     }}
                     onClick={(e) => {
                       e.stopPropagation()
@@ -8472,7 +8501,7 @@ export default function HTMLCanvas({
                                           saveToHistory(updatedNodes, connections)
                                           setEditingField(null)
                                           if (onSave) {
-                                            handleSave(updatedNodes, connections)
+                                            handleSaveRef.current(updatedNodes, connections)
                                           }
                                         }}
                                         onClick={(e) => {
@@ -8604,7 +8633,7 @@ export default function HTMLCanvas({
                                           saveToHistory(updatedNodes, connections)
                                           setEditingField(null)
                                           if (onSave) {
-                                            handleSave(updatedNodes, connections)
+                                            handleSaveRef.current(updatedNodes, connections)
                                           }
                                         }}
                                         onClick={(e) => {
@@ -8725,7 +8754,7 @@ export default function HTMLCanvas({
                                           saveToHistory(updatedNodes, connections)
                                           setEditingField(null)
                                           if (onSave) {
-                                            handleSave(updatedNodes, connections)
+                                            handleSaveRef.current(updatedNodes, connections)
                                           }
                                         }}
                                         onClick={(e) => {
@@ -8869,7 +8898,7 @@ export default function HTMLCanvas({
                                       saveToHistory(updatedNodes, connections)
                                       setEditingField(null)
                                       if (onSave) {
-                                        handleSave(updatedNodes, connections)
+                                        handleSaveRef.current(updatedNodes, connections)
                                       }
                                     }}
                                     onClick={(e) => {
@@ -8952,7 +8981,7 @@ export default function HTMLCanvas({
                                     saveToHistory(updatedNodes, connections)
                                     setEditingField(null)
                                     if (onSave) {
-                                      handleSave(updatedNodes, connections)
+                                      handleSaveRef.current(updatedNodes, connections)
                                     }
                                   }}
                                   onClick={(e) => {
@@ -9108,7 +9137,7 @@ export default function HTMLCanvas({
                         setNodes(updatedNodes)
                         saveToHistory(updatedNodes, connections)
                         if (onSave) {
-                          handleSave(updatedNodes, connections)
+                          handleSaveRef.current(updatedNodes, connections)
                         }
                         // Use flushSync to ensure editing mode exits AFTER history updates complete
                         flushSync(() => {
@@ -9717,7 +9746,7 @@ export default function HTMLCanvas({
                             setNodes(updatedNodes)
                             saveToHistory(updatedNodes, connections)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
 
                             // Update modal state
@@ -9786,7 +9815,7 @@ export default function HTMLCanvas({
                               setNodes(updatedNodes)
                               saveToHistory(updatedNodes, connections)
                               if (onSave) {
-                                handleSave(updatedNodes, connections)
+                                handleSaveRef.current(updatedNodes, connections)
                               }
 
                               // Update modal state
@@ -9858,7 +9887,7 @@ export default function HTMLCanvas({
                           // Call saveToHistory and onSave in next tick to avoid state update conflicts
                           setTimeout(() => {
                             saveToHistory(currentNodes, connections)
-                            handleSave(currentNodes, connections)
+                            handleSaveRef.current(currentNodes, connections)
                           }, 0)
                           return currentNodes // Don't modify nodes
                         })
@@ -9984,7 +10013,7 @@ export default function HTMLCanvas({
               <Button
                 onClick={() => {
                   // Save the relationship canvas data to database
-                  handleSave(nodes, connections)
+                  handleSaveRef.current(nodes, connections)
                   setRelationshipCanvasModal(null)
                 }}
               >
@@ -10214,7 +10243,7 @@ export default function HTMLCanvas({
 
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
 
                     // Update modal state
                     const updatedNode = updatedNodes.find(n => n.id === currentNode.id)
@@ -10296,7 +10325,7 @@ export default function HTMLCanvas({
 
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
 
                     // Update modal state
                     const updatedNode = updatedNodes.find(n => n.id === currentNode.id)
@@ -10412,7 +10441,7 @@ export default function HTMLCanvas({
 
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
 
                     // Update modal state
                     const updatedNode = updatedNodes.find(n => n.id === currentNode.id)
@@ -10458,7 +10487,7 @@ export default function HTMLCanvas({
               setNodes(newNodes)
               setConnections(newConnections)
               saveToHistory(newNodes, newConnections)
-              handleSave(newNodes, newConnections)
+              handleSaveRef.current(newNodes, newConnections)
               // Move to parent canvas
               onMoveNodeToParent(nodeToMove)
             }
@@ -10500,7 +10529,7 @@ export default function HTMLCanvas({
                     )
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
                   }
                   setMoveToFolderDialog(null)
                 }}
@@ -10518,7 +10547,7 @@ export default function HTMLCanvas({
                     setNodes(newNodes)
                     setConnections(newConnections)
                     saveToHistory(newNodes, newConnections)
-                    handleSave(newNodes, newConnections)
+                    handleSaveRef.current(newNodes, newConnections)
                     // Move to target folder
                     onMoveNodeToFolder(moveToFolderDialog.node, moveToFolderDialog.targetFolder.id)
                   }

@@ -465,7 +465,9 @@ export function useRealtimeCanvas(
   onNodeLock?: (data: LockedNode) => void,
   onNodeUnlock?: (data: { nodeId: string; odataUserId: string }) => void
 ) {
-  const supabase = createClient()
+  // Use ref for supabase client to avoid recreating channel on every render
+  const supabaseRef = useRef(createClient())
+  const supabase = supabaseRef.current
   const channelRef = useRef<RealtimeChannel | null>(null)
   const userIdRef = useRef<string | null>(null)
   const onRemoteChangeRef = useRef(onRemoteChange)
@@ -558,23 +560,28 @@ export function useRealtimeCanvas(
       channelRef.current = null
       setConnectionStatus('disconnected')
     }
-  }, [storyId, canvasType, supabase])
+  }, [storyId, canvasType])
 
   // Return a function to broadcast changes
   // Always broadcast when connected - the channel filters out messages when no listeners
-  const broadcastChange = useCallback((nodes: any[], connections: any[]) => {
+  const broadcastChange = useCallback(async (nodes: any[], connections: any[]) => {
     console.log('📡 broadcastChange called, channelRef:', !!channelRef.current, 'userId:', userIdRef.current)
     if (channelRef.current) {
       console.log('📡 Broadcasting:', nodes.length, 'nodes to channel')
-      channelRef.current.send({
-        type: 'broadcast',
-        event: 'canvas-update',
-        payload: {
-          nodes,
-          connections,
-          userId: userIdRef.current
-        }
-      })
+      try {
+        const result = await channelRef.current.send({
+          type: 'broadcast',
+          event: 'canvas-update',
+          payload: {
+            nodes,
+            connections,
+            userId: userIdRef.current
+          }
+        })
+        console.log('📡 Broadcast result:', result)
+      } catch (err) {
+        console.error('📡 Broadcast error:', err)
+      }
     } else {
       console.log('📡 Cannot broadcast - no channel')
     }
@@ -621,7 +628,9 @@ export function usePresence(
   canvasType: string,
   username: string
 ) {
-  const supabase = createClient()
+  // Use ref for supabase client to avoid recreating channel on every render
+  const supabaseRef = useRef(createClient())
+  const supabase = supabaseRef.current
   const [presenceState, setPresenceState] = useState<Record<string, PresenceState>>({})
   const channelRef = useRef<RealtimeChannel | null>(null)
   const userColorRef = useRef<string>(generateUserColor())
@@ -724,7 +733,7 @@ export function usePresence(
         channel.unsubscribe()
       }
     }
-  }, [storyId, canvasType, username, supabase])
+  }, [storyId, canvasType, username])
 
   return {
     presenceState,
