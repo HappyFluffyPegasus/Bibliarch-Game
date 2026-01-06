@@ -15,7 +15,8 @@ import { useColorContext } from '@/components/providers/color-provider'
 import { subCanvasTemplates } from '@/lib/templates'
 import FeedbackButton from '@/components/feedback/FeedbackButton'
 import { signOut } from '@/lib/auth/actions'
-import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas } from '@/lib/hooks/useSupabaseQuery'
+import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas, queryKeys } from '@/lib/hooks/useSupabaseQuery'
+import { useQueryClient } from '@tanstack/react-query'
 import { ExportDialog } from '@/components/export/ExportDialog'
 import { ShareDialog } from '@/components/collaboration/ShareDialog'
 import { useStoryAccess, useRealtimeCanvas, usePresence, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
@@ -62,6 +63,7 @@ export default function StoryPage({ params }: PageProps) {
   const [headerTooltip, setHeaderTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // Use cached queries - all called unconditionally
+  const queryClient = useQueryClient()
   const { data: user, isLoading: isUserLoading } = useUser()
   const { data: profile } = useProfile(user?.id)
   const { data: story, isLoading: isStoryLoading } = useStory(resolvedParams.id)
@@ -851,6 +853,10 @@ export default function StoryPage({ params }: PageProps) {
     setCanvasData(null)
     setIsLoadingCanvas(true)
 
+    // Invalidate cache for the canvas we're leaving so we fetch fresh data when we return
+    // This ensures we get any changes made by collaborators while we were away
+    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true
 
@@ -878,6 +884,10 @@ export default function StoryPage({ params }: PageProps) {
     // This prevents showing stale data from the previous canvas
     setCanvasData(null)
     setIsLoadingCanvas(true)
+
+    // Invalidate cache for the canvas we're leaving so we fetch fresh data when we return
+    // This ensures we get any changes made by collaborators while we were away
+    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
 
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true
