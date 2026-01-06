@@ -1086,11 +1086,23 @@ export default function HTMLCanvas({
     setHistoryIndex(0)
   }, [initialNodes, initialConnections])
 
+  // Track if this is the initial mount - don't broadcast initial data
+  const isInitialMount = useRef(true)
+  useEffect(() => {
+    // Set to false after first render cycle completes
+    const timer = setTimeout(() => {
+      isInitialMount.current = false
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [])
+
   // Notify parent when state changes (for navigation saves, without auto-saving)
   // Uses ref to always get the latest callback without triggering re-renders
   // Skip if applying remote changes to prevent echo/re-broadcast
   // Skip if viewer to prevent any state changes from propagating
+  // Skip initial mount to prevent broadcasting stale data during navigation
   useEffect(() => {
+    if (isInitialMount.current) return // Don't broadcast on initial mount
     if (isApplyingRemote.current) return
     if (isViewer) return // Viewers should never trigger state changes
     if (onStateChangeRef.current) {

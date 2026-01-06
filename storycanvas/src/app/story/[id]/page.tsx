@@ -246,6 +246,17 @@ export default function StoryPage({ params }: PageProps) {
   const hasUnsavedChanges = useRef(false)
   const isSaving = useRef(false)
   const isInternalNavigation = useRef(false) // Track if navigation is internal (home button, etc.)
+  const isCanvasTransition = useRef(false) // Track canvas transitions to prevent stale broadcasts
+  const canvasTransitionTimeout = useRef<NodeJS.Timeout | null>(null) // Cleanup ref for transition timeout
+
+  // Cleanup canvas transition timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+      }
+    }
+  }, [])
 
   // Handle canvas data loading from cache
   useEffect(() => {
@@ -613,6 +624,17 @@ export default function StoryPage({ params }: PageProps) {
     }
 
     setIsLoadingCanvas(false)
+
+    // Reset canvas transition flag after a brief delay to ensure React cycle completes
+    // This prevents stale broadcasts from the old canvas component
+    // Clear any existing timeout first to prevent stale closures
+    if (canvasTransitionTimeout.current) {
+      clearTimeout(canvasTransitionTimeout.current)
+    }
+    canvasTransitionTimeout.current = setTimeout(() => {
+      isCanvasTransition.current = false
+      canvasTransitionTimeout.current = null
+    }, 200)
   }, [canvasDataFromQuery, isCanvasLoading, currentCanvasId, storyAccess?.isOwner])
 
   // Load and apply palette from database when canvas data is loaded
@@ -669,6 +691,13 @@ export default function StoryPage({ params }: PageProps) {
 
     // Skip broadcasting if we're applying remote changes (prevents echo)
     if (isApplyingRemoteChange.current) return
+
+    // Skip broadcasting during canvas transitions to prevent stale data from old canvas
+    // reaching collaborators on the new canvas channel
+    if (isCanvasTransition.current) {
+      console.log('📡 Skipping broadcast during canvas transition')
+      return
+    }
 
     // Broadcast to all collaborators
     if (broadcastChange) {
@@ -822,6 +851,9 @@ export default function StoryPage({ params }: PageProps) {
     setCanvasData(null)
     setIsLoadingCanvas(true)
 
+    // Mark that we're in a canvas transition to prevent stale broadcasts
+    isCanvasTransition.current = true
+
     // Now update canvas ID - the useEffect will load new data
     setCurrentCanvasId(canvasId)
   }
@@ -846,6 +878,9 @@ export default function StoryPage({ params }: PageProps) {
     // This prevents showing stale data from the previous canvas
     setCanvasData(null)
     setIsLoadingCanvas(true)
+
+    // Mark that we're in a canvas transition to prevent stale broadcasts
+    isCanvasTransition.current = true
 
     // Navigate to the previous location (last item in the new path, or main if empty)
     const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null

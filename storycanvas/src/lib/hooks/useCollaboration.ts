@@ -562,12 +562,18 @@ export function useRealtimeCanvas(
     }
   }, [storyId, canvasType])
 
+  // Store the current canvas type for logging
+  const canvasTypeRef = useRef(canvasType)
+  useEffect(() => {
+    canvasTypeRef.current = canvasType
+  }, [canvasType])
+
   // Return a function to broadcast changes
   // Always broadcast when connected - the channel filters out messages when no listeners
   const broadcastChange = useCallback(async (nodes: any[], connections: any[]) => {
-    console.log('📡 broadcastChange called, channelRef:', !!channelRef.current, 'userId:', userIdRef.current)
+    console.log('📡 broadcastChange called, channelRef:', !!channelRef.current, 'userId:', userIdRef.current, 'canvas:', canvasTypeRef.current)
     if (channelRef.current) {
-      console.log('📡 Broadcasting:', nodes.length, 'nodes to channel')
+      console.log('📡 Broadcasting:', nodes.length, 'nodes to canvas:', canvasTypeRef.current)
       try {
         const result = await channelRef.current.send({
           type: 'broadcast',
