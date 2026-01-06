@@ -1062,22 +1062,7 @@ export default function StoryPage({ params }: PageProps) {
                   variant="ghost"
                   size="sm"
                   className="h-8 w-8 p-0"
-                  onClick={async () => {
-                    // Save current canvas
-                    if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
-                      await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
-                    }
-
-                    const newPath = [...canvasPath]
-                    newPath.pop()
-                    setCanvasPath(newPath)
-
-                    const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null
-                    if (!previousLocation) {
-                      colorContext.setCurrentFolderId(null)
-                    }
-                    setCurrentCanvasId(previousLocation?.id || 'main')
-                  }}
+                  onClick={() => handleNavigateBack()}
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </Button>
@@ -1162,8 +1147,17 @@ export default function StoryPage({ params }: PageProps) {
                   if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
                     await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
                   }
+
+                  // Invalidate cache for canvas we're leaving
+                  queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+
+                  // Mark transition to prevent stale broadcasts
+                  isCanvasTransition.current = true
+
                   // Reset folder context and navigate to main
                   colorContext.setCurrentFolderId(null)
+                  setCanvasData(null)
+                  setIsLoadingCanvas(true)
                   setCanvasPath([])
                   setCurrentCanvasId('main')
                 }}
@@ -1189,6 +1183,12 @@ export default function StoryPage({ params }: PageProps) {
                         await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
                       }
 
+                      // Invalidate cache for canvas we're leaving
+                      queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+
+                      // Mark transition to prevent stale broadcasts
+                      isCanvasTransition.current = true
+
                       // Navigate to clicked path level
                       const newPath = canvasPath.slice(0, index + 1)
 
@@ -1196,6 +1196,8 @@ export default function StoryPage({ params }: PageProps) {
                       const folderId = pathItem.id.replace(/^(folder-canvas-|character-canvas-|location-canvas-)/, '')
                       colorContext.setCurrentFolderId(folderId)
 
+                      setCanvasData(null)
+                      setIsLoadingCanvas(true)
                       setCanvasPath(newPath)
                       setCurrentCanvasId(pathItem.id)
                     }}
