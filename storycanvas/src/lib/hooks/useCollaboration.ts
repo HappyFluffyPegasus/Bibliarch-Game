@@ -678,15 +678,8 @@ export function useStoryCoordination(
   }, [supabase])
 
   // Subscribe to story-level coordination channel
-  // CRITICAL: Depends on userIdLoaded to prevent echo loops
   useEffect(() => {
     if (!storyId) return
-
-    // CRITICAL FIX: Wait for userId to be loaded before subscribing
-    if (!userIdLoaded) {
-      console.log('📡 Waiting for user ID to load before subscribing to story coordination')
-      return
-    }
 
     // CRITICAL FIX: Cleanup existing channel before creating new one
     if (channelRef.current) {
@@ -701,7 +694,8 @@ export function useStoryCoordination(
       .channel(`story-coord:${storyId}`)
       .on('broadcast', { event: 'save-request' }, (payload) => {
         // Don't process our own save requests
-        if (payload.payload?.userId === userIdRef.current) {
+        // Only filter if we have a userId AND it matches (defensive check)
+        if (userIdRef.current && payload.payload?.userId === userIdRef.current) {
           console.log('💾 Ignoring own save request')
           return
         }
@@ -720,7 +714,7 @@ export function useStoryCoordination(
       channel.unsubscribe()
       channelRef.current = null
     }
-  }, [storyId, userIdLoaded])
+  }, [storyId])
 
   // Broadcast save request to ALL users in the story (regardless of canvas)
   const broadcastSaveRequest = useCallback(() => {
