@@ -159,21 +159,26 @@ export default function StoryPage({ params }: PageProps) {
 
   // Handle save request from collaborators (when they navigate, they ask us to save)
   const handleSaveRequest = useCallback(() => {
+    console.log('💾 [PAGE] handleSaveRequest called!')
+    console.log('💾 [PAGE] latestCanvasData exists:', !!latestCanvasData.current)
+    console.log('💾 [PAGE] handleSaveCanvasRef.current exists:', !!handleSaveCanvasRef.current)
+
     // Always save when requested, even if hasUnsavedChanges is false
     // This ensures collaborators get the latest state when navigating
     if (latestCanvasData.current && handleSaveCanvasRef.current) {
-      console.log('💾 Received save request - saving current canvas')
-      console.log('💾 Current canvas data:', latestCanvasData.current.nodes.length, 'nodes', latestCanvasData.current.connections.length, 'connections')
+      console.log('💾 [PAGE] Saving current canvas - nodes:', latestCanvasData.current.nodes.length, 'connections:', latestCanvasData.current.connections.length)
       handleSaveCanvasRef.current(latestCanvasData.current.nodes, latestCanvasData.current.connections)
         .then(() => {
           hasUnsavedChanges.current = false
-          console.log('💾 Save completed from remote request')
+          console.log('💾 [PAGE] Save completed successfully from remote request')
         })
         .catch(err => {
-          console.error('Failed to save on remote request:', err)
+          console.error('💾 [PAGE] Failed to save on remote request:', err)
         })
     } else {
-      console.log('💾 Received save request but no data to save or save function not ready')
+      console.warn('💾 [PAGE] Cannot save - no data or save function not ready')
+      console.warn('💾 [PAGE] latestCanvasData.current:', latestCanvasData.current)
+      console.warn('💾 [PAGE] handleSaveCanvasRef.current:', handleSaveCanvasRef.current)
     }
   }, [])
 
@@ -904,8 +909,13 @@ export default function StoryPage({ params }: PageProps) {
 
     // COLLABORATION FIX: Ask all users to save before we navigate
     // This ensures when we come back, we'll see their changes
-    console.log('💾 Broadcasting save request to all collaborators before navigation')
-    broadcastSaveRequest()
+    console.log('💾 [NAVIGATION] About to broadcast save request to all collaborators')
+    console.log('💾 [NAVIGATION] broadcastSaveRequest exists:', !!broadcastSaveRequest)
+    if (broadcastSaveRequest) {
+      broadcastSaveRequest()
+    } else {
+      console.error('💾 [NAVIGATION] broadcastSaveRequest is undefined!')
+    }
 
     // Wait 500ms + random jitter for other users to save their changes
     // Jitter reduces exact collision probability when multiple users navigate simultaneously

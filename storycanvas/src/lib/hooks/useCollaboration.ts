@@ -693,18 +693,29 @@ export function useStoryCoordination(
     const channel = supabase
       .channel(`story-coord:${storyId}`)
       .on('broadcast', { event: 'save-request' }, (payload) => {
+        console.log('💾 [STORY-LEVEL] Received broadcast event:', payload)
+
         // Don't process our own save requests
         // Only filter if we have a userId AND it matches (defensive check)
         if (userIdRef.current && payload.payload?.userId === userIdRef.current) {
-          console.log('💾 Ignoring own save request')
+          console.log('💾 [STORY-LEVEL] Ignoring own save request (userId matches)')
           return
         }
 
-        console.log('💾 [STORY-LEVEL] Received save request from another user')
-        onSaveRequestRef.current?.()
+        console.log('💾 [STORY-LEVEL] Processing save request from another user')
+        console.log('💾 [STORY-LEVEL] onSaveRequestRef.current exists:', !!onSaveRequestRef.current)
+
+        if (onSaveRequestRef.current) {
+          onSaveRequestRef.current()
+        } else {
+          console.error('💾 [STORY-LEVEL] onSaveRequestRef.current is null!')
+        }
       })
       .subscribe((status) => {
         console.log('📡 Story coordination channel status:', status)
+        if (status === 'SUBSCRIBED') {
+          console.log('📡 Story coordination channel SUBSCRIBED successfully for story:', storyId)
+        }
       })
 
     channelRef.current = channel
@@ -718,16 +729,32 @@ export function useStoryCoordination(
 
   // Broadcast save request to ALL users in the story (regardless of canvas)
   const broadcastSaveRequest = useCallback(() => {
-    if (channelRef.current && userIdRef.current) {
-      console.log('💾 [STORY-LEVEL] Broadcasting save request to ALL users in story')
-      channelRef.current.send({
-        type: 'broadcast',
-        event: 'save-request',
-        payload: {
-          userId: userIdRef.current
-        }
-      })
+    console.log('💾 [STORY-LEVEL] broadcastSaveRequest called')
+    console.log('💾 [STORY-LEVEL] channelRef exists:', !!channelRef.current)
+    console.log('💾 [STORY-LEVEL] userIdRef:', userIdRef.current)
+
+    if (!channelRef.current) {
+      console.error('💾 [STORY-LEVEL] Cannot broadcast - no channel!')
+      return
     }
+
+    if (!userIdRef.current) {
+      console.error('💾 [STORY-LEVEL] Cannot broadcast - no userId yet!')
+      return
+    }
+
+    console.log('💾 [STORY-LEVEL] Broadcasting save request to ALL users in story')
+    channelRef.current.send({
+      type: 'broadcast',
+      event: 'save-request',
+      payload: {
+        userId: userIdRef.current
+      }
+    }).then((result) => {
+      console.log('💾 [STORY-LEVEL] Broadcast result:', result)
+    }).catch((err) => {
+      console.error('💾 [STORY-LEVEL] Broadcast error:', err)
+    })
   }, [])
 
   return { broadcastSaveRequest }
