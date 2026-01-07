@@ -78,6 +78,10 @@ export default function StoryPage({ params }: PageProps) {
   // Store the latest canvas state from Bibliarch component
   const latestCanvasData = useRef<{ nodes: any[], connections: any[] }>({ nodes: [], connections: [] })
 
+  // CRITICAL: Track which canvas the latestCanvasData belongs to
+  // This prevents saving wrong canvas data during rapid navigation
+  const latestCanvasDataId = useRef<string>(currentCanvasId)
+
   // Store current palette for saving
   const currentPaletteRef = useRef<any>(null)
 
@@ -320,6 +324,7 @@ export default function StoryPage({ params }: PageProps) {
 
     // Clear old data
     latestCanvasData.current = { nodes: [], connections: [] }
+    latestCanvasDataId.current = currentCanvasId // Update to reflect current canvas
     setRemoteUpdate(null) // Clear remote updates when switching canvases
 
     if (canvas) {
@@ -727,6 +732,7 @@ export default function StoryPage({ params }: PageProps) {
 
     // Update the ref with latest data
     latestCanvasData.current = { nodes, connections }
+    latestCanvasDataId.current = saveToCanvasId // Track which canvas this data belongs to
 
     console.log(`💾 Saving to canvas: ${saveToCanvasId}, nodes: ${nodes.length}, connections: ${connections.length}`)
 
@@ -748,6 +754,7 @@ export default function StoryPage({ params }: PageProps) {
   const handleStateChange = useCallback((nodes: any[], connections: any[]) => {
     // Update refs
     latestCanvasData.current = { nodes, connections }
+    latestCanvasDataId.current = currentCanvasIdRef.current // Track which canvas this data belongs to
     hasUnsavedChanges.current = true
 
     // Skip broadcasting if we're applying remote changes (prevents echo)
@@ -904,10 +911,14 @@ export default function StoryPage({ params }: PageProps) {
     await new Promise(resolve => setTimeout(resolve, 500))
 
     // SAVE CURRENT CANVAS FIRST! Use the latest data from the ref
-    if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
+    // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
+    if (latestCanvasDataId.current === currentCanvasId &&
+        (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
       await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
       hasUnsavedChanges.current = false // Reset flag after successful save
       console.log('Saved canvas before navigation:', currentCanvasId, latestCanvasData.current)
+    } else if (latestCanvasDataId.current !== currentCanvasId) {
+      console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
     }
 
     // Add to path for breadcrumbs (only if not already in path)
@@ -948,10 +959,14 @@ export default function StoryPage({ params }: PageProps) {
     await new Promise(resolve => setTimeout(resolve, 500))
 
     // SAVE CURRENT CANVAS FIRST!
-    if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
+    // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
+    if (latestCanvasDataId.current === currentCanvasId &&
+        (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
       await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
       hasUnsavedChanges.current = false // Reset flag after successful save
       console.log('Saved canvas before navigating back:', currentCanvasId, latestCanvasData.current)
+    } else if (latestCanvasDataId.current !== currentCanvasId) {
+      console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
     }
 
     const newPath = [...canvasPath]
@@ -1235,8 +1250,12 @@ export default function StoryPage({ params }: PageProps) {
                   await new Promise(resolve => setTimeout(resolve, 500))
 
                   // Save current canvas
-                  if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
+                  // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
+                  if (latestCanvasDataId.current === currentCanvasId &&
+                      (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
                     await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+                  } else if (latestCanvasDataId.current !== currentCanvasId) {
+                    console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
                   }
 
                   // Invalidate cache for BOTH canvases:
@@ -1281,8 +1300,12 @@ export default function StoryPage({ params }: PageProps) {
                       await new Promise(resolve => setTimeout(resolve, 500))
 
                       // Save current canvas
-                      if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
+                      // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
+                      if (latestCanvasDataId.current === currentCanvasId &&
+                          (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
                         await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+                      } else if (latestCanvasDataId.current !== currentCanvasId) {
+                        console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
                       }
 
                       // Invalidate cache for BOTH canvases:
