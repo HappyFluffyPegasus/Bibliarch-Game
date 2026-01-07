@@ -19,7 +19,7 @@ import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas
 import { useQueryClient } from '@tanstack/react-query'
 import { ExportDialog } from '@/components/export/ExportDialog'
 import { ShareDialog } from '@/components/collaboration/ShareDialog'
-import { useStoryAccess, useRealtimeCanvas, usePresence, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
+import { useStoryAccess, useRealtimeCanvas, usePresence, useStoryCoordination, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
 
 // Use the HTML canvas instead to avoid Jest worker issues completely
 const Bibliarch = dynamic(
@@ -150,6 +150,29 @@ export default function StoryPage({ params }: PageProps) {
     username
   )
 
+  // Ref to store the save function so handleSaveRequest can access it
+  const handleSaveCanvasRef = useRef<((nodes: any[], connections: any[]) => Promise<void>) | null>(null)
+
+  // Handle save request from collaborators (when they navigate, they ask us to save)
+  const handleSaveRequest = useCallback(() => {
+    // Always save when requested, even if hasUnsavedChanges is false
+    // This ensures collaborators get the latest state when navigating
+    if (latestCanvasData.current && handleSaveCanvasRef.current) {
+      console.log('💾 Received save request - saving current canvas')
+      console.log('💾 Current canvas data:', latestCanvasData.current.nodes.length, 'nodes', latestCanvasData.current.connections.length, 'connections')
+      handleSaveCanvasRef.current(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+        .then(() => {
+          hasUnsavedChanges.current = false
+          console.log('💾 Save completed from remote request')
+        })
+        .catch(err => {
+          console.error('Failed to save on remote request:', err)
+        })
+    } else {
+      console.log('💾 Received save request but no data to save or save function not ready')
+    }
+  }, [])
+
   // Subscribe to realtime canvas changes (always broadcasts when connected)
   const { broadcastChange, broadcastNodeLock, broadcastNodeUnlock, connectionStatus } = useRealtimeCanvas(
     resolvedParams.id,
@@ -157,6 +180,12 @@ export default function StoryPage({ params }: PageProps) {
     handleRemoteCanvasChange,
     handleNodeLock,
     handleNodeUnlock
+  )
+
+  // Subscribe to story-level coordination (for save requests that reach ALL users)
+  const { broadcastSaveRequest } = useStoryCoordination(
+    resolvedParams.id,
+    handleSaveRequest
   )
 
   // Viewer mode disabled for now - causes sync issues
@@ -685,6 +714,11 @@ export default function StoryPage({ params }: PageProps) {
     })
   }, [resolvedParams.id, user?.id, saveCanvasMutation])
 
+  // Store handleSaveCanvas in ref so handleSaveRequest can access it
+  useEffect(() => {
+    handleSaveCanvasRef.current = handleSaveCanvas
+  }, [handleSaveCanvas])
+
   // Handle state changes from canvas - broadcast to collaborators
   const handleStateChange = useCallback((nodes: any[], connections: any[]) => {
     // Update refs
@@ -836,6 +870,14 @@ export default function StoryPage({ params }: PageProps) {
       return
     }
 
+    // COLLABORATION FIX: Ask all users to save before we navigate
+    // This ensures when we come back, we'll see their changes
+    console.log('💾 Broadcasting save request to all collaborators before navigation')
+    broadcastSaveRequest()
+
+    // Wait 500ms for other users to save their changes
+    await new Promise(resolve => setTimeout(resolve, 500))
+
     // SAVE CURRENT CANVAS FIRST! Use the latest data from the ref
     if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
       await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
@@ -853,9 +895,12 @@ export default function StoryPage({ params }: PageProps) {
     setCanvasData(null)
     setIsLoadingCanvas(true)
 
-    // Invalidate cache for the canvas we're leaving so we fetch fresh data when we return
-    // This ensures we get any changes made by collaborators while we were away
+    // Invalidate cache for BOTH canvases:
+    // 1. The canvas we're leaving (so it's fresh when we return)
     queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+    // 2. The canvas we're going to (so we see collaborators' latest changes)
+    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, canvasId) })
+    console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and', canvasId)
 
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true
@@ -868,6 +913,14 @@ export default function StoryPage({ params }: PageProps) {
   // Navigate back
   async function handleNavigateBack() {
     if (canvasPath.length === 0) return
+
+    // COLLABORATION FIX: Ask all users to save before we navigate
+    // This ensures when we come back, we'll see their changes
+    console.log('💾 Broadcasting save request to all collaborators before navigating back')
+    broadcastSaveRequest()
+
+    // Wait 500ms for other users to save their changes
+    await new Promise(resolve => setTimeout(resolve, 500))
 
     // SAVE CURRENT CANVAS FIRST!
     if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
@@ -885,16 +938,22 @@ export default function StoryPage({ params }: PageProps) {
     setCanvasData(null)
     setIsLoadingCanvas(true)
 
-    // Invalidate cache for the canvas we're leaving so we fetch fresh data when we return
-    // This ensures we get any changes made by collaborators while we were away
+    // Calculate where we're going
+    const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null
+    const destinationCanvasId = previousLocation?.id || 'main'
+
+    // Invalidate cache for BOTH canvases:
+    // 1. The canvas we're leaving (so it's fresh when we return)
     queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+    // 2. The canvas we're going to (so we see collaborators' latest changes)
+    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, destinationCanvasId) })
+    console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and', destinationCanvasId)
 
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true
 
-    // Navigate to the previous location (last item in the new path, or main if empty)
-    const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null
-    setCurrentCanvasId(previousLocation?.id || 'main')
+    // Navigate to the previous location
+    setCurrentCanvasId(destinationCanvasId)
   }
 
   // Move a node to the parent canvas
@@ -1143,13 +1202,24 @@ export default function StoryPage({ params }: PageProps) {
                 onClick={async () => {
                   if (canvasPath.length === 0) return // Already on main canvas
 
+                  // COLLABORATION FIX: Ask all users to save before we navigate
+                  console.log('💾 Broadcasting save request to all collaborators before navigating to main')
+                  broadcastSaveRequest()
+
+                  // Wait 500ms for other users to save their changes
+                  await new Promise(resolve => setTimeout(resolve, 500))
+
                   // Save current canvas
                   if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
                     await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
                   }
 
-                  // Invalidate cache for canvas we're leaving
+                  // Invalidate cache for BOTH canvases:
+                  // 1. The canvas we're leaving
                   queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+                  // 2. Main canvas (where we're going)
+                  queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, 'main') })
+                  console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and main')
 
                   // Mark transition to prevent stale broadcasts
                   isCanvasTransition.current = true
@@ -1178,13 +1248,24 @@ export default function StoryPage({ params }: PageProps) {
                     onClick={async () => {
                       if (index === canvasPath.length - 1) return // Already at this location
 
+                      // COLLABORATION FIX: Ask all users to save before we navigate
+                      console.log('💾 Broadcasting save request to all collaborators before breadcrumb navigation')
+                      broadcastSaveRequest()
+
+                      // Wait 500ms for other users to save their changes
+                      await new Promise(resolve => setTimeout(resolve, 500))
+
                       // Save current canvas
                       if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
                         await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
                       }
 
-                      // Invalidate cache for canvas we're leaving
+                      // Invalidate cache for BOTH canvases:
+                      // 1. The canvas we're leaving
                       queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+                      // 2. The canvas we're going to
+                      queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, pathItem.id) })
+                      console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and', pathItem.id)
 
                       // Mark transition to prevent stale broadcasts
                       isCanvasTransition.current = true

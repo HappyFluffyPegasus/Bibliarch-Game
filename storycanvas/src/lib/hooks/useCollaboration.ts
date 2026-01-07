@@ -628,6 +628,78 @@ export function useRealtimeCanvas(
   return { broadcastChange, broadcastNodeLock, broadcastNodeUnlock, connectionStatus }
 }
 
+// Story-level coordination hook - for cross-canvas communication like save requests
+// All users in a story subscribe to this channel regardless of which canvas they're on
+export function useStoryCoordination(
+  storyId: string | null,
+  onSaveRequest?: () => void
+) {
+  const supabaseRef = useRef(createClient())
+  const supabase = supabaseRef.current
+  const channelRef = useRef<RealtimeChannel | null>(null)
+  const userIdRef = useRef<string | null>(null)
+  const onSaveRequestRef = useRef(onSaveRequest)
+
+  // Keep ref in sync
+  useEffect(() => {
+    onSaveRequestRef.current = onSaveRequest
+  }, [onSaveRequest])
+
+  // Get current user ID
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      userIdRef.current = data.user?.id || null
+    })
+  }, [supabase])
+
+  // Subscribe to story-level coordination channel
+  useEffect(() => {
+    if (!storyId) return
+
+    console.log('📡 Subscribing to story coordination channel:', `story-coord:${storyId}`)
+
+    const channel = supabase
+      .channel(`story-coord:${storyId}`)
+      .on('broadcast', { event: 'save-request' }, (payload) => {
+        // Don't process our own save requests
+        if (payload.payload?.userId === userIdRef.current) {
+          console.log('💾 Ignoring own save request')
+          return
+        }
+
+        console.log('💾 [STORY-LEVEL] Received save request from another user')
+        onSaveRequestRef.current?.()
+      })
+      .subscribe((status) => {
+        console.log('📡 Story coordination channel status:', status)
+      })
+
+    channelRef.current = channel
+
+    return () => {
+      console.log('📡 Cleaning up story coordination channel')
+      channel.unsubscribe()
+      channelRef.current = null
+    }
+  }, [storyId])
+
+  // Broadcast save request to ALL users in the story (regardless of canvas)
+  const broadcastSaveRequest = useCallback(() => {
+    if (channelRef.current && userIdRef.current) {
+      console.log('💾 [STORY-LEVEL] Broadcasting save request to ALL users in story')
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'save-request',
+        payload: {
+          userId: userIdRef.current
+        }
+      })
+    }
+  }, [])
+
+  return { broadcastSaveRequest }
+}
+
 // Presence hook for showing online collaborators (cursor tracking removed for performance)
 export function usePresence(
   storyId: string | null,
