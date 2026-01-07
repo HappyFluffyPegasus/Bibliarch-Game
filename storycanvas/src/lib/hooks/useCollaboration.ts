@@ -503,6 +503,14 @@ export function useRealtimeCanvas(
       return
     }
 
+    // CRITICAL FIX: Cleanup existing channel before creating new one
+    // This prevents memory leaks when canvas changes rapidly
+    if (channelRef.current) {
+      console.log('📡 Cleaning up existing channel before creating new one')
+      channelRef.current.unsubscribe()
+      channelRef.current = null
+    }
+
     setConnectionStatus('connecting')
     console.log('📡 Subscribing to broadcast channel:', `canvas-collab:${storyId}:${canvasType}`)
 
@@ -656,6 +664,13 @@ export function useStoryCoordination(
   useEffect(() => {
     if (!storyId) return
 
+    // CRITICAL FIX: Cleanup existing channel before creating new one
+    if (channelRef.current) {
+      console.log('📡 Cleaning up existing story coordination channel before creating new one')
+      channelRef.current.unsubscribe()
+      channelRef.current = null
+    }
+
     console.log('📡 Subscribing to story coordination channel:', `story-coord:${storyId}`)
 
     const channel = supabase
@@ -716,6 +731,13 @@ export function usePresence(
 
   useEffect(() => {
     if (!storyId) return
+
+    // CRITICAL FIX: Cleanup existing channel before creating new one
+    if (channelRef.current) {
+      console.log('👥 Cleaning up existing presence channel before creating new one')
+      channelRef.current.unsubscribe()
+      channelRef.current = null
+    }
 
     let channel: RealtimeChannel | null = null
 
