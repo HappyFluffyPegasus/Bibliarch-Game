@@ -470,6 +470,7 @@ export function useRealtimeCanvas(
   const supabase = supabaseRef.current
   const channelRef = useRef<RealtimeChannel | null>(null)
   const userIdRef = useRef<string | null>(null)
+  const [userIdLoaded, setUserIdLoaded] = useState(false) // Track when userId is ready
   const onRemoteChangeRef = useRef(onRemoteChange)
   const onNodeLockRef = useRef(onNodeLock)
   const onNodeUnlockRef = useRef(onNodeUnlock)
@@ -488,18 +489,30 @@ export function useRealtimeCanvas(
     onNodeUnlockRef.current = onNodeUnlock
   }, [onNodeUnlock])
 
-  // Get current user ID once
+  // Get current user ID once before subscribing to channels
+  // CRITICAL: Must complete before channel subscription to prevent echo loops
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       userIdRef.current = data.user?.id || null
+      setUserIdLoaded(true) // Signal that userId is ready
+      console.log('📡 User ID loaded for broadcast filtering:', userIdRef.current)
     })
   }, [supabase])
 
   // Subscribe to broadcast channel - stays connected while on canvas
   // Only depends on storyId and canvasType (not othersPresent or callbacks)
+  // CRITICAL: Also depends on userIdLoaded to prevent echo loops
   useEffect(() => {
     if (!storyId) {
       setConnectionStatus('disconnected')
+      return
+    }
+
+    // CRITICAL FIX: Wait for userId to be loaded before subscribing
+    // This prevents processing own broadcasts if they arrive before userId is set
+    if (!userIdLoaded) {
+      console.log('📡 Waiting for user ID to load before subscribing to channel')
+      setConnectionStatus('connecting')
       return
     }
 
@@ -568,7 +581,7 @@ export function useRealtimeCanvas(
       channelRef.current = null
       setConnectionStatus('disconnected')
     }
-  }, [storyId, canvasType])
+  }, [storyId, canvasType, userIdLoaded])
 
   // Store the current canvas type for logging
   const canvasTypeRef = useRef(canvasType)
@@ -646,6 +659,7 @@ export function useStoryCoordination(
   const supabase = supabaseRef.current
   const channelRef = useRef<RealtimeChannel | null>(null)
   const userIdRef = useRef<string | null>(null)
+  const [userIdLoaded, setUserIdLoaded] = useState(false) // Track when userId is ready
   const onSaveRequestRef = useRef(onSaveRequest)
 
   // Keep ref in sync
@@ -653,16 +667,26 @@ export function useStoryCoordination(
     onSaveRequestRef.current = onSaveRequest
   }, [onSaveRequest])
 
-  // Get current user ID
+  // Get current user ID before subscribing
+  // CRITICAL: Must complete before channel subscription to prevent echo loops
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       userIdRef.current = data.user?.id || null
+      setUserIdLoaded(true) // Signal that userId is ready
+      console.log('📡 User ID loaded for story coordination:', userIdRef.current)
     })
   }, [supabase])
 
   // Subscribe to story-level coordination channel
+  // CRITICAL: Depends on userIdLoaded to prevent echo loops
   useEffect(() => {
     if (!storyId) return
+
+    // CRITICAL FIX: Wait for userId to be loaded before subscribing
+    if (!userIdLoaded) {
+      console.log('📡 Waiting for user ID to load before subscribing to story coordination')
+      return
+    }
 
     // CRITICAL FIX: Cleanup existing channel before creating new one
     if (channelRef.current) {
@@ -696,7 +720,7 @@ export function useStoryCoordination(
       channel.unsubscribe()
       channelRef.current = null
     }
-  }, [storyId])
+  }, [storyId, userIdLoaded])
 
   // Broadcast save request to ALL users in the story (regardless of canvas)
   const broadcastSaveRequest = useCallback(() => {
