@@ -296,11 +296,31 @@ export default function StoryPage({ params }: PageProps) {
       return
     }
 
+    // CRITICAL: Only load data if it's for the canvas we're expecting
+    // This prevents showing stale cached data during transitions
+    const canvas = canvasDataFromQuery
+    const dataCanvasId = canvas?.canvas_type || null
+
+    // Check if we're in transition and this data is stale (from wrong canvas)
+    if (isCanvasTransition.current && dataCanvasId !== currentCanvasId) {
+      console.log('⏳ Canvas transition: ignoring stale data from', dataCanvasId, 'expecting', currentCanvasId)
+      setIsLoadingCanvas(true)
+      return
+    }
+
+    // If we're in transition and received correct data, transition is complete
+    if (isCanvasTransition.current && dataCanvasId === currentCanvasId) {
+      console.log('✅ Canvas transition complete: received fresh data for', currentCanvasId)
+      isCanvasTransition.current = false
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+        canvasTransitionTimeout.current = null
+      }
+    }
+
     // Clear old data
     latestCanvasData.current = { nodes: [], connections: [] }
     setRemoteUpdate(null) // Clear remote updates when switching canvases
-
-    const canvas = canvasDataFromQuery
 
     if (canvas) {
       const loadedData = {
@@ -656,16 +676,21 @@ export default function StoryPage({ params }: PageProps) {
 
     setIsLoadingCanvas(false)
 
-    // Reset canvas transition flag after a brief delay to ensure React cycle completes
-    // This prevents stale broadcasts from the old canvas component
-    // Clear any existing timeout first to prevent stale closures
-    if (canvasTransitionTimeout.current) {
-      clearTimeout(canvasTransitionTimeout.current)
+    // Fallback: Reset canvas transition flag after a delay if not already reset
+    // This ensures we don't get stuck in transition state if something goes wrong
+    // Use 1000ms to account for save-request delay (500ms) + network latency
+    if (isCanvasTransition.current) {
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+      }
+      canvasTransitionTimeout.current = setTimeout(() => {
+        if (isCanvasTransition.current) {
+          console.log('⚠️ Canvas transition timeout - forcing completion')
+          isCanvasTransition.current = false
+        }
+        canvasTransitionTimeout.current = null
+      }, 1000)
     }
-    canvasTransitionTimeout.current = setTimeout(() => {
-      isCanvasTransition.current = false
-      canvasTransitionTimeout.current = null
-    }, 200)
   }, [canvasDataFromQuery, isCanvasLoading, currentCanvasId, storyAccess?.isOwner])
 
   // Load and apply palette from database when canvas data is loaded
