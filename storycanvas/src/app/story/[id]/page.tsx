@@ -907,8 +907,10 @@ export default function StoryPage({ params }: PageProps) {
     console.log('💾 Broadcasting save request to all collaborators before navigation')
     broadcastSaveRequest()
 
-    // Wait 500ms for other users to save their changes
-    await new Promise(resolve => setTimeout(resolve, 500))
+    // Wait 500ms + random jitter for other users to save their changes
+    // Jitter reduces exact collision probability when multiple users navigate simultaneously
+    const jitter = Math.random() * 100 // 0-100ms random delay
+    await new Promise(resolve => setTimeout(resolve, 500 + jitter))
 
     // SAVE CURRENT CANVAS FIRST! Use the latest data from the ref
     // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
@@ -955,8 +957,10 @@ export default function StoryPage({ params }: PageProps) {
     console.log('💾 Broadcasting save request to all collaborators before navigating back')
     broadcastSaveRequest()
 
-    // Wait 500ms for other users to save their changes
-    await new Promise(resolve => setTimeout(resolve, 500))
+    // Wait 500ms + random jitter for other users to save their changes
+    // Jitter reduces exact collision probability when multiple users navigate simultaneously
+    const jitter = Math.random() * 100 // 0-100ms random delay
+    await new Promise(resolve => setTimeout(resolve, 500 + jitter))
 
     // SAVE CURRENT CANVAS FIRST!
     // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
@@ -1246,8 +1250,9 @@ export default function StoryPage({ params }: PageProps) {
                   console.log('💾 Broadcasting save request to all collaborators before navigating to main')
                   broadcastSaveRequest()
 
-                  // Wait 500ms for other users to save their changes
-                  await new Promise(resolve => setTimeout(resolve, 500))
+                  // Wait 500ms + random jitter for other users to save their changes
+                  const jitter = Math.random() * 100 // 0-100ms random delay
+                  await new Promise(resolve => setTimeout(resolve, 500 + jitter))
 
                   // Save current canvas
                   // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
@@ -1296,8 +1301,9 @@ export default function StoryPage({ params }: PageProps) {
                       console.log('💾 Broadcasting save request to all collaborators before breadcrumb navigation')
                       broadcastSaveRequest()
 
-                      // Wait 500ms for other users to save their changes
-                      await new Promise(resolve => setTimeout(resolve, 500))
+                      // Wait 500ms + random jitter for other users to save their changes
+                      const jitter = Math.random() * 100 // 0-100ms random delay
+                      await new Promise(resolve => setTimeout(resolve, 500 + jitter))
 
                       // Save current canvas
                       // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
