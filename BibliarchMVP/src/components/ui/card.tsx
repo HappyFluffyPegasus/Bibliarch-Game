@@ -1,15 +1,36 @@
 import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
-function Card({ className, ...props }: React.ComponentProps<"div">) {
+const cardVariants = cva(
+  "flex flex-col gap-6 border py-6 shadow-sm",
+  {
+    variants: {
+      variant: {
+        default: "bg-card text-card-foreground rounded-xl",
+        // Liquid Glass variant - subtle, consistent
+        liquid:
+          "bg-white/80 dark:bg-slate-800/80 backdrop-blur-md text-slate-900 dark:text-slate-100 rounded-2xl border-black/5 dark:border-white/10 hover:bg-white/90 dark:hover:bg-slate-800/90 cursor-pointer",
+        "liquid-static":
+          "bg-white/80 dark:bg-slate-800/80 backdrop-blur-md text-slate-900 dark:text-slate-100 rounded-2xl border-black/5 dark:border-white/10",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+interface CardProps
+  extends React.ComponentProps<"div">,
+    VariantProps<typeof cardVariants> {}
+
+function Card({ className, variant, ...props }: CardProps) {
   return (
     <div
       data-slot="card"
-      className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm",
-        className
-      )}
+      className={cn(cardVariants({ variant }), className)}
       {...props}
     />
   )
@@ -89,4 +110,5 @@ export {
   CardAction,
   CardDescription,
   CardContent,
+  cardVariants,
 }

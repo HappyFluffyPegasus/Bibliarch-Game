@@ -12,11 +12,14 @@ export default function StoryLayout({
   const storyId = params.id as string
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <div className="main-content">
+    <div className="min-h-screen bg-gradient-to-br from-sky-50 to-blue-100 dark:from-gray-900 dark:to-gray-800">
+      {/* Liquid Glass Top Toolbar */}
+      <TabNavigation storyId={storyId} />
+
+      {/* Main content - no padding needed since toolbar floats */}
+      <div className="min-h-screen">
         {children}
       </div>
-      <TabNavigation storyId={storyId} />
     </div>
   )
 }

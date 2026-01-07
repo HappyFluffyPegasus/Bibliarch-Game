@@ -1,6 +1,7 @@
 "use client"
 
 import { usePathname, useRouter } from "next/navigation"
+import { useEffect, useState, useCallback } from "react"
 import {
   FileText,
   Users,
@@ -25,11 +26,33 @@ interface TabNavigationProps {
 export function TabNavigation({ storyId }: TabNavigationProps) {
   const pathname = usePathname()
   const router = useRouter()
+  const [isVisible, setIsVisible] = useState(true)
+  const [hasAnimated, setHasAnimated] = useState(false)
+
+  // Handle Escape key to toggle toolbar visibility
+  const handleKeyDown = useCallback((event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault()
+      setIsVisible(prev => !prev)
+      setHasAnimated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [handleKeyDown])
 
   // If no story is selected, don't show tabs
   if (!storyId) return null
 
   const tabs: Tab[] = [
+    {
+      id: "home",
+      label: "Home",
+      icon: <Home className="w-5 h-5" />,
+      path: "/",
+    },
     {
       id: "notes",
       label: "Notes",
@@ -62,41 +85,48 @@ export function TabNavigation({ storyId }: TabNavigationProps) {
     },
   ]
 
-  const isActive = (path: string) => pathname === path
+  const isActive = (path: string) => {
+    if (path === "/") return pathname === "/"
+    return pathname === path
+  }
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 shadow-lg">
-      <div className="flex justify-around items-center h-16 max-w-2xl mx-auto px-4">
-        {/* Home button */}
-        <button
-          onClick={() => router.push("/")}
-          className={cn(
-            "flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg transition-all",
-            "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200",
-            "hover:bg-gray-100 dark:hover:bg-gray-800"
-          )}
-        >
-          <Home className="w-5 h-5" />
-          <span className="text-xs font-medium">Home</span>
-        </button>
-
-        {/* Tab buttons */}
+    <>
+      {/* Liquid Glass Top Toolbar - Dark, translucent, skinny */}
+      <nav
+        className={cn(
+          "liquid-toolbar",
+          hasAnimated && (isVisible ? "liquid-toolbar-visible" : "liquid-toolbar-hidden"),
+          !hasAnimated && !isVisible && "opacity-0 pointer-events-none"
+        )}
+        style={{
+          // Initial state without animation
+          opacity: !hasAnimated ? (isVisible ? 1 : 0) : undefined,
+          transform: !hasAnimated ? 'translateX(-50%)' : undefined
+        }}
+      >
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => router.push(tab.path)}
             className={cn(
-              "flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg transition-all",
-              isActive(tab.path)
-                ? "text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-900/30"
-                : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+              "liquid-toolbar-button",
+              isActive(tab.path) && "active"
             )}
           >
             {tab.icon}
-            <span className="text-xs font-medium">{tab.label}</span>
+            <span>{tab.label}</span>
           </button>
         ))}
+      </nav>
+
+      {/* Escape hint - shows when toolbar is hidden */}
+      <div className={cn(
+        "escape-hint",
+        !isVisible && hasAnimated && "visible"
+      )}>
+        Press <kbd className="px-1 py-0.5 bg-white/10 rounded text-[10px] font-mono mx-0.5">ESC</kbd> to show menu
       </div>
-    </nav>
+    </>
   )
 }
