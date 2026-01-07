@@ -655,12 +655,16 @@ export function useStoryCoordination(
   storyId: string | null,
   onSaveRequest?: () => void
 ) {
+  console.log('🔧 [STORY-COORD] Hook called with storyId:', storyId)
+
   const supabaseRef = useRef(createClient())
   const supabase = supabaseRef.current
   const channelRef = useRef<RealtimeChannel | null>(null)
   const userIdRef = useRef<string | null>(null)
   const [userIdLoaded, setUserIdLoaded] = useState(false) // Track when userId is ready
   const onSaveRequestRef = useRef(onSaveRequest)
+
+  console.log('🔧 [STORY-COORD] channelRef.current is:', channelRef.current ? 'CHANNEL EXISTS' : 'NULL')
 
   // Keep ref in sync
   useEffect(() => {
@@ -679,7 +683,12 @@ export function useStoryCoordination(
 
   // Subscribe to story-level coordination channel
   useEffect(() => {
-    if (!storyId) return
+    console.log('🔧 [STORY-COORD] useEffect running with storyId:', storyId)
+
+    if (!storyId) {
+      console.log('🔧 [STORY-COORD] Exiting early - no storyId')
+      return
+    }
 
     // CRITICAL FIX: Cleanup existing channel before creating new one
     if (channelRef.current) {
@@ -719,6 +728,7 @@ export function useStoryCoordination(
       })
 
     channelRef.current = channel
+    console.log('🔧 [STORY-COORD] Channel created and assigned to ref:', !!channelRef.current)
 
     return () => {
       console.log('📡 Cleaning up story coordination channel')

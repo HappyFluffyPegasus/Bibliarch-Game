@@ -19,10 +19,31 @@ export function useUser() {
     queryKey: queryKeys.user,
     queryFn: async () => {
       const { data: { user }, error } = await supabase.auth.getUser()
-      if (error) throw error
+
+      // If JWT is expired, try to refresh the session
+      if (error?.message?.includes('JWT') || error?.message?.includes('expired')) {
+        console.warn('🔐 JWT expired, attempting to refresh session...')
+        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession()
+
+        if (refreshError || !session) {
+          console.error('🔐 Session refresh failed, user needs to log in again')
+          // Return null to trigger redirect to login
+          return null
+        }
+
+        console.log('🔐 Session refreshed successfully')
+        return session.user
+      }
+
+      if (error) {
+        console.error('🔐 Auth error:', error.message)
+        throw error
+      }
+
       return user
     },
     staleTime: 10 * 60 * 1000, // User data rarely changes, cache for 10 min
+    retry: 1, // Only retry once for auth errors
   })
 }
 
@@ -146,6 +167,7 @@ export function useStory(storyId: string | null | undefined) {
 // Get canvas data
 export function useCanvas(storyId: string | null | undefined, canvasType: string) {
   const supabase = createClient()
+  const queryClient = useQueryClient()
 
   // Validate storyId is a proper UUID, not "undefined" string
   const isValidUUID = storyId &&
@@ -174,6 +196,14 @@ export function useCanvas(storyId: string | null | undefined, canvasType: string
       // PGRST116 means no rows found, which is normal for new canvases
       if (error && error.code !== 'PGRST116') {
         console.error('Error loading canvas:', error.code, error.message, error.details, error.hint)
+
+        // PGRST303 is JWT expired - redirect to login
+        if (error.code === 'PGRST303' || error.message?.includes('JWT') || error.message?.includes('expired')) {
+          console.error('🔐 JWT expired while loading canvas, user needs to re-authenticate')
+          // Invalidate user query to trigger redirect to login
+          queryClient.invalidateQueries({ queryKey: queryKeys.user })
+          throw new Error('Authentication expired')
+        }
       }
 
       return data || null

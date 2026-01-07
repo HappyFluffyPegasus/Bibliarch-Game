@@ -192,10 +192,12 @@ export default function StoryPage({ params }: PageProps) {
   )
 
   // Subscribe to story-level coordination (for save requests that reach ALL users)
+  console.log('🔧 [PAGE] About to call useStoryCoordination with storyId:', resolvedParams.id)
   const { broadcastSaveRequest } = useStoryCoordination(
     resolvedParams.id,
     handleSaveRequest
   )
+  console.log('🔧 [PAGE] useStoryCoordination returned broadcastSaveRequest:', !!broadcastSaveRequest)
 
   // Viewer mode disabled for now - causes sync issues
   const isViewer = false
