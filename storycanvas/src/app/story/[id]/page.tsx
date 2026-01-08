@@ -937,40 +937,52 @@ export default function StoryPage({ params }: PageProps) {
       return
     }
 
-    // COLLABORATION FIX: Ask all users to save before we navigate
-    // This ensures when we come back, we'll see their changes
-    console.log('💾 [NAVIGATION] About to broadcast save request to all collaborators')
-    console.log('💾 [NAVIGATION] broadcastSaveRequest exists:', !!broadcastSaveRequest)
-    if (broadcastSaveRequest) {
-      broadcastSaveRequest()
-      console.log('💾 [NAVIGATION] Save request broadcasted to all collaborators')
+    // ============================================================================
+    // CRITICAL COLLABORATION SAVE SEQUENCE
+    // ============================================================================
+    // User A (us) is navigating to a new canvas
+    // User B is already there with unsaved changes
+    // We MUST ensure User B saves BEFORE we load, so we see their changes
+    // ============================================================================
+
+    console.log('💾💾💾 [NAVIGATION] ========== STARTING SAVE COORDINATION ==========')
+    console.log('💾 [NAVIGATION] We are navigating from:', currentCanvasId, 'to:', canvasId)
+    console.log('💾 [NAVIGATION] Broadcasting save-request to ALL users in the story')
+
+    if (!broadcastSaveRequest) {
+      console.error('💾 [NAVIGATION] ❌ CRITICAL: broadcastSaveRequest is undefined!')
+      console.error('💾 [NAVIGATION] Story coordination channel is not working!')
     } else {
-      console.error('💾 [NAVIGATION] broadcastSaveRequest is undefined!')
+      broadcastSaveRequest()
+      console.log('💾 [NAVIGATION] ✅ Save request broadcasted successfully')
     }
 
-    // Wait for other users to START their saves
-    // This gives them time to receive the broadcast and initiate the save operation
-    const initialDelay = 300 // Initial delay for broadcast propagation
-    await new Promise(resolve => setTimeout(resolve, initialDelay))
+    // PHASE 1: Wait for broadcast to propagate and collaborators to receive it
+    console.log('💾 [NAVIGATION] Phase 1: Waiting 500ms for broadcast propagation...')
+    await new Promise(resolve => setTimeout(resolve, 500))
 
-    // SAVE CURRENT CANVAS FIRST! Use the latest data from the ref
-    // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
+    // PHASE 2: Save our own canvas (if we have data)
     if (latestCanvasDataId.current === currentCanvasId &&
         (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
-      console.log('💾 [NAVIGATION] Saving our own canvas before navigating')
+      console.log('💾 [NAVIGATION] Phase 2: Saving our own canvas...')
+      console.log('💾 [NAVIGATION] Canvas:', currentCanvasId, 'Nodes:', latestCanvasData.current.nodes.length)
       await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
-      hasUnsavedChanges.current = false // Reset flag after successful save
-      console.log('💾 [NAVIGATION] Our canvas saved successfully')
-    } else if (latestCanvasDataId.current !== currentCanvasId) {
-      console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
+      hasUnsavedChanges.current = false
+      console.log('💾 [NAVIGATION] ✅ Our canvas saved successfully')
+    } else {
+      console.log('💾 [NAVIGATION] Phase 2: No data to save (or wrong canvas)')
     }
 
-    // CRITICAL: Wait for collaborators' saves to complete and propagate to database
-    // Database writes take time (200-500ms) and we need to ensure data is queryable
-    // This delay happens AFTER our own save, giving collaborators' saves time to complete
-    const propagationDelay = 800 + Math.random() * 200 // 800-1000ms for DB writes to complete
-    console.log(`💾 [NAVIGATION] Waiting ${Math.round(propagationDelay)}ms for collaborator saves to propagate to database`)
-    await new Promise(resolve => setTimeout(resolve, propagationDelay))
+    // PHASE 3: CRITICAL - Wait for ALL collaborators' saves to complete
+    // This is the most important delay - ensures database writes finish
+    // Collaborators may be on different canvases, all need time to save
+    const collaboratorSaveDelay = 1500 // Increased to 1.5 seconds
+    console.log(`💾 [NAVIGATION] Phase 3: Waiting ${collaboratorSaveDelay}ms for ALL collaborators to complete their saves...`)
+    console.log('💾 [NAVIGATION] This ensures database has latest data before we load')
+    await new Promise(resolve => setTimeout(resolve, collaboratorSaveDelay))
+
+    console.log('💾💾💾 [NAVIGATION] ========== SAVE COORDINATION COMPLETE ==========')
+    console.log('💾 [NAVIGATION] Proceeding with navigation to:', canvasId)
 
     // Add to path for breadcrumbs (only if not already in path)
     const alreadyInPath = canvasPath.some(item => item.id === canvasId)
@@ -1002,31 +1014,41 @@ export default function StoryPage({ params }: PageProps) {
   async function handleNavigateBack() {
     if (canvasPath.length === 0) return
 
-    // COLLABORATION FIX: Ask all users to save before we navigate
-    // This ensures when we come back, we'll see their changes
-    console.log('💾 [NAVIGATION BACK] Broadcasting save request to all collaborators')
-    broadcastSaveRequest()
+    // ============================================================================
+    // CRITICAL COLLABORATION SAVE SEQUENCE (BACK NAVIGATION)
+    // ============================================================================
+    console.log('💾💾💾 [NAVIGATION BACK] ========== STARTING SAVE COORDINATION ==========')
+    console.log('💾 [NAVIGATION BACK] Broadcasting save-request to ALL users')
 
-    // Wait for other users to START their saves
-    const initialDelay = 300
-    await new Promise(resolve => setTimeout(resolve, initialDelay))
-
-    // SAVE CURRENT CANVAS FIRST!
-    // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
-    if (latestCanvasDataId.current === currentCanvasId &&
-        (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
-      console.log('💾 [NAVIGATION BACK] Saving our own canvas')
-      await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
-      hasUnsavedChanges.current = false // Reset flag after successful save
-      console.log('💾 [NAVIGATION BACK] Our canvas saved successfully')
-    } else if (latestCanvasDataId.current !== currentCanvasId) {
-      console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
+    if (!broadcastSaveRequest) {
+      console.error('💾 [NAVIGATION BACK] ❌ CRITICAL: broadcastSaveRequest is undefined!')
+    } else {
+      broadcastSaveRequest()
+      console.log('💾 [NAVIGATION BACK] ✅ Save request broadcasted')
     }
 
-    // CRITICAL: Wait for collaborators' saves to complete and propagate to database
-    const propagationDelay = 800 + Math.random() * 200 // 800-1000ms
-    console.log(`💾 [NAVIGATION BACK] Waiting ${Math.round(propagationDelay)}ms for collaborator saves to propagate`)
-    await new Promise(resolve => setTimeout(resolve, propagationDelay))
+    // PHASE 1: Wait for broadcast propagation
+    console.log('💾 [NAVIGATION BACK] Phase 1: Waiting 500ms for broadcast propagation...')
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // PHASE 2: Save our own canvas
+    if (latestCanvasDataId.current === currentCanvasId &&
+        (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+      console.log('💾 [NAVIGATION BACK] Phase 2: Saving our own canvas...')
+      await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+      hasUnsavedChanges.current = false
+      console.log('💾 [NAVIGATION BACK] ✅ Our canvas saved successfully')
+    } else {
+      console.log('💾 [NAVIGATION BACK] Phase 2: No data to save')
+    }
+
+    // PHASE 3: Wait for ALL collaborators' saves to complete
+    const collaboratorSaveDelay = 1500
+    console.log(`💾 [NAVIGATION BACK] Phase 3: Waiting ${collaboratorSaveDelay}ms for ALL collaborators...`)
+    await new Promise(resolve => setTimeout(resolve, collaboratorSaveDelay))
+
+    console.log('💾💾💾 [NAVIGATION BACK] ========== SAVE COORDINATION COMPLETE ==========')
+
 
     const newPath = [...canvasPath]
     newPath.pop() // Remove current location from path
