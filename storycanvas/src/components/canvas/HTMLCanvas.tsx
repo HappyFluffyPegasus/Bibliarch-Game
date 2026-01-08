@@ -3005,6 +3005,18 @@ export default function HTMLCanvas({
 
     // Handle double-click on relationship-canvas nodes
     if (e.detail === 2 && node.type === 'relationship-canvas') {
+      // Check if node is locked by another user
+      const lockedBy = lockedNodes[node.id]
+      if (lockedBy) {
+        alert(`This relationship canvas is currently being edited by ${lockedBy.username}`)
+        return
+      }
+
+      // Lock the node for editing
+      if (onNodeLock) {
+        onNodeLock(node.id, 'relationship-editor')
+      }
+
       // Refresh character list to ensure dropdown is populated
       refreshAllCharacters()
       setRelationshipCanvasModal({
@@ -9675,7 +9687,13 @@ export default function HTMLCanvas({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setRelationshipCanvasModal(null)}
+                onClick={() => {
+                  // Unlock the node when closing modal
+                  if (relationshipCanvasModal && onNodeUnlock) {
+                    onNodeUnlock(relationshipCanvasModal.nodeId)
+                  }
+                  setRelationshipCanvasModal(null)
+                }}
               >
                 <X className="w-4 h-4" />
               </Button>
@@ -10018,7 +10036,13 @@ export default function HTMLCanvas({
             <div className="flex justify-end gap-2 mt-6">
               <Button
                 variant="outline"
-                onClick={() => setRelationshipCanvasModal(null)}
+                onClick={() => {
+                  // Unlock the node when closing modal
+                  if (relationshipCanvasModal && onNodeUnlock) {
+                    onNodeUnlock(relationshipCanvasModal.nodeId)
+                  }
+                  setRelationshipCanvasModal(null)
+                }}
               >
                 Close
               </Button>
@@ -10026,6 +10050,11 @@ export default function HTMLCanvas({
                 onClick={() => {
                   // Save the relationship canvas data to database
                   handleSaveRef.current(nodes, connections)
+
+                  // Unlock the node after saving
+                  if (relationshipCanvasModal && onNodeUnlock) {
+                    onNodeUnlock(relationshipCanvasModal.nodeId)
+                  }
                   setRelationshipCanvasModal(null)
                 }}
               >
