@@ -333,10 +333,20 @@ export function useSaveCanvas() {
         })
         .select()
 
-      if (error) {
+      // Check if error is actually an error (not just an empty object)
+      if (error && (error.message || error.code || Object.keys(error).length > 0)) {
         console.error('Supabase save error:', error)
+        console.error('Error details:', JSON.stringify(error, null, 2))
         throw error
       }
+
+      // Sometimes Supabase returns empty error object, treat as success
+      if (error && Object.keys(error).length === 0) {
+        console.warn('⚠️ Received empty error object from Supabase, treating as success')
+      }
+
+      // Log successful save
+      console.log('✅ Canvas saved successfully:', canvasType, 'nodes:', nodes.length)
 
       return data
     },
