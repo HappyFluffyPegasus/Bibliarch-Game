@@ -114,10 +114,19 @@ export default function StoryPage({ params }: PageProps) {
     console.log(`📡 [RECEIVE] Received remote canvas change: ${data.nodes.length} nodes, ${data.connections.length} connections on canvas: ${currentCanvasIdRef.current}`)
     console.log(`📡 [RECEIVE] Current local data before applying: ${latestCanvasData.current.nodes.length} nodes`)
 
-    // SAFETY: If we receive empty data but we have existing data, this might be a race condition
-    // Log a warning but still apply it (user might have genuinely deleted everything)
+    // CRITICAL SAFETY: Reject empty broadcasts during canvas transitions
+    // When User B enters a canvas, they briefly have empty state before loading from DB
+    // If they broadcast during this window, User A would receive empty data
+    // Only accept empty data if we're also empty (both users entering fresh) or during normal operation
+    if (data.nodes.length === 0 && latestCanvasData.current.nodes.length > 0 && isCanvasTransition.current) {
+      console.warn(`🛑 [RECEIVE] REJECTED empty canvas data during transition - protecting existing ${latestCanvasData.current.nodes.length} nodes`)
+      console.warn(`🛑 [RECEIVE] Remote userId: ${data.userId}, current canvas: ${currentCanvasIdRef.current}`)
+      return // Don't apply empty data during transitions
+    }
+
+    // Log warning for other suspicious empty data
     if (data.nodes.length === 0 && latestCanvasData.current.nodes.length > 0) {
-      console.warn(`⚠️ [RECEIVE] Receiving empty canvas data while we have ${latestCanvasData.current.nodes.length} nodes - possible race condition!`)
+      console.warn(`⚠️ [RECEIVE] Receiving empty canvas data while we have ${latestCanvasData.current.nodes.length} nodes`)
       console.warn(`⚠️ [RECEIVE] Remote userId: ${data.userId}, current canvas: ${currentCanvasIdRef.current}`)
     }
 
@@ -298,7 +307,6 @@ export default function StoryPage({ params }: PageProps) {
   const isInternalNavigation = useRef(false) // Track if navigation is internal (home button, etc.)
   const isCanvasTransition = useRef(false) // Track canvas transitions to prevent stale broadcasts
   const canvasTransitionTimeout = useRef<NodeJS.Timeout | null>(null) // Cleanup ref for transition timeout
-  const allowBroadcastsAfterTransition = useRef(true) // Block broadcasts briefly after transition to prevent empty data broadcasts
 
   // Cleanup canvas transition timeout on unmount
   useEffect(() => {
@@ -336,16 +344,6 @@ export default function StoryPage({ params }: PageProps) {
         clearTimeout(canvasTransitionTimeout.current)
         canvasTransitionTimeout.current = null
       }
-
-      // SAFETY: Block broadcasts for 300ms after transition completes
-      // This gives the canvas time to fully render and initialize before broadcasting
-      // Prevents User B from broadcasting empty data when they first enter a canvas
-      allowBroadcastsAfterTransition.current = false
-      console.log('🔒 Blocking broadcasts for 300ms to allow canvas to fully load')
-      setTimeout(() => {
-        allowBroadcastsAfterTransition.current = true
-        console.log('🔓 Broadcasts allowed again after canvas load delay')
-      }, 300)
     }
 
     // Clear old data
@@ -786,17 +784,19 @@ export default function StoryPage({ params }: PageProps) {
     // Skip broadcasting if we're applying remote changes (prevents echo)
     if (isApplyingRemoteChange.current) return
 
+    // CRITICAL: Skip broadcasting while canvas is loading
+    // When User B navigates, canvasData is set to null and isLoadingCanvas is true
+    // During this time, the canvas mounts with empty initialNodes=[]
+    // We must NOT broadcast this empty state to other users
+    if (isLoadingCanvas) {
+      console.log('📡 Skipping broadcast - canvas is still loading')
+      return
+    }
+
     // Skip broadcasting during canvas transitions to prevent stale data from old canvas
     // reaching collaborators on the new canvas channel
     if (isCanvasTransition.current) {
       console.log('📡 Skipping broadcast during canvas transition')
-      return
-    }
-
-    // Skip broadcasting briefly after transition completes to allow canvas to fully load
-    // This prevents User B from broadcasting empty/incomplete data when first entering a canvas
-    if (!allowBroadcastsAfterTransition.current) {
-      console.log('📡 Skipping broadcast - waiting for canvas to fully load after transition')
       return
     }
 
@@ -807,7 +807,7 @@ export default function StoryPage({ params }: PageProps) {
     if (broadcastChange) {
       broadcastChange(nodes, connections)
     }
-  }, [broadcastChange])
+  }, [broadcastChange, isLoadingCanvas])
 
   // Save function that can be called synchronously for browser navigation
   const saveBeforeUnload = useCallback(async () => {
