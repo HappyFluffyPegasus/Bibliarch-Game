@@ -53,6 +53,7 @@ export default function StoryPage({ params }: PageProps) {
   const [remoteUpdate, setRemoteUpdate] = useState<{ nodes: any[], connections: any[] } | null>(null)
   const [lockedNodes, setLockedNodes] = useState<Record<string, LockedNode>>({})
   const [isLoadingCanvas, setIsLoadingCanvas] = useState(false)
+  const isLoadingCanvasRef = useRef(false) // Ref version for callback access
   const [canvasPath, setCanvasPath] = useState<{id: string, title: string}[]>([])
   const [showCanvasSettings, setShowCanvasSettings] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
@@ -321,6 +322,7 @@ export default function StoryPage({ params }: PageProps) {
   useEffect(() => {
     if (isCanvasLoading) {
       setIsLoadingCanvas(true)
+      isLoadingCanvasRef.current = true
       return
     }
 
@@ -333,6 +335,7 @@ export default function StoryPage({ params }: PageProps) {
     if (isCanvasTransition.current && dataCanvasId !== currentCanvasId) {
       console.log('⏳ Canvas transition: ignoring stale data from', dataCanvasId, 'expecting', currentCanvasId)
       setIsLoadingCanvas(true)
+      isLoadingCanvasRef.current = true
       return
     }
 
@@ -704,6 +707,7 @@ export default function StoryPage({ params }: PageProps) {
     }
 
     setIsLoadingCanvas(false)
+    isLoadingCanvasRef.current = false
 
     // Fallback: Reset canvas transition flag after a delay if not already reset
     // This ensures we don't get stuck in transition state if something goes wrong
@@ -784,12 +788,12 @@ export default function StoryPage({ params }: PageProps) {
     // Skip broadcasting if we're applying remote changes (prevents echo)
     if (isApplyingRemoteChange.current) return
 
-    // CRITICAL: Skip broadcasting while canvas is loading
-    // When User B navigates, canvasData is set to null and isLoadingCanvas is true
+    // CRITICAL: Skip broadcasting while canvas is loading (use ref for immediate access)
+    // When User B navigates, canvasData is set to null and isLoadingCanvasRef is set to true
     // During this time, the canvas mounts with empty initialNodes=[]
     // We must NOT broadcast this empty state to other users
-    if (isLoadingCanvas) {
-      console.log('📡 Skipping broadcast - canvas is still loading')
+    if (isLoadingCanvasRef.current) {
+      console.log('📡 Skipping broadcast - canvas is still loading (ref check)')
       return
     }
 
@@ -807,7 +811,7 @@ export default function StoryPage({ params }: PageProps) {
     if (broadcastChange) {
       broadcastChange(nodes, connections)
     }
-  }, [broadcastChange, isLoadingCanvas])
+  }, [broadcastChange])
 
   // Save function that can be called synchronously for browser navigation
   const saveBeforeUnload = useCallback(async () => {
@@ -973,6 +977,7 @@ export default function StoryPage({ params }: PageProps) {
     // This prevents showing stale data from the previous canvas
     setCanvasData(null)
     setIsLoadingCanvas(true)
+    isLoadingCanvasRef.current = true
 
     // Invalidate cache for BOTH canvases:
     // 1. The canvas we're leaving (so it's fresh when we return)
@@ -1022,6 +1027,7 @@ export default function StoryPage({ params }: PageProps) {
     // This prevents showing stale data from the previous canvas
     setCanvasData(null)
     setIsLoadingCanvas(true)
+    isLoadingCanvasRef.current = true
 
     // Calculate where we're going
     const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null
@@ -1318,6 +1324,7 @@ export default function StoryPage({ params }: PageProps) {
                   colorContext.setCurrentFolderId(null)
                   setCanvasData(null)
                   setIsLoadingCanvas(true)
+                  isLoadingCanvasRef.current = true
                   setCanvasPath([])
                   setCurrentCanvasId('main')
                 }}
@@ -1374,6 +1381,7 @@ export default function StoryPage({ params }: PageProps) {
 
                       setCanvasData(null)
                       setIsLoadingCanvas(true)
+                      isLoadingCanvasRef.current = true
                       setCanvasPath(newPath)
                       setCurrentCanvasId(pathItem.id)
                     }}
