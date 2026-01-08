@@ -943,25 +943,34 @@ export default function StoryPage({ params }: PageProps) {
     console.log('💾 [NAVIGATION] broadcastSaveRequest exists:', !!broadcastSaveRequest)
     if (broadcastSaveRequest) {
       broadcastSaveRequest()
+      console.log('💾 [NAVIGATION] Save request broadcasted to all collaborators')
     } else {
       console.error('💾 [NAVIGATION] broadcastSaveRequest is undefined!')
     }
 
-    // Wait 500ms + random jitter for other users to save their changes
-    // Jitter reduces exact collision probability when multiple users navigate simultaneously
-    const jitter = Math.random() * 100 // 0-100ms random delay
-    await new Promise(resolve => setTimeout(resolve, 500 + jitter))
+    // Wait for other users to START their saves
+    // This gives them time to receive the broadcast and initiate the save operation
+    const initialDelay = 300 // Initial delay for broadcast propagation
+    await new Promise(resolve => setTimeout(resolve, initialDelay))
 
     // SAVE CURRENT CANVAS FIRST! Use the latest data from the ref
     // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
     if (latestCanvasDataId.current === currentCanvasId &&
         (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+      console.log('💾 [NAVIGATION] Saving our own canvas before navigating')
       await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
       hasUnsavedChanges.current = false // Reset flag after successful save
-      console.log('Saved canvas before navigation:', currentCanvasId, latestCanvasData.current)
+      console.log('💾 [NAVIGATION] Our canvas saved successfully')
     } else if (latestCanvasDataId.current !== currentCanvasId) {
       console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
     }
+
+    // CRITICAL: Wait for collaborators' saves to complete and propagate to database
+    // Database writes take time (200-500ms) and we need to ensure data is queryable
+    // This delay happens AFTER our own save, giving collaborators' saves time to complete
+    const propagationDelay = 800 + Math.random() * 200 // 800-1000ms for DB writes to complete
+    console.log(`💾 [NAVIGATION] Waiting ${Math.round(propagationDelay)}ms for collaborator saves to propagate to database`)
+    await new Promise(resolve => setTimeout(resolve, propagationDelay))
 
     // Add to path for breadcrumbs (only if not already in path)
     const alreadyInPath = canvasPath.some(item => item.id === canvasId)
@@ -995,24 +1004,29 @@ export default function StoryPage({ params }: PageProps) {
 
     // COLLABORATION FIX: Ask all users to save before we navigate
     // This ensures when we come back, we'll see their changes
-    console.log('💾 Broadcasting save request to all collaborators before navigating back')
+    console.log('💾 [NAVIGATION BACK] Broadcasting save request to all collaborators')
     broadcastSaveRequest()
 
-    // Wait 500ms + random jitter for other users to save their changes
-    // Jitter reduces exact collision probability when multiple users navigate simultaneously
-    const jitter = Math.random() * 100 // 0-100ms random delay
-    await new Promise(resolve => setTimeout(resolve, 500 + jitter))
+    // Wait for other users to START their saves
+    const initialDelay = 300
+    await new Promise(resolve => setTimeout(resolve, initialDelay))
 
     // SAVE CURRENT CANVAS FIRST!
     // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
     if (latestCanvasDataId.current === currentCanvasId &&
         (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+      console.log('💾 [NAVIGATION BACK] Saving our own canvas')
       await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
       hasUnsavedChanges.current = false // Reset flag after successful save
-      console.log('Saved canvas before navigating back:', currentCanvasId, latestCanvasData.current)
+      console.log('💾 [NAVIGATION BACK] Our canvas saved successfully')
     } else if (latestCanvasDataId.current !== currentCanvasId) {
       console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
     }
+
+    // CRITICAL: Wait for collaborators' saves to complete and propagate to database
+    const propagationDelay = 800 + Math.random() * 200 // 800-1000ms
+    console.log(`💾 [NAVIGATION BACK] Waiting ${Math.round(propagationDelay)}ms for collaborator saves to propagate`)
+    await new Promise(resolve => setTimeout(resolve, propagationDelay))
 
     const newPath = [...canvasPath]
     newPath.pop() // Remove current location from path
