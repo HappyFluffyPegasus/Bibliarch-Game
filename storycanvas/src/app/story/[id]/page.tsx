@@ -115,20 +115,15 @@ export default function StoryPage({ params }: PageProps) {
     console.log(`📡 [RECEIVE] Received remote canvas change: ${data.nodes.length} nodes, ${data.connections.length} connections on canvas: ${currentCanvasIdRef.current}`)
     console.log(`📡 [RECEIVE] Current local data before applying: ${latestCanvasData.current.nodes.length} nodes`)
 
-    // CRITICAL SAFETY: Reject empty broadcasts during canvas transitions
-    // When User B enters a canvas, they briefly have empty state before loading from DB
-    // If they broadcast during this window, User A would receive empty data
-    // Only accept empty data if we're also empty (both users entering fresh) or during normal operation
-    if (data.nodes.length === 0 && latestCanvasData.current.nodes.length > 0 && isCanvasTransition.current) {
-      console.warn(`🛑 [RECEIVE] REJECTED empty canvas data during transition - protecting existing ${latestCanvasData.current.nodes.length} nodes`)
-      console.warn(`🛑 [RECEIVE] Remote userId: ${data.userId}, current canvas: ${currentCanvasIdRef.current}`)
-      return // Don't apply empty data during transitions
-    }
-
-    // Log warning for other suspicious empty data
+    // CRITICAL SAFETY: ALWAYS reject empty broadcasts if we have existing data
+    // When collaborator B enters a canvas, they briefly have empty state before loading from DB
+    // If they broadcast during this window, owner A (who is already settled with data) would receive empty data
+    // This protection applies REGARDLESS of whether we're in transition - protect existing data at all costs
     if (data.nodes.length === 0 && latestCanvasData.current.nodes.length > 0) {
-      console.warn(`⚠️ [RECEIVE] Receiving empty canvas data while we have ${latestCanvasData.current.nodes.length} nodes`)
-      console.warn(`⚠️ [RECEIVE] Remote userId: ${data.userId}, current canvas: ${currentCanvasIdRef.current}`)
+      console.warn(`🛑 [RECEIVE] REJECTED empty canvas data - protecting existing ${latestCanvasData.current.nodes.length} nodes`)
+      console.warn(`🛑 [RECEIVE] Remote userId: ${data.userId}, current canvas: ${currentCanvasIdRef.current}`)
+      console.warn(`🛑 [RECEIVE] This likely means remote user is loading canvas - ignoring their empty state`)
+      return // Don't apply empty data when we have nodes
     }
 
     isApplyingRemoteChange.current = true
