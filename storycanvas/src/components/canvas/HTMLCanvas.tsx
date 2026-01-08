@@ -13,6 +13,7 @@ import { ColorPaletteManager } from '@/lib/color-palette'
 import { NodeContextMenu } from './NodeContextMenu'
 import { ConnectionContextMenu } from './ConnectionContextMenu'
 import { createClient } from '@/lib/supabase/client'
+import { toast } from 'sonner'
 
 interface Node {
   id: string
@@ -3008,7 +3009,10 @@ export default function HTMLCanvas({
       // Check if node is locked by another user
       const lockedBy = lockedNodes[node.id]
       if (lockedBy) {
-        alert(`This relationship canvas is currently being edited by ${lockedBy.username}`)
+        toast.error(`Currently being edited by ${lockedBy.username}`, {
+          description: 'This relationship canvas is locked. Please wait for them to finish.',
+          duration: 3000,
+        })
         return
       }
 
