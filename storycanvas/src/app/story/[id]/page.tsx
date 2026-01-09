@@ -19,7 +19,7 @@ import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas
 import { useQueryClient } from '@tanstack/react-query'
 import { ExportDialog } from '@/components/export/ExportDialog'
 import { ShareDialog } from '@/components/collaboration/ShareDialog'
-import { useStoryAccess, useRealtimeCanvas, usePresence, useStoryCoordination, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
+import { useStoryAccess, useCollaborators, useRealtimeCanvas, usePresence, useStoryCoordination, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
 
 // Use the HTML canvas instead to avoid Jest worker issues completely
 const Bibliarch = dynamic(
@@ -69,6 +69,7 @@ export default function StoryPage({ params }: PageProps) {
   const { data: profile } = useProfile(user?.id)
   const { data: story, isLoading: isStoryLoading } = useStory(resolvedParams.id)
   const { data: storyAccess } = useStoryAccess(resolvedParams.id)
+  const { data: collaborators } = useCollaborators(resolvedParams.id)
   const { data: canvasDataFromQuery, isLoading: isCanvasLoading } = useCanvas(resolvedParams.id, currentCanvasId)
   const updateStoryMutation = useUpdateStory()
   const saveCanvasMutation = useSaveCanvas()
@@ -172,25 +173,38 @@ export default function StoryPage({ params }: PageProps) {
 
   // Handle save request from collaborators (when they navigate, they ask us to save)
   const handleSaveRequest = useCallback(() => {
-    console.log('💾 [PAGE] handleSaveRequest called!')
-    console.log('💾 [PAGE] latestCanvasData exists:', !!latestCanvasData.current)
+    console.log('💾 [PAGE] ===== SAVE REQUEST RECEIVED =====')
+    console.log('💾 [PAGE] currentCanvasIdRef.current:', currentCanvasIdRef.current)
+    console.log('💾 [PAGE] latestCanvasDataId.current:', latestCanvasDataId.current)
+    console.log('💾 [PAGE] latestCanvasData nodes:', latestCanvasData.current?.nodes?.length || 0)
+    console.log('💾 [PAGE] latestCanvasData connections:', latestCanvasData.current?.connections?.length || 0)
     console.log('💾 [PAGE] handleSaveCanvasRef.current exists:', !!handleSaveCanvasRef.current)
+
+    // CRITICAL: Verify that latestCanvasData matches the current canvas
+    // This prevents saving stale data from a different canvas
+    if (latestCanvasDataId.current !== currentCanvasIdRef.current) {
+      console.warn('💾 [PAGE] ❌ SKIPPING SAVE - latestCanvasData is for wrong canvas')
+      console.warn('💾 [PAGE] Expected:', currentCanvasIdRef.current, 'Got:', latestCanvasDataId.current)
+      return
+    }
 
     // Always save when requested, even if hasUnsavedChanges is false
     // This ensures collaborators get the latest state when navigating
-    if (latestCanvasData.current && handleSaveCanvasRef.current) {
-      console.log('💾 [PAGE] Saving current canvas - nodes:', latestCanvasData.current.nodes.length, 'connections:', latestCanvasData.current.connections.length)
+    if (latestCanvasData.current &&
+        handleSaveCanvasRef.current &&
+        (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+      console.log('💾 [PAGE] ✅ SAVING CANVAS - nodes:', latestCanvasData.current.nodes.length, 'connections:', latestCanvasData.current.connections.length)
       handleSaveCanvasRef.current(latestCanvasData.current.nodes, latestCanvasData.current.connections)
         .then(() => {
           hasUnsavedChanges.current = false
-          console.log('💾 [PAGE] Save completed successfully from remote request')
+          console.log('💾 [PAGE] ✅ Save completed successfully from remote request')
         })
         .catch(err => {
-          console.error('💾 [PAGE] Failed to save on remote request:', err)
+          console.error('💾 [PAGE] ❌ Failed to save on remote request:', err)
         })
     } else {
-      console.warn('💾 [PAGE] Cannot save - no data or save function not ready')
-      console.warn('💾 [PAGE] latestCanvasData.current:', latestCanvasData.current)
+      console.warn('💾 [PAGE] ❌ Cannot save - no data or save function not ready')
+      console.warn('💾 [PAGE] latestCanvasData:', latestCanvasData.current)
       console.warn('💾 [PAGE] handleSaveCanvasRef.current:', handleSaveCanvasRef.current)
     }
   }, [])
@@ -327,11 +341,25 @@ export default function StoryPage({ params }: PageProps) {
     const dataCanvasId = canvas?.canvas_type || null
 
     // Check if we're in transition and this data is stale (from wrong canvas)
-    if (isCanvasTransition.current && dataCanvasId !== currentCanvasId) {
+    // IMPORTANT: Only block if we have ACTUAL stale data (dataCanvasId is not null)
+    // If dataCanvasId is null, it means "no data found" which is valid for new canvases
+    // and should proceed to the template application logic below
+    if (isCanvasTransition.current && dataCanvasId !== null && dataCanvasId !== currentCanvasId) {
       console.log('⏳ Canvas transition: ignoring stale data from', dataCanvasId, 'expecting', currentCanvasId)
       setIsLoadingCanvas(true)
       isLoadingCanvasRef.current = true
       return
+    }
+
+    // If we're in transition and dataCanvasId is null, that means query completed with no data
+    // This is valid for new canvases - clear the transition and proceed
+    if (isCanvasTransition.current && dataCanvasId === null) {
+      console.log('✅ Canvas transition: no existing data for', currentCanvasId, '- proceeding with empty/template canvas')
+      isCanvasTransition.current = false
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+        canvasTransitionTimeout.current = null
+      }
     }
 
     // If we're in transition and received correct data, transition is complete
@@ -940,16 +968,23 @@ export default function StoryPage({ params }: PageProps) {
     // ============================================================================
     // CRITICAL COLLABORATION SAVE SEQUENCE
     // ============================================================================
-    // Check if there are other users online - only apply delays if collaborating
-    const otherUsersOnline = Object.keys(presenceState || {}).length > 1 // More than just us
+    // IMPORTANT: Presence is canvas-specific, so it only shows users on THIS canvas
+    // But we need to know if ANYONE in the story might have unsaved changes
+    // Solution: Check if this is a collaborative project (has collaborators added)
+    // If yes, always apply delays. If no collaborators, skip delays.
+    const hasCollaborators = (collaborators || []).length > 0
+    const isCollaborativeProject = hasCollaborators
 
+    console.log('💾 [NAVIGATION] ==========================================')
     console.log('💾 [NAVIGATION] Navigating from:', currentCanvasId, 'to:', canvasId)
-    console.log('💾 [NAVIGATION] Other users online:', otherUsersOnline, '(Total presence:', Object.keys(presenceState || {}).length, ')')
+    console.log('💾 [NAVIGATION] Collaborators count:', (collaborators || []).length)
+    console.log('💾 [NAVIGATION] Is collaborative project:', isCollaborativeProject)
+    console.log('💾 [NAVIGATION] Will apply delays:', isCollaborativeProject)
 
-    if (otherUsersOnline) {
-      // Only apply collaboration delays if other users are present
+    if (isCollaborativeProject) {
+      // Apply collaboration delays - there are collaborators who might have unsaved changes
       console.log('💾💾💾 [NAVIGATION] ========== STARTING SAVE COORDINATION ==========')
-      console.log('💾 [NAVIGATION] Broadcasting save-request to ALL users in the story')
+      console.log('💾 [NAVIGATION] Broadcasting save-request to ALL collaborators in the story')
 
       if (!broadcastSaveRequest) {
         console.error('💾 [NAVIGATION] ❌ CRITICAL: broadcastSaveRequest is undefined!')
@@ -978,8 +1013,8 @@ export default function StoryPage({ params }: PageProps) {
 
       console.log('💾💾💾 [NAVIGATION] ========== SAVE COORDINATION COMPLETE ==========')
     } else {
-      // No collaborators - just save our own canvas quickly
-      console.log('💾 [NAVIGATION] No collaborators detected - skipping coordination delays')
+      // No collaborators - just save our own canvas quickly (solo mode)
+      console.log('💾 [NAVIGATION] Solo mode - skipping coordination delays')
       if (latestCanvasDataId.current === currentCanvasId &&
           (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
         console.log('💾 [NAVIGATION] Saving our own canvas...')
@@ -1002,12 +1037,17 @@ export default function StoryPage({ params }: PageProps) {
     setIsLoadingCanvas(true)
     isLoadingCanvasRef.current = true
 
-    // Invalidate cache for BOTH canvases:
-    // 1. The canvas we're leaving (so it's fresh when we return)
+    // CRITICAL: Instead of just invalidating, we need to REFETCH and WAIT for fresh data
+    // This ensures we load the latest data AFTER collaborators have saved
+    console.log('🔄 Invalidating cache for canvas we\'re leaving:', currentCanvasId)
     queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
-    // 2. The canvas we're going to (so we see collaborators' latest changes)
-    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, canvasId) })
-    console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and', canvasId)
+
+    console.log('🔄 Refetching fresh data for destination canvas:', canvasId)
+    await queryClient.refetchQueries({
+      queryKey: queryKeys.canvas(resolvedParams.id, canvasId),
+      type: 'active'
+    })
+    console.log('✅ Fresh data loaded for:', canvasId)
 
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true
@@ -1024,12 +1064,17 @@ export default function StoryPage({ params }: PageProps) {
     // ============================================================================
     // CRITICAL COLLABORATION SAVE SEQUENCE (BACK NAVIGATION)
     // ============================================================================
-    const otherUsersOnline = Object.keys(presenceState || {}).length > 1
+    // Check if this is a collaborative project (has collaborators added)
+    const hasCollaborators = (collaborators || []).length > 0
+    const isCollaborativeProject = hasCollaborators
 
+    console.log('💾 [NAVIGATION BACK] ==========================================')
     console.log('💾 [NAVIGATION BACK] Navigating back')
-    console.log('💾 [NAVIGATION BACK] Other users online:', otherUsersOnline, '(Total presence:', Object.keys(presenceState || {}).length, ')')
+    console.log('💾 [NAVIGATION BACK] Collaborators count:', (collaborators || []).length)
+    console.log('💾 [NAVIGATION BACK] Is collaborative project:', isCollaborativeProject)
+    console.log('💾 [NAVIGATION BACK] Will apply delays:', isCollaborativeProject)
 
-    if (otherUsersOnline) {
+    if (isCollaborativeProject) {
       console.log('💾💾💾 [NAVIGATION BACK] ========== STARTING SAVE COORDINATION ==========')
 
       if (!broadcastSaveRequest) {
@@ -1059,8 +1104,8 @@ export default function StoryPage({ params }: PageProps) {
 
       console.log('💾💾💾 [NAVIGATION BACK] ========== SAVE COORDINATION COMPLETE ==========')
     } else {
-      // No collaborators - just save quickly
-      console.log('💾 [NAVIGATION BACK] No collaborators detected - skipping coordination delays')
+      // No collaborators - solo mode, save quickly
+      console.log('💾 [NAVIGATION BACK] Solo mode - skipping coordination delays')
       if (latestCanvasDataId.current === currentCanvasId &&
           (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
         console.log('💾 [NAVIGATION BACK] Saving our own canvas...')
@@ -1087,12 +1132,17 @@ export default function StoryPage({ params }: PageProps) {
     const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null
     const destinationCanvasId = previousLocation?.id || 'main'
 
-    // Invalidate cache for BOTH canvases:
-    // 1. The canvas we're leaving (so it's fresh when we return)
+    // CRITICAL: Instead of just invalidating, we need to REFETCH and WAIT for fresh data
+    // This ensures we load the latest data AFTER collaborators have saved
+    console.log('🔄 Invalidating cache for canvas we\'re leaving:', currentCanvasId)
     queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
-    // 2. The canvas we're going to (so we see collaborators' latest changes)
-    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, destinationCanvasId) })
-    console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and', destinationCanvasId)
+
+    console.log('🔄 Refetching fresh data for destination canvas:', destinationCanvasId)
+    await queryClient.refetchQueries({
+      queryKey: queryKeys.canvas(resolvedParams.id, destinationCanvasId),
+      type: 'active'
+    })
+    console.log('✅ Fresh data loaded for:', destinationCanvasId)
 
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true
