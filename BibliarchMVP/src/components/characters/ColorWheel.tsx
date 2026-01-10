@@ -9,11 +9,17 @@ interface ColorWheelProps {
 }
 
 export default function ColorWheel({ currentColor, onChange, onClose }: ColorWheelProps) {
-  const [color, setColor] = useState(currentColor)
+  const [color, setColor] = useState(currentColor || '#000000')
 
   const handleChange = (newColor: string) => {
     setColor(newColor)
-    onChange(newColor)
+    // Real-time preview - uncomment if you want live updates
+    // onChange(newColor)
+  }
+
+  const handleDone = () => {
+    onChange(color)
+    onClose()
   }
 
   return (
@@ -76,7 +82,7 @@ export default function ColorWheel({ currentColor, onChange, onClose }: ColorWhe
       </div>
 
       <button
-        onClick={onClose}
+        onClick={handleDone}
         className="w-full py-3 rounded-lg font-semibold text-white transition-all bg-sky-500 hover:bg-sky-600"
       >
         Done

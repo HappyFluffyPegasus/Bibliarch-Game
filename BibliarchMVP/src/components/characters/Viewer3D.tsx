@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 
-type Section = 'BODY' | 'HAIR' | 'TOPS' | 'DRESSES' | 'PANTS' | 'SHOES' | 'ACCESSORIES' | null
+type Section = 'BODY' | 'HAIR' | 'TOPS' | 'DRESSES' | 'PANTS' | 'SHOES' | 'ACCESSORIES' | 'EXPRESSIONS' | 'POSES' | null
 
 export interface Transform {
   position: [number, number, number]
@@ -30,59 +30,79 @@ export interface CategoryColors {
   }
 }
 
+export interface MorphTargetInfo {
+  meshName: string
+  targetName: string
+  index: number
+}
+
 interface Viewer3DProps {
   currentSection: Section
   visibleAssets: string[]
   categoryColors?: CategoryColors
   transforms?: Record<string, Transform>
   onMeshesLoaded?: (meshes: string[]) => void
+  onMorphTargetsLoaded?: (morphTargets: MorphTargetInfo[]) => void
+  morphTargetValues?: Record<string, number>
+  selectedPose?: string | null
+  heightScale?: number // 1.0 = normal, 0.8 = shorter, 1.2 = taller
 }
 
 const CAMERA_POSITIONS = {
-  DEFAULT: { position: new THREE.Vector3(0, 1.55, 5), target: new THREE.Vector3(0, 1.1, 0), fov: 28 },
-  BODY: { position: new THREE.Vector3(0, 1.55, 5), target: new THREE.Vector3(0, 1.1, 0), fov: 28 },
-  HAIR: { position: new THREE.Vector3(0, 1.7, 1.2), target: new THREE.Vector3(0, 1.65, 0), fov: 40 },
-  TOPS: { position: new THREE.Vector3(0, 1.2, 1.8), target: new THREE.Vector3(0, 1.1, 0), fov: 45 },
-  DRESSES: { position: new THREE.Vector3(0, 1.0, 2.8), target: new THREE.Vector3(0, 1.0, 0), fov: 40 },
-  PANTS: { position: new THREE.Vector3(0, 0.8, 2.0), target: new THREE.Vector3(0, 0.6, 0), fov: 50 },
-  SHOES: { position: new THREE.Vector3(0.3, 0.3, 1.5), target: new THREE.Vector3(0, 0.1, 0), fov: 45 },
-  ACCESSORIES: { position: new THREE.Vector3(0, 1.55, 5), target: new THREE.Vector3(0, 1.1, 0), fov: 28 },
+  DEFAULT: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
+  BODY: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
+  HAIR: { position: new THREE.Vector3(-1.2, 1.7, 0), target: new THREE.Vector3(0, 1.65, 0), fov: 40 },
+  TOPS: { position: new THREE.Vector3(-1.8, 1.2, 0), target: new THREE.Vector3(0, 1.1, 0), fov: 45 },
+  DRESSES: { position: new THREE.Vector3(-2.8, 1.0, 0), target: new THREE.Vector3(0, 1.0, 0), fov: 40 },
+  PANTS: { position: new THREE.Vector3(-2.0, 0.8, 0), target: new THREE.Vector3(0, 0.6, 0), fov: 50 },
+  SHOES: { position: new THREE.Vector3(-1.5, 0.3, 0.3), target: new THREE.Vector3(0, 0.1, 0), fov: 45 },
+  ACCESSORIES: { position: new THREE.Vector3(-5, 1.55, 0), target: new THREE.Vector3(0, 1.1, 0), fov: 28 },
+  EXPRESSIONS: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
+  POSES: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
 }
 
-export default function Viewer3D({ currentSection, visibleAssets, categoryColors, transforms, onMeshesLoaded }: Viewer3DProps) {
+export default function Viewer3D({ currentSection, visibleAssets, categoryColors, transforms, onMeshesLoaded, onMorphTargetsLoaded, morphTargetValues, selectedPose, heightScale = 1.0 }: Viewer3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const controlsRef = useRef<OrbitControls | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const meshMapRef = useRef<Map<string, THREE.Mesh>>(new Map())
+  const skinnedMeshMapRef = useRef<Map<string, THREE.SkinnedMesh>>(new Map())
   const materialMapRef = useRef<Map<string, THREE.MeshStandardMaterial>>(new Map())
   const sceneObjectsRef = useRef<THREE.Group | null>(null)
   const originalTransformsRef = useRef<Map<string, { position: THREE.Vector3, rotation: THREE.Euler, scale: THREE.Vector3 }>>(new Map())
+
+  // Animation system refs
+  const mixerRef = useRef<THREE.AnimationMixer | null>(null)
+  const currentActionRef = useRef<THREE.AnimationAction | null>(null)
+  const clockRef = useRef<THREE.Clock>(new THREE.Clock())
+  const bindPoseRef = useRef<Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion, scale: THREE.Vector3 }>>(new Map())
+  const modelBonesRef = useRef<string[]>([])
+  const heightScaleRef = useRef<number>(1.0)
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [modelReady, setModelReady] = useState(false)
 
   useEffect(() => {
     if (!canvasRef.current) return
 
     const canvas = canvasRef.current
 
-    // Scene setup
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x2a2a2a)
     sceneRef.current = scene
 
-    // Camera setup
     const camera = new THREE.PerspectiveCamera(
       28,
       canvas.clientWidth / canvas.clientHeight,
       0.1,
       1000
     )
-    camera.position.set(0, 1.55, 5)
+    camera.position.set(-4, 1.65, 0)
     cameraRef.current = camera
 
-    // Renderer setup
     const renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: true
@@ -92,7 +112,6 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     renderer.shadowMap.enabled = true
     rendererRef.current = renderer
 
-    // Controls setup - Sims-style rotation
     const controls = new OrbitControls(camera, canvas)
     controls.target.set(0, 1.1, 0)
     controls.enableDamping = true
@@ -106,7 +125,6 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     controls.zoomSpeed = 0.8
     controlsRef.current = controls
 
-    // Lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6)
     scene.add(ambientLight)
 
@@ -118,89 +136,162 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4)
     scene.add(hemiLight)
 
-    // Grid
     const grid = new THREE.GridHelper(10, 10, 0x404040, 0x404040)
     scene.add(grid)
 
-    // Load GLB model
-    const loader = new GLTFLoader()
+    const loader = new FBXLoader()
+
+    // Load the working model (no shape keys, good for animation)
     loader.load(
-      '/models/Neighbor Base V16.glb',
-      (gltf) => {
-        scene.add(gltf.scene)
-        sceneObjectsRef.current = gltf.scene
+      '/models/Bibliarch Maybe Test.fbx',
+      (fbx) => {
+        fbx.scale.setScalar(0.01)
+        fbx.name = 'metarig'
+        // Rotate model to face camera (camera is at -X looking at origin)
+        fbx.rotation.y = -Math.PI / 2
+
+        const wrapper = new THREE.Group()
+        wrapper.name = 'animationRoot'
+        wrapper.add(fbx)
+        scene.add(wrapper)
+        sceneObjectsRef.current = wrapper
 
         const meshes: string[] = []
+        const morphTargets: MorphTargetInfo[] = []
+        const boneNames: string[] = []
 
-        gltf.scene.traverse((node) => {
-          if (node instanceof THREE.Mesh) {
+        // Collect mesh references from working model
+        const workingMeshes = new Map<string, THREE.SkinnedMesh>()
+
+        fbx.traverse((node) => {
+          if (node instanceof THREE.Bone) {
+            boneNames.push(node.name)
+            bindPoseRef.current.set(node.name, {
+              position: node.position.clone(),
+              quaternion: node.quaternion.clone(),
+              scale: node.scale.clone()
+            })
+          }
+
+          if (node instanceof THREE.Mesh || node instanceof THREE.SkinnedMesh) {
             const meshName = node.name || 'unnamed_mesh'
-            const nameLower = meshName.toLowerCase()
             meshes.push(meshName)
-            meshMapRef.current.set(meshName, node)
+            meshMapRef.current.set(meshName, node as THREE.Mesh)
 
-            // Save original transform
+            if (node instanceof THREE.SkinnedMesh) {
+              skinnedMeshMapRef.current.set(meshName, node)
+              workingMeshes.set(meshName, node)
+            }
+
             originalTransformsRef.current.set(meshName, {
               position: node.position.clone(),
               rotation: node.rotation.clone(),
               scale: node.scale.clone()
             })
 
-            // Store material references
             const materials = Array.isArray(node.material) ? node.material : [node.material]
-            materials.forEach((mat) => {
+            materials.forEach((mat, matIndex) => {
               if (mat && mat instanceof THREE.MeshStandardMaterial) {
-                const matName = mat.name || 'unnamed_material'
+                const matName = mat.name || `${meshName}_mat_${matIndex}`
                 if (!materialMapRef.current.has(matName)) {
                   materialMapRef.current.set(matName, mat)
                 }
-
-                // Mark eye materials
-                if (meshName === 'Eyes' || meshName === 'Eyes_3' || nameLower.includes('eyes')) {
-                  mat.userData.isEyeMaterial = true
-                  mat.transparent = true
-                  mat.alphaTest = 0.5
-                  mat.opacity = 1
-                  mat.depthWrite = true
-                  mat.side = THREE.DoubleSide
-                  mat.visible = true
-                  mat.needsUpdate = true
+              } else if (mat && mat instanceof THREE.MeshPhongMaterial) {
+                const stdMat = new THREE.MeshStandardMaterial({
+                  color: mat.color,
+                  map: mat.map,
+                  normalMap: mat.normalMap,
+                })
+                node.material = stdMat
+                const matName = mat.name || `${meshName}_mat_${matIndex}`
+                if (!materialMapRef.current.has(matName)) {
+                  materialMapRef.current.set(matName, stdMat)
                 }
               }
             })
 
-            // Only show base body and closed mouth by default
-            const hasBaseOrBody = nameLower.includes('base') || nameLower.includes('body')
-            const isClothing = nameLower.includes('hair') || nameLower.includes('pants') ||
-                              nameLower.includes('shirt') || nameLower.includes('top') ||
-                              nameLower.includes('shoe') || nameLower.includes('sock')
-            const isBaseBody = hasBaseOrBody && !isClothing
-            const isClosedMouth = nameLower.includes('mouth') && nameLower.includes('closed')
-
-            node.visible = isBaseBody || isClosedMouth
+            node.visible = true
+            node.castShadow = true
+            node.receiveShadow = true
           }
         })
 
-        setLoading(false)
+        modelBonesRef.current = boneNames
+        console.log(`Working model loaded: ${boneNames.length} bones, ${meshes.length} meshes`)
 
-        if (onMeshesLoaded) {
-          onMeshesLoaded(meshes)
-        }
+        // Create animation mixer on the fbx model (not wrapper) so it targets bones correctly
+        mixerRef.current = new THREE.AnimationMixer(fbx)
 
-        // Center the model
-        const box = new THREE.Box3().setFromObject(gltf.scene)
-        const center = box.getCenter(new THREE.Vector3())
-        gltf.scene.position.sub(center)
-        gltf.scene.position.y += box.getSize(new THREE.Vector3()).y / 2
+        // Now load the shape keys model and transfer morph targets
+        loader.load(
+          '/models/Bibliarch Maybe.fbx',
+          (shapeKeysFbx) => {
+            console.log('Loading shape keys from BibliarchMaybe.fbx...')
 
-        // Normalize skin weights
-        gltf.scene.traverse((node) => {
-          if (node instanceof THREE.SkinnedMesh) {
-            node.normalizeSkinWeights()
+            shapeKeysFbx.traverse((node) => {
+              if (node instanceof THREE.SkinnedMesh && node.morphTargetDictionary && node.morphTargetInfluences) {
+                const meshName = node.name
+                const targetMesh = workingMeshes.get(meshName)
+
+                if (targetMesh) {
+                  // Transfer morph target data
+                  const geometry = targetMesh.geometry as THREE.BufferGeometry
+                  const sourceGeometry = node.geometry as THREE.BufferGeometry
+
+                  // Copy morph attributes
+                  if (sourceGeometry.morphAttributes.position) {
+                    geometry.morphAttributes.position = sourceGeometry.morphAttributes.position
+                  }
+                  if (sourceGeometry.morphAttributes.normal) {
+                    geometry.morphAttributes.normal = sourceGeometry.morphAttributes.normal
+                  }
+
+                  // Copy morph target dictionary and influences
+                  targetMesh.morphTargetDictionary = { ...node.morphTargetDictionary }
+                  targetMesh.morphTargetInfluences = new Array(node.morphTargetInfluences.length).fill(0)
+
+                  // Update geometry morph targets count
+                  geometry.morphTargetsRelative = sourceGeometry.morphTargetsRelative
+
+                  console.log(`Transferred ${Object.keys(node.morphTargetDictionary).length} shape keys to ${meshName}`)
+
+                  // Collect morph targets for UI
+                  Object.keys(node.morphTargetDictionary).forEach((targetName) => {
+                    const index = node.morphTargetDictionary![targetName]
+                    morphTargets.push({ meshName, targetName, index })
+                  })
+                }
+              }
+            })
+
+            console.log(`Shape keys transferred. Total morph targets: ${morphTargets.length}`)
+
+            setLoading(false)
+            setModelReady(true)
+
+            if (onMeshesLoaded) {
+              onMeshesLoaded(meshes)
+            }
+
+            if (onMorphTargetsLoaded && morphTargets.length > 0) {
+              onMorphTargetsLoaded(morphTargets)
+            }
+          },
+          undefined,
+          (error) => {
+            console.error('Error loading shape keys model:', error)
+            // Still continue with working model, just without shape keys
+            setLoading(false)
+            setModelReady(true)
+            if (onMeshesLoaded) {
+              onMeshesLoaded(meshes)
+            }
           }
-        })
+        )
       },
-      undefined,
+      (progress) => {
+        console.log('Loading:', (progress.loaded / progress.total * 100).toFixed(0) + '%')
+      },
       (error) => {
         console.error('Error loading model:', error)
         setError('Failed to load 3D model')
@@ -208,39 +299,188 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
       }
     )
 
-    // Handle window resize
     const handleResize = () => {
       const width = canvas.clientWidth
       const height = canvas.clientHeight
-
       camera.aspect = width / height
       camera.updateProjectionMatrix()
-
       renderer.setSize(width, height)
     }
 
     window.addEventListener('resize', handleResize)
 
-    // Animation loop
     let animationId: number
     const animate = () => {
       animationId = requestAnimationFrame(animate)
+
+      // Update animation mixer
+      const delta = clockRef.current.getDelta()
+      if (mixerRef.current) {
+        mixerRef.current.update(delta)
+      }
+
+      // Reapply head counter-scale after animation update (prevents animation from overwriting it)
+      if (sceneObjectsRef.current && heightScaleRef.current !== 1.0) {
+        sceneObjectsRef.current.traverse((node) => {
+          if (node instanceof THREE.Bone && node.name === 'spine005') {
+            const counterScale = 1 / heightScaleRef.current
+            node.scale.setScalar(counterScale)
+          }
+        })
+      }
 
       controls.update()
       renderer.render(scene, camera)
     }
     animate()
 
-    // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize)
       cancelAnimationFrame(animationId)
+      if (mixerRef.current) {
+        mixerRef.current.stopAllAction()
+      }
       renderer.dispose()
       controls.dispose()
     }
   }, [])
 
-  // Camera animation effect when section changes
+  // Animation/Pose control effect
+  useEffect(() => {
+    console.log('Animation effect triggered:', { selectedPose, modelReady, hasMixer: !!mixerRef.current })
+
+    if (!modelReady || !mixerRef.current || !sceneObjectsRef.current) return
+
+    const mixer = mixerRef.current
+    const fbx = sceneObjectsRef.current
+
+    // Reset to bind pose
+    const resetToBindPose = () => {
+      if (currentActionRef.current) {
+        currentActionRef.current.stop()
+        currentActionRef.current = null
+      }
+      mixer.stopAllAction()
+
+      fbx.traverse((node) => {
+        if (node instanceof THREE.Bone) {
+          const bind = bindPoseRef.current.get(node.name)
+          if (bind) {
+            node.position.copy(bind.position)
+            node.quaternion.copy(bind.quaternion)
+            // Don't reset scale - height scaling manages that separately
+          }
+        }
+      })
+    }
+
+    // No pose selected - reset to bind pose
+    if (!selectedPose) {
+      resetToBindPose()
+      return
+    }
+
+    // Map pose ID to animation file path
+    const poseToPath: Record<string, string> = {
+      'bodyblock': '/animations/Body Block.fbx'
+    }
+
+    const animPath = poseToPath[selectedPose]
+    if (!animPath) {
+      console.warn('Unknown pose:', selectedPose)
+      return
+    }
+
+    console.log('Loading animation:', animPath)
+
+    const animLoader = new FBXLoader()
+    animLoader.load(
+      animPath,
+      (animFbx) => {
+        if (animFbx.animations.length === 0) {
+          console.warn('No animations in file')
+          return
+        }
+
+        // Stop current animation
+        resetToBindPose()
+
+        const clip = animFbx.animations[0]
+        console.log(`Playing animation: "${clip.name}" with ${clip.tracks.length} tracks`)
+
+        const action = mixer.clipAction(clip)
+        action.reset()
+        action.play()
+        currentActionRef.current = action
+      },
+      undefined,
+      (error) => {
+        console.error('Failed to load animation:', error)
+      }
+    )
+
+    return () => {
+      if (currentActionRef.current) {
+        currentActionRef.current.stop()
+      }
+    }
+  }, [selectedPose, modelReady])
+
+  // Morph target control effect
+  useEffect(() => {
+    if (!morphTargetValues || skinnedMeshMapRef.current.size === 0) return
+
+    Object.entries(morphTargetValues).forEach(([key, value]) => {
+      const [meshName, targetName] = key.split(':')
+      const mesh = skinnedMeshMapRef.current.get(meshName)
+
+      if (mesh && mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
+        const index = mesh.morphTargetDictionary[targetName]
+        if (index !== undefined) {
+          mesh.morphTargetInfluences[index] = value
+        }
+      }
+    })
+  }, [morphTargetValues])
+
+  // Height scaling effect - scale uniformly, but counter-scale head
+  useEffect(() => {
+    // Update ref for animation loop
+    heightScaleRef.current = heightScale
+
+    if (!modelReady || !sceneObjectsRef.current) return
+
+    const wrapper = sceneObjectsRef.current
+    // Find the metarig (fbx) inside the wrapper
+    const metarig = wrapper.getObjectByName('metarig')
+    if (metarig) {
+      console.log('Height scale effect: scaling to', heightScale, 'metarig found:', !!metarig)
+
+      // Preserve rotation while scaling
+      const currentRotation = metarig.rotation.y
+
+      // Scale entire model uniformly
+      metarig.scale.setScalar(0.01 * heightScale)
+
+      // Ensure rotation is preserved
+      metarig.rotation.y = currentRotation
+
+      // Counter-scale head bones so they stay original size
+      // Head is spine005 and spine006 - counter-scale spine005 to affect both
+      const headBones = ['spine005']
+      wrapper.traverse((node) => {
+        if (node instanceof THREE.Bone && headBones.includes(node.name)) {
+          // Counter-scale to cancel parent scaling
+          const counterScale = 1 / heightScale
+          node.scale.setScalar(counterScale)
+        }
+      })
+    } else {
+      console.warn('Height scale effect: metarig not found!')
+    }
+  }, [heightScale, modelReady, selectedPose])
+
+  // Camera animation effect
   useEffect(() => {
     if (!cameraRef.current || !controlsRef.current) return
 
@@ -283,146 +523,19 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     }
   }, [currentSection])
 
-  // Helper: categorize mesh to determine which color to apply
-  const categorizeMesh = (meshName: string): string | null => {
-    const lower = meshName.toLowerCase()
-    if (lower.includes('plane072')) return null
-    if (lower.includes('hair')) return 'hair'
-    if (lower.includes('shirt') || lower.includes('tee') || lower.includes('polo') ||
-        lower.includes('sweater') || lower.includes('jacket') || lower.includes('tank') ||
-        lower.includes('top') || lower.includes('plane023')) return 'tops'
-    if (lower.includes('dress')) return 'dresses'
-    if (lower.includes('pants') || lower.includes('jeans') || lower.includes('short') ||
-        lower.includes('skirt')) return 'pants'
-    if (lower.includes('shoe') || lower.includes('boot') || lower.includes('loafer') || lower.includes('sneaker')) return 'shoes'
-    if (lower.includes('sock') || lower.includes('tight') || lower.includes('stocking') ||
-        lower.includes('warmer') || lower.includes('leg warmer')) return 'socks'
-    if (lower.includes('glasses') || lower.includes('hat') || lower.includes('wing')) return 'accessories'
-    if (lower.includes('body') || lower.includes('skin')) return 'body'
-    return null
-  }
-
-  // Category color application effect
-  useEffect(() => {
-    if (!categoryColors || !sceneObjectsRef.current) {
-      return
-    }
-
-    meshMapRef.current.forEach((mesh, meshName) => {
-      const lowerName = meshName.toLowerCase()
-      if (lowerName.includes('plane072')) {
-        return
-      }
-
-      const category = categorizeMesh(meshName)
-      if (!category) return
-
-      let targetColor: string | null = null
-
-      switch (category) {
-        case 'hair': targetColor = categoryColors.hair; break
-        case 'tops': targetColor = categoryColors.tops.primary; break
-        case 'pants': targetColor = categoryColors.pants; break
-        case 'dresses': targetColor = categoryColors.dresses; break
-        case 'shoes': targetColor = categoryColors.shoes; break
-        case 'socks': targetColor = categoryColors.socks; break
-        case 'accessories': targetColor = categoryColors.accessories; break
-        case 'body': targetColor = categoryColors.body.skinTone; break
-      }
-
-      if (targetColor) {
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-        materials.forEach(mat => {
-          if (mat && mat instanceof THREE.MeshStandardMaterial) {
-            if (mat.userData.isEyeMaterial) {
-              return
-            }
-            if (!mat.map) {
-              mat.color.setStyle(targetColor!)
-              mat.needsUpdate = true
-            }
-          }
-        })
-      }
-    })
-  }, [categoryColors])
-
-  // Transform effect
-  useEffect(() => {
-    if (meshMapRef.current.size === 0) return
-
-    // Reset all meshes to their original transforms first
-    meshMapRef.current.forEach((mesh, meshName) => {
-      const original = originalTransformsRef.current.get(meshName)
-      if (original) {
-        mesh.position.copy(original.position)
-        mesh.rotation.copy(original.rotation)
-        mesh.scale.copy(original.scale)
-      }
-    })
-
-    // Apply custom transforms if they exist
-    if (transforms) {
-      Object.entries(transforms).forEach(([transformKey, transform]) => {
-        meshMapRef.current.forEach((mesh, meshName) => {
-          if (meshName === transformKey) {
-            const original = originalTransformsRef.current.get(meshName)
-            if (original) {
-              mesh.position.set(
-                original.position.x + transform.position[0],
-                original.position.y + transform.position[1],
-                original.position.z + transform.position[2]
-              )
-
-              mesh.rotation.set(
-                original.rotation.x + (transform.rotation[0] * Math.PI) / 180,
-                original.rotation.y + (transform.rotation[1] * Math.PI) / 180,
-                original.rotation.z + (transform.rotation[2] * Math.PI) / 180
-              )
-
-              mesh.scale.set(
-                original.scale.x * transform.scale[0],
-                original.scale.y * transform.scale[1],
-                original.scale.z * transform.scale[2]
-              )
-            }
-          }
-        })
-      })
-    }
-  }, [transforms])
-
   // Asset visibility effect
   useEffect(() => {
     if (meshMapRef.current.size === 0) return
-
-    meshMapRef.current.forEach((mesh, meshName) => {
-      const nameLower = meshName.toLowerCase()
-
-      const hasBaseOrBody = nameLower.includes('base') || nameLower.includes('body')
-      const isClothing = nameLower.includes('hair') || nameLower.includes('pants') ||
-                        nameLower.includes('shirt') || nameLower.includes('top') ||
-                        nameLower.includes('shoe') || nameLower.includes('sock')
-      const isBaseBody = hasBaseOrBody && !isClothing
-
-      const isClosedMouth = nameLower.includes('mouth') && nameLower.includes('closed')
-      const isDefaultVisible = isBaseBody || isClosedMouth
-
-      let isSelected = visibleAssets.includes(meshName)
-
-      if (!isSelected && (meshName === 'Eyes' || meshName === 'Eyes_3' || nameLower.includes('eyes'))) {
-        isSelected = visibleAssets.some(asset => asset === 'Eyes' || asset === 'Eyes_3' || asset.toLowerCase().includes('eyes'))
-      }
-
-      mesh.visible = isDefaultVisible || isSelected
+    meshMapRef.current.forEach((mesh) => {
+      mesh.visible = true
     })
   }, [visibleAssets])
+
 
   return (
     <div className="relative w-full h-full">
       <canvas ref={canvasRef} className="w-full h-full block" />
 
-      {/* Loading overlay */}
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-90">
           <div className="text-center">
@@ -432,7 +545,6 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
         </div>
       )}
 
-      {/* Error overlay */}
       {error && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-90">
           <div className="text-center text-red-400">
