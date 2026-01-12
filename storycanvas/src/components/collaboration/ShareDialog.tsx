@@ -10,16 +10,17 @@ import {
   useSearchUsers,
   useInviteUser,
 } from '@/lib/hooks/useCollaboration'
-import { Trash2, Users, Check, X, Edit3, Eye, Search, UserPlus, AtSign, Mail, Clock } from 'lucide-react'
+import { Trash2, Users, Check, X, Edit3, Eye, Search, UserPlus, AtSign, Mail, Clock, AlertTriangle } from 'lucide-react'
 
 interface ShareDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   storyId: string
   storyTitle: string
+  isOwner?: boolean
 }
 
-export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDialogProps) {
+export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner = true }: ShareDialogProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [inviteRole, setInviteRole] = useState<'editor' | 'viewer'>('editor')
   const [inviteError, setInviteError] = useState<string | null>(null)
@@ -81,19 +82,37 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px] max-h-[80vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Users className="w-5 h-5" />
-            Share "{storyTitle}"
+            {isOwner ? `Share "${storyTitle}"` : `Team - "${storyTitle}"`}
           </DialogTitle>
           <DialogDescription>
-            Invite others to collaborate on your project
+            {isOwner ? 'Invite others to collaborate on your project' : 'View the collaborators on this project'}
           </DialogDescription>
         </DialogHeader>
 
+        {/* Beta Warning Banner */}
+        <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+          <div className="flex gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-500 flex-shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <h4 className="text-sm font-semibold text-amber-800 dark:text-amber-400">
+                Collaborative Mode is in Beta
+              </h4>
+              <p className="text-sm text-amber-700 dark:text-amber-300/90">
+                Collaborative Mode is still being developed and may have bugs or unexpected behavior.
+                Use at your own risk. It is recommended to keep backups of important work.
+                Once confirmed as fully functional, Collaborative Mode will become a paid feature.
+              </p>
+            </div>
+          </div>
+        </div>
+
         <div className="space-y-6 py-4">
-          {/* Invite by Username/Email */}
+          {/* Invite by Username/Email - only show to owner */}
+          {isOwner && (
           <div className="space-y-3">
             <h3 className="text-sm font-medium">Invite Collaborator</h3>
             <div className="flex gap-2">
@@ -169,9 +188,10 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDi
               </p>
             )}
           </div>
+          )}
 
-          {/* Pending Invitations */}
-          {pendingCollaborators.length > 0 && (
+          {/* Pending Invitations - only show to owner */}
+          {isOwner && pendingCollaborators.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-medium">Pending Invitations</h3>
               <div className="space-y-2">
@@ -240,14 +260,16 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDi
                         )}
                       </div>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleRemoveCollaborator(collab.id)}
-                      className="h-8 w-8 p-0 text-red-500 hover:text-red-600"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    {isOwner && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleRemoveCollaborator(collab.id)}
+                        className="h-8 w-8 p-0 text-red-500 hover:text-red-600"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -259,7 +281,7 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDi
             <div className="text-center py-6 text-muted-foreground">
               <Users className="w-10 h-10 mx-auto mb-2 opacity-50" />
               <p className="text-sm">No collaborators yet</p>
-              <p className="text-xs mt-1">Search for users above to send an invitation</p>
+              {isOwner && <p className="text-xs mt-1">Search for users above to send an invitation</p>}
             </div>
           )}
         </div>

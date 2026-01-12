@@ -1594,19 +1594,17 @@ export default function StoryPage({ params }: PageProps) {
               </div>
               )}
             </div>
-            {/* Share button - only show for story owner */}
-            {storyAccess?.isOwner && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowShareDialog(true)}
-                title="Share Project"
-                className="gap-1 h-8 w-8 md:w-auto md:px-3 p-0 md:p-2"
-              >
-                <Users className="w-4 h-4" />
-                <span className="hidden md:inline text-xs">Share</span>
-              </Button>
-            )}
+            {/* Share button - visible to all users (owner and collaborators) */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowShareDialog(true)}
+              title={storyAccess?.isOwner ? "Share Project" : "View Collaborators"}
+              className="gap-1 h-8 w-8 md:w-auto md:px-3 p-0 md:p-2"
+            >
+              <Users className="w-4 h-4" />
+              <span className="hidden md:inline text-xs">{storyAccess?.isOwner ? 'Share' : 'Team'}</span>
+            </Button>
             <div
               className="relative"
               onMouseEnter={(e) => { const r = e.currentTarget.getBoundingClientRect(); setHeaderTooltip({ text: 'Support Bibliarch', x: r.left, y: r.bottom }) }}
@@ -1817,6 +1815,7 @@ export default function StoryPage({ params }: PageProps) {
         onOpenChange={setShowShareDialog}
         storyId={resolvedParams.id}
         storyTitle={story?.title || 'Untitled'}
+        isOwner={storyAccess?.isOwner ?? false}
       />
 
     </div>
