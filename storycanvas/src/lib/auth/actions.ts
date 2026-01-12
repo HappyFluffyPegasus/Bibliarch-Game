@@ -40,7 +40,13 @@ export async function signUp(formData: FormData) {
 
   if (error) {
     // If email exists but password is wrong, try to be helpful
-    if (error.message.includes('already registered')) {
+    // Check both error message and code for robustness
+    const isAlreadyRegistered =
+      error.message?.toLowerCase().includes('already registered') ||
+      error.message?.toLowerCase().includes('user already registered') ||
+      (error as any).code === 'user_already_exists' ||
+      (error as any).status === 422
+    if (isAlreadyRegistered) {
       return { error: 'Email already exists. Try signing in instead.' }
     }
     return { error: error.message }

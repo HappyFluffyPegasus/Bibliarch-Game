@@ -314,9 +314,17 @@ export default function HTMLCanvas({
 
   // Node style preferences state
   const [nodeStylePreferences, setNodeStylePreferences] = useState<NodeStylePreferences>(() => {
-    // Load from localStorage on init
-    const saved = localStorage.getItem('neighbornotes-node-styles')
-    return saved ? JSON.parse(saved) : {
+    // Load from localStorage on init (with SSR safety check)
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('neighbornotes-node-styles')
+      return saved ? JSON.parse(saved) : {
+        corners: 'rounded',
+        outlines: 'mixed',
+        textColor: 'dark',
+        textAlign: 'left'
+      }
+    }
+    return {
       corners: 'rounded',
       outlines: 'mixed',
       textColor: 'dark',
@@ -724,6 +732,15 @@ export default function HTMLCanvas({
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current)
       blurTimeoutRef.current = null
+    }
+  }, [])
+
+  // Cleanup blur timeout on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (blurTimeoutRef.current) {
+        clearTimeout(blurTimeoutRef.current)
+      }
     }
   }, [])
 

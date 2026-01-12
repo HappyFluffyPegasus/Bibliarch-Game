@@ -78,7 +78,7 @@ export default function JoinPage({ params }: PageProps) {
       // Check if user is already the owner
       if ((tokenData.story as any)?.user_id === currentUser.id) {
         setStatus('error')
-        setError('You already own this project.')
+        setError('You are the owner of this project. No need to accept an invite - you already have full access!')
         return
       }
 

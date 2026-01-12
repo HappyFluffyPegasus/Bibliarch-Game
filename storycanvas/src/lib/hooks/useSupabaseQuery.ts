@@ -209,7 +209,7 @@ export function useCanvas(storyId: string | null | undefined, canvasType: string
       return data || null
     },
     enabled: !!isValidUUID,
-    staleTime: 0, // Always consider canvas data stale to ensure fresh data on navigation
+    staleTime: 5000, // Consider fresh for 5 seconds to prevent duplicate requests on rapid navigation
     refetchOnMount: 'always', // Always refetch when component mounts (critical for collaboration)
   })
 }
@@ -340,9 +340,13 @@ export function useSaveCanvas() {
         throw error
       }
 
-      // Sometimes Supabase returns empty error object, treat as success
+      // Sometimes Supabase returns empty error object, treat as success but verify data
       if (error && Object.keys(error).length === 0) {
-        console.warn('⚠️ Received empty error object from Supabase, treating as success')
+        console.warn('⚠️ Received empty error object from Supabase, verifying data was saved')
+        // Verify by checking if data was returned
+        if (!data || data.length === 0) {
+          console.error('⚠️ Empty error with no data returned - save may have failed silently')
+        }
       }
 
       // Log successful save

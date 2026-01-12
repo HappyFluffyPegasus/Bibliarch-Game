@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState, use, useRef, useCallback } from 'react'
+import React, { useEffect, useLayoutEffect, useState, use, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { createClient } from '@/lib/supabase/client'
@@ -20,6 +20,15 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ExportDialog } from '@/components/export/ExportDialog'
 import { ShareDialog } from '@/components/collaboration/ShareDialog'
 import { useStoryAccess, useCollaborators, useRealtimeCanvas, usePresence, useStoryCoordination, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
+
+// Collaboration timing configuration (in milliseconds)
+const COLLAB_TIMING = {
+  BROADCAST_PROPAGATION_DELAY: 500,   // Time for broadcast to reach all collaborators
+  COLLABORATOR_SAVE_DELAY: 1500,      // Time to wait for collaborators to save their changes
+  CANVAS_TRANSITION_TIMEOUT: 3000,    // Max time to wait for canvas transition to complete
+  EMPTY_DATA_GRACE_PERIOD: 5000,      // Time after settling before accepting empty broadcasts
+  SAVE_DEBOUNCE_MS: 300,              // Minimum time between saves
+}
 
 // Use the HTML canvas instead to avoid Jest worker issues completely
 const Bibliarch = dynamic(
@@ -54,6 +63,7 @@ export default function StoryPage({ params }: PageProps) {
   const [lockedNodes, setLockedNodes] = useState<Record<string, LockedNode>>({})
   const [isLoadingCanvas, setIsLoadingCanvas] = useState(false)
   const isLoadingCanvasRef = useRef(false) // Ref version for callback access
+  const canvasSettledTimeRef = useRef<number>(0) // Timestamp when canvas finished loading
   const [canvasPath, setCanvasPath] = useState<{id: string, title: string}[]>([])
   const [showCanvasSettings, setShowCanvasSettings] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
@@ -116,25 +126,51 @@ export default function StoryPage({ params }: PageProps) {
     console.log(`📡 [RECEIVE] Received remote canvas change: ${data.nodes.length} nodes, ${data.connections.length} connections on canvas: ${currentCanvasIdRef.current}`)
     console.log(`📡 [RECEIVE] Current local data before applying: ${latestCanvasData.current.nodes.length} nodes`)
 
-    // CRITICAL SAFETY: ALWAYS reject empty broadcasts if we have existing data
+    // SAFETY: Reject empty broadcasts during the grace period after loading
     // When collaborator B enters a canvas, they briefly have empty state before loading from DB
-    // If they broadcast during this window, owner A (who is already settled with data) would receive empty data
-    // This protection applies REGARDLESS of whether we're in transition - protect existing data at all costs
-    if (data.nodes.length === 0 && latestCanvasData.current.nodes.length > 0) {
-      console.warn(`🛑 [RECEIVE] REJECTED empty canvas data - protecting existing ${latestCanvasData.current.nodes.length} nodes`)
+    // If they broadcast during this window, owner A would receive empty data
+    // However, after 5 seconds of being settled, accept empty broadcasts as intentional clears
+    const timeSinceSettled = Date.now() - canvasSettledTimeRef.current
+    const isInGracePeriod = timeSinceSettled < COLLAB_TIMING.EMPTY_DATA_GRACE_PERIOD
+
+    if (data.nodes.length === 0 && latestCanvasData.current.nodes.length > 0 && isInGracePeriod) {
+      console.warn(`🛑 [RECEIVE] REJECTED empty canvas data during grace period - protecting existing ${latestCanvasData.current.nodes.length} nodes`)
+      console.warn(`🛑 [RECEIVE] Time since settled: ${timeSinceSettled}ms (grace period: ${COLLAB_TIMING.EMPTY_DATA_GRACE_PERIOD}ms)`)
       console.warn(`🛑 [RECEIVE] Remote userId: ${data.userId}, current canvas: ${currentCanvasIdRef.current}`)
-      console.warn(`🛑 [RECEIVE] This likely means remote user is loading canvas - ignoring their empty state`)
-      return // Don't apply empty data when we have nodes
+      return // Don't apply empty data during grace period
     }
 
     isApplyingRemoteChange.current = true
 
-    // Update remote state - full replacement for now (node-level merging can be added later)
+    // Node-level merge: preserve locally-locked nodes, apply remote changes to others
+    // This prevents losing local edits when remote changes arrive
+    const locallyLockedNodeIds = new Set(Object.keys(lockedNodes))
+    let mergedNodes = data.nodes
+
+    if (locallyLockedNodeIds.size > 0 && latestCanvasData.current.nodes.length > 0) {
+      // Find local versions of locked nodes
+      const localNodeMap = new Map(latestCanvasData.current.nodes.map((n: any) => [n.id, n]))
+
+      // Merge: use local version for locked nodes, remote for everything else
+      mergedNodes = data.nodes.map((remoteNode: any) => {
+        if (locallyLockedNodeIds.has(remoteNode.id)) {
+          // Preserve local version of this locked node
+          const localNode = localNodeMap.get(remoteNode.id)
+          if (localNode) {
+            console.log(`🔒 [MERGE] Preserving local version of locked node: ${remoteNode.id}`)
+            return localNode
+          }
+        }
+        return remoteNode
+      })
+    }
+
+    // Update remote state with merged data
     setRemoteUpdate({
-      nodes: data.nodes,
+      nodes: mergedNodes,
       connections: data.connections
     })
-    latestCanvasData.current = { nodes: data.nodes, connections: data.connections }
+    latestCanvasData.current = { nodes: mergedNodes, connections: data.connections }
 
     // Reset flag after a short delay
     setTimeout(() => {
@@ -282,8 +318,10 @@ export default function StoryPage({ params }: PageProps) {
   }, [currentCanvasId, colorContext])
 
   // Track current canvas ID to prevent stale closures
+  // Use useLayoutEffect to update ref synchronously after render but before effects
+  // This ensures callbacks always have access to the latest canvas ID
   const currentCanvasIdRef = useRef(currentCanvasId)
-  useEffect(() => {
+  useLayoutEffect(() => {
     currentCanvasIdRef.current = currentCanvasId
   }, [currentCanvasId])
 
@@ -314,6 +352,7 @@ export default function StoryPage({ params }: PageProps) {
   // Track if we have unsaved changes
   const hasUnsavedChanges = useRef(false)
   const isSaving = useRef(false)
+  const lastSaveTime = useRef(0) // Track last save time for debouncing
   const isInternalNavigation = useRef(false) // Track if navigation is internal (home button, etc.)
   const isCanvasTransition = useRef(false) // Track canvas transitions to prevent stale broadcasts
   const canvasTransitionTimeout = useRef<NodeJS.Timeout | null>(null) // Cleanup ref for transition timeout
@@ -394,7 +433,7 @@ export default function StoryPage({ params }: PageProps) {
 
           const idMap: Record<string, string> = {}
           subCanvasTemplates['characters-folder'].nodes.forEach(node => {
-            idMap[node.id] = `${node.id}-${timestamp}`
+            idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
           })
 
           const templateData = {
@@ -406,7 +445,7 @@ export default function StoryPage({ params }: PageProps) {
             })),
             connections: subCanvasTemplates['characters-folder'].connections.map(conn => ({
               ...conn,
-              id: `${conn.id}-${timestamp}`,
+              id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
               from: idMap[conn.from] || conn.from,
               to: idMap[conn.to] || conn.to
             }))
@@ -425,7 +464,7 @@ export default function StoryPage({ params }: PageProps) {
 
           const idMap: Record<string, string> = {}
           subCanvasTemplates.character.nodes.forEach(node => {
-            idMap[node.id] = `${node.id}-${timestamp}`
+            idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
           })
 
           const templateData = {
@@ -437,7 +476,7 @@ export default function StoryPage({ params }: PageProps) {
             })),
             connections: subCanvasTemplates.character.connections.map(conn => ({
               ...conn,
-              id: `${conn.id}-${timestamp}`,
+              id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
               from: idMap[conn.from] || conn.from,
               to: idMap[conn.to] || conn.to
             }))
@@ -475,7 +514,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['characters-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -489,7 +528,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['characters-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -507,7 +546,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['plot-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -523,7 +562,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['plot-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -541,7 +580,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['world-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -557,7 +596,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['world-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -575,7 +614,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['folder-canvas-timeline-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -589,7 +628,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['folder-canvas-timeline-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -607,7 +646,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['country'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -621,7 +660,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['country'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -731,10 +770,10 @@ export default function StoryPage({ params }: PageProps) {
 
     setIsLoadingCanvas(false)
     isLoadingCanvasRef.current = false
+    canvasSettledTimeRef.current = Date.now() // Track when canvas became settled
 
     // Fallback: Reset canvas transition flag after a delay if not already reset
     // This ensures we don't get stuck in transition state if something goes wrong
-    // Use 3000ms to account for save-request delay (500ms) + collaborator saves (1500ms) + network latency
     if (isCanvasTransition.current) {
       if (canvasTransitionTimeout.current) {
         clearTimeout(canvasTransitionTimeout.current)
@@ -745,7 +784,7 @@ export default function StoryPage({ params }: PageProps) {
           isCanvasTransition.current = false
         }
         canvasTransitionTimeout.current = null
-      }, 3000)
+      }, COLLAB_TIMING.CANVAS_TRANSITION_TIMEOUT)
     }
   }, [canvasDataFromQuery, isCanvasLoading, currentCanvasId, storyAccess?.isOwner])
 
@@ -761,13 +800,21 @@ export default function StoryPage({ params }: PageProps) {
     }
   }, [canvasDataFromQuery?.palette, currentCanvasId, resolvedParams.id])
 
-  const handleSaveCanvas = useCallback(async (nodes: any[], connections: any[] = []) => {
+  const handleSaveCanvas = useCallback(async (nodes: any[], connections: any[] = [], bypassDebounce = false) => {
     const saveToCanvasId = currentCanvasIdRef.current
 
     if (!user?.id) {
       console.warn('No user found, skipping save')
       return
     }
+
+    // Debounce rapid saves to prevent conflicts (skip for navigation saves)
+    const now = Date.now()
+    if (!bypassDebounce && now - lastSaveTime.current < COLLAB_TIMING.SAVE_DEBOUNCE_MS) {
+      console.log('📡 Debouncing save - too soon after last save')
+      return
+    }
+    lastSaveTime.current = now
 
     // CRITICAL: Safety check to prevent overwriting main canvas with folder data
     // If we're about to save to main canvas but data looks suspiciously small, abort
@@ -1000,7 +1047,7 @@ export default function StoryPage({ params }: PageProps) {
 
       // PHASE 1: Wait for broadcast to propagate
       console.log('💾 [NAVIGATION] Phase 1: Waiting 500ms for broadcast propagation...')
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, COLLAB_TIMING.BROADCAST_PROPAGATION_DELAY))
 
       // PHASE 2: Save our own canvas
       if (latestCanvasDataId.current === currentCanvasId &&
@@ -1012,7 +1059,7 @@ export default function StoryPage({ params }: PageProps) {
       }
 
       // PHASE 3: Wait for collaborators' saves
-      const collaboratorSaveDelay = 1500
+      const collaboratorSaveDelay = COLLAB_TIMING.COLLABORATOR_SAVE_DELAY
       console.log(`💾 [NAVIGATION] Phase 3: Waiting ${collaboratorSaveDelay}ms for collaborators...`)
       await new Promise(resolve => setTimeout(resolve, collaboratorSaveDelay))
 
@@ -1096,7 +1143,7 @@ export default function StoryPage({ params }: PageProps) {
 
       // PHASE 1: Wait for broadcast propagation
       console.log('💾 [NAVIGATION BACK] Phase 1: Waiting 500ms for broadcast propagation...')
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, COLLAB_TIMING.BROADCAST_PROPAGATION_DELAY))
 
       // PHASE 2: Save our own canvas
       if (latestCanvasDataId.current === currentCanvasId &&
@@ -1108,7 +1155,7 @@ export default function StoryPage({ params }: PageProps) {
       }
 
       // PHASE 3: Wait for collaborators' saves
-      const collaboratorSaveDelay = 1500
+      const collaboratorSaveDelay = COLLAB_TIMING.COLLABORATOR_SAVE_DELAY
       console.log(`💾 [NAVIGATION BACK] Phase 3: Waiting ${collaboratorSaveDelay}ms for collaborators...`)
       await new Promise(resolve => setTimeout(resolve, collaboratorSaveDelay))
 

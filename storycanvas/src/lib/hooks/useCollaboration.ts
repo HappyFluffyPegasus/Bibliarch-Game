@@ -285,8 +285,7 @@ export function useSearchUsers(query: string) {
         data = result.data
         error = result.error
       } else {
-        // For username: allow partial match but require at least 3 chars
-        if (query.length < 3) return []
+        // For username: allow partial match (same 2 char min as email for consistency)
         const result = await supabase
           .from('profiles')
           .select('id, username, email')
@@ -843,10 +842,18 @@ export function usePresence(
     }
 
     let channel: RealtimeChannel | null = null
+    let isMounted = true // Track if component is still mounted
 
     const setupPresence = async () => {
       // Get current user ID first before setting up channel
       const { data: { user } } = await supabase.auth.getUser()
+
+      // Check if still mounted after async operation
+      if (!isMounted) {
+        console.log('👥 Presence setup aborted - component unmounted')
+        return
+      }
+
       if (user) {
         currentUserIdRef.current = user.id
       }
@@ -932,6 +939,8 @@ export function usePresence(
     setupPresence()
 
     return () => {
+      // Mark as unmounted to prevent setup from continuing
+      isMounted = false
       // Clear presence state on cleanup to prevent stale data
       setPresenceState({})
       if (channel) {
