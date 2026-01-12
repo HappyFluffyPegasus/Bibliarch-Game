@@ -17,6 +17,7 @@ import { ensureDatabaseSetup } from '@/lib/database-init'
 import FeedbackButton from '@/components/feedback/FeedbackButton'
 import { useUser, useProfile, useStoriesPaginated, useCreateStory, useDeleteStory } from '@/lib/hooks/useSupabaseQuery'
 import { InvitationsInbox } from '@/components/collaboration/InvitationsInbox'
+import { useMyInvitations } from '@/lib/hooks/useCollaboration'
 
 type Story = {
   id: string
@@ -44,11 +45,19 @@ export default function DashboardPage() {
   const createStoryMutation = useCreateStory()
   const deleteStoryMutation = useDeleteStory()
 
+  // Get pending invitations to filter them out from the stories list
+  const { data: pendingInvitations = [] } = useMyInvitations()
+
   const username = profile?.username || 'Storyteller'
   const isLoading = isUserLoading || isStoriesLoading
 
   // Flatten all pages of stories into a single array
-  const stories = storiesData?.pages.flatMap(page => page.stories) ?? []
+  const allStories = storiesData?.pages.flatMap(page => page.stories) ?? []
+
+  // Filter out stories that are pending invitations (not yet accepted)
+  const pendingStoryIds = new Set(pendingInvitations.map((inv: any) => inv.story?.id))
+  const stories = allStories.filter(story => !pendingStoryIds.has(story.id))
+
   const totalCount = storiesData?.pages[0]?.totalCount ?? 0
 
   const [showTemplateDialog, setShowTemplateDialog] = useState(false)

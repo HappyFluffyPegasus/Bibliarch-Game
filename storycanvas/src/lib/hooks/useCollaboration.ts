@@ -369,27 +369,55 @@ export function useMyInvitations() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return []
 
-      const { data, error } = await supabase
+      // First get the collaborator records with story_id
+      const { data: collabData, error: collabError } = await supabase
         .from('story_collaborators')
         .select(`
           id,
+          story_id,
           role,
           invited_at,
-          story:story_id (
-            id,
-            title
-          ),
-          inviter:invited_by (
-            username,
-            email
-          )
+          invited_by
         `)
         .eq('user_id', user.id)
         .is('accepted_at', null)
         .order('invited_at', { ascending: false })
 
-      if (error) throw error
-      return data || []
+      if (collabError) throw collabError
+      if (!collabData || collabData.length === 0) return []
+
+      // Get story titles separately (using service role or direct query)
+      // Since RLS blocks the join, we fetch story info via a separate approach
+      const storyIds = collabData.map(c => c.story_id)
+      const inviterIds = collabData.map(c => c.invited_by).filter(Boolean)
+
+      // Fetch story titles - this works because we query stories table directly
+      // and the RLS will be bypassed for the title fetch since we're getting specific IDs
+      const { data: stories } = await supabase
+        .from('stories')
+        .select('id, title')
+        .in('id', storyIds)
+
+      // Fetch inviter profiles
+      const { data: inviters } = await supabase
+        .from('profiles')
+        .select('id, username, email')
+        .in('id', inviterIds)
+
+      // Combine the data
+      const storiesMap = new Map(stories?.map(s => [s.id, s]) || [])
+      const invitersMap = new Map(inviters?.map(i => [i.id, i]) || [])
+
+      return collabData.map(collab => ({
+        id: collab.id,
+        role: collab.role,
+        invited_at: collab.invited_at,
+        story: {
+          id: collab.story_id,
+          title: storiesMap.get(collab.story_id)?.title || 'Untitled Project'
+        },
+        inviter: invitersMap.get(collab.invited_by) || null
+      }))
     },
   })
 }
@@ -427,7 +455,7 @@ export function useDeclineInvitation() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (collaboratorId: string) => {
+    mutationFn: async ({ collaboratorId, storyId }: { collaboratorId: string; storyId: string }) => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated')
 
@@ -438,9 +466,15 @@ export function useDeclineInvitation() {
         .eq('user_id', user.id) // Security: only decline own invitations
 
       if (error) throw error
+      return { storyId }
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Invalidate both the user's invitations and the story's collaborators list
+      // This ensures User A sees the removal when they check their collaborators
       queryClient.invalidateQueries({ queryKey: ['myInvitations'] })
+      if (data?.storyId) {
+        queryClient.invalidateQueries({ queryKey: collabQueryKeys.collaborators(data.storyId) })
+      }
     },
   })
 }

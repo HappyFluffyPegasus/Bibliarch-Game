@@ -27,9 +27,9 @@ export function InvitationsInbox() {
     }
   }
 
-  const handleDecline = async (invitationId: string) => {
+  const handleDecline = async (invitationId: string, storyId: string) => {
     try {
-      await declineInvitation.mutateAsync(invitationId)
+      await declineInvitation.mutateAsync({ collaboratorId: invitationId, storyId })
     } catch (error) {
       console.error('Failed to decline invitation:', error)
     }
@@ -81,7 +81,7 @@ export function InvitationsInbox() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => handleDecline(invitation.id)}
+                onClick={() => handleDecline(invitation.id, invitation.story?.id)}
                 disabled={declineInvitation.isPending}
                 className="h-8"
               >
