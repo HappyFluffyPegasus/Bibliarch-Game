@@ -274,6 +274,12 @@ export default function HTMLCanvas({
 
   // Wrapper for setEditingField that handles lock/unlock broadcasting
   const setEditingField = useCallback((newValue: {nodeId: string, field: string} | null) => {
+    // Viewers cannot edit any fields
+    if (isViewer && newValue) {
+      console.log('👁️ Viewer mode - editing blocked')
+      return
+    }
+
     // If trying to edit a node that's locked by another user, don't allow it
     if (newValue && lockedNodes[newValue.nodeId]) {
       console.log('🔒 Cannot edit - node is locked by', lockedNodes[newValue.nodeId].username)
@@ -291,7 +297,7 @@ export default function HTMLCanvas({
       }
       return newValue
     })
-  }, [onNodeLock, onNodeUnlock, lockedNodes])
+  }, [onNodeLock, onNodeUnlock, lockedNodes, isViewer])
   const [isPanning, setIsPanning] = useState(false)
   const [lastPanPoint, setLastPanPoint] = useState({ x: 0, y: 0 })
   const [isSpaceHeld, setIsSpaceHeld] = useState(false) // For Space+drag panning
@@ -1908,6 +1914,11 @@ export default function HTMLCanvas({
       const dragThreshold = 3
 
       if (distance > dragThreshold) {
+        // Viewers cannot drag nodes
+        if (isViewer) {
+          setIsDragReady(null)
+          return
+        }
         // Start dragging the node
         const draggedNode = nodes.find(n => n.id === isDragReady)
         if (draggedNode) {
@@ -1929,6 +1940,11 @@ export default function HTMLCanvas({
       const resizeThreshold = 3
 
       if (distance > resizeThreshold) {
+        // Viewers cannot resize nodes
+        if (isViewer) {
+          setIsResizeReady(null)
+          return
+        }
         // Start resizing the node
         setResizingNode(isResizeReady)
         setIsResizeReady(null)
@@ -4178,17 +4194,17 @@ export default function HTMLCanvas({
         </div>
       )}
 
-      {/* Viewer Mode Banner */}
-      {isViewer && (
-        <div className="w-full h-10 bg-amber-500 text-white flex items-center justify-center gap-2 z-[100] shadow flex-shrink-0">
-          <Eye className="w-4 h-4" />
-          <span className="text-sm font-medium">View Only Mode - You cannot edit this canvas</span>
-        </div>
-      )}
-
       {/* Connection Status Indicator - bottom right, always visible when connected */}
       {connectionStatus !== 'disconnected' && (
         <div className="absolute bottom-4 right-4 z-[100] flex items-center gap-2 bg-background/90 backdrop-blur-sm rounded-full px-3 py-1.5 shadow border">
+          {/* Viewer Mode Indicator - shown inline with connection status */}
+          {isViewer && (
+            <>
+              <Eye className="w-4 h-4 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">View Only</span>
+              <span className="text-muted-foreground">|</span>
+            </>
+          )}
           {connectionStatus === 'connected' && (
             <>
               <Wifi className="w-4 h-4 text-green-500" />
@@ -4357,10 +4373,11 @@ export default function HTMLCanvas({
               </Button>
             </div>
 
-        {/* Divider */}
-        <div className="w-8 h-px bg-border my-2" />
+        {/* Divider - only show if not viewer */}
+        {!isViewer && <div className="w-8 h-px bg-border my-2" />}
 
-        {/* Creation Tools */}
+        {/* Creation Tools - hidden for viewers */}
+        {!isViewer && (
         <div className="flex flex-col gap-1">
           <div
             className="relative"
@@ -4517,11 +4534,13 @@ export default function HTMLCanvas({
             </Button>
           </div>
         </div>
+        )}
 
-        {/* Divider */}
-        <div className="w-8 h-px bg-border my-2" />
+        {/* Divider - only show if not viewer */}
+        {!isViewer && <div className="w-8 h-px bg-border my-2" />}
 
-        {/* Template Button */}
+        {/* Template Button - hidden for viewers */}
+        {!isViewer && (
         <div className="flex flex-col gap-1">
           <div
             className="relative"
@@ -4538,11 +4557,13 @@ export default function HTMLCanvas({
             </Button>
           </div>
         </div>
+        )}
 
-        {/* Divider */}
-        <div className="w-8 h-px bg-border my-2" />
+        {/* Divider - only show if not viewer */}
+        {!isViewer && <div className="w-8 h-px bg-border my-2" />}
 
-        {/* Undo/Redo Controls */}
+        {/* Undo/Redo Controls - hidden for viewers */}
+        {!isViewer && (
         <div className="flex flex-col gap-1">
           <div
             className="relative"
@@ -4583,6 +4604,7 @@ export default function HTMLCanvas({
             </Button>
           </div>
         </div>
+        )}
 
         {/* Divider */}
         <div className="w-8 h-px bg-border my-2" />

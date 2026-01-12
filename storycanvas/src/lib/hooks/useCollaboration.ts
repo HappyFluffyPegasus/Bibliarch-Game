@@ -258,6 +258,26 @@ export function useRemoveCollaborator() {
   })
 }
 
+// Update a collaborator's role
+export function useUpdateCollaboratorRole() {
+  const supabase = createClient()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ collaboratorId, storyId, role }: { collaboratorId: string; storyId: string; role: 'editor' | 'viewer' }) => {
+      const { error } = await supabase
+        .from('story_collaborators')
+        .update({ role })
+        .eq('id', collaboratorId)
+
+      if (error) throw error
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: collabQueryKeys.collaborators(variables.storyId) })
+    },
+  })
+}
+
 // Search for users by username or email
 export function useSearchUsers(query: string) {
   const supabase = createClient()

@@ -262,8 +262,8 @@ export default function StoryPage({ params }: PageProps) {
   )
   console.log('🔧 [PAGE] useStoryCoordination returned broadcastSaveRequest:', !!broadcastSaveRequest)
 
-  // Viewer mode disabled for now - causes sync issues
-  const isViewer = false
+  // Viewer mode - collaborators with 'viewer' role can see but not edit
+  const isViewer = storyAccess?.role === 'viewer'
 
   // Auto-unlock nodes when users leave (presence change)
   useEffect(() => {

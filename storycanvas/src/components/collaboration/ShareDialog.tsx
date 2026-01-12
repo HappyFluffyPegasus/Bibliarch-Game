@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import {
   useCollaborators,
   useRemoveCollaborator,
+  useUpdateCollaboratorRole,
   useSearchUsers,
   useInviteUser,
 } from '@/lib/hooks/useCollaboration'
@@ -29,6 +30,7 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
   const { data: collaborators = [] } = useCollaborators(storyId)
   const { data: searchResults = [], isLoading: searchLoading } = useSearchUsers(searchQuery)
   const removeCollaborator = useRemoveCollaborator()
+  const updateCollaboratorRole = useUpdateCollaboratorRole()
   const inviteUser = useInviteUser()
 
   // Clear messages after delay
@@ -125,10 +127,15 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
                   className="pl-9"
                 />
               </div>
-              {/* Role selector - viewer mode disabled for now */}
-              <div className="px-3 py-2 border rounded-md bg-muted text-sm text-muted-foreground">
-                Editor
-              </div>
+              {/* Role selector */}
+              <select
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value as 'editor' | 'viewer')}
+                className="px-3 py-2 border rounded-md bg-background text-sm cursor-pointer"
+              >
+                <option value="editor">Editor</option>
+                <option value="viewer">Viewer</option>
+              </select>
             </div>
 
             {/* Search Results */}
@@ -208,8 +215,8 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
                         {collab.profile?.username || collab.profile?.email || 'Unknown User'}
                       </div>
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Edit3 className="w-3 h-3" />
-                        <span>Invited as Editor</span>
+                        {collab.role === 'editor' ? <Edit3 className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                        <span>Invited as {collab.role === 'editor' ? 'Editor' : 'Viewer'}</span>
                       </div>
                     </div>
                     <Button
@@ -246,20 +253,38 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
                       <div className="text-sm font-medium truncate">
                         {collab.profile?.username || collab.profile?.email || 'Unknown User'}
                       </div>
-                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        {collab.role === 'editor' ? (
-                          <>
-                            <Edit3 className="w-3 h-3" />
-                            <span>Can Edit</span>
-                          </>
-                        ) : (
-                          <>
-                            <Eye className="w-3 h-3" />
-                            <span>View Only</span>
-                          </>
-                        )}
-                      </div>
+                      {/* Role display for non-owners */}
+                      {!isOwner && (
+                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                          {collab.role === 'editor' ? (
+                            <>
+                              <Edit3 className="w-3 h-3" />
+                              <span>Can Edit</span>
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-3 h-3" />
+                              <span>View Only</span>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
+                    {/* Role selector for owners */}
+                    {isOwner && (
+                      <select
+                        value={collab.role}
+                        onChange={(e) => updateCollaboratorRole.mutate({
+                          collaboratorId: collab.id,
+                          storyId,
+                          role: e.target.value as 'editor' | 'viewer'
+                        })}
+                        className="px-2 py-1 text-xs border rounded-md bg-background cursor-pointer"
+                      >
+                        <option value="editor">Editor</option>
+                        <option value="viewer">Viewer</option>
+                      </select>
+                    )}
                     {isOwner && (
                       <Button
                         size="sm"
