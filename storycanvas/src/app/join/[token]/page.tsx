@@ -83,12 +83,18 @@ export default function JoinPage({ params }: PageProps) {
       }
 
       // Check if already a collaborator
-      const { data: existingCollab } = await supabase
+      const { data: existingCollab, error: collabError } = await supabase
         .from('story_collaborators')
         .select('id, accepted_at')
         .eq('story_id', (tokenData.story as any)?.id)
         .eq('user_id', currentUser.id)
         .single()
+
+      // PGRST116 means no rows found, which is expected for new collaborators
+      if (collabError && collabError.code !== 'PGRST116') {
+        console.error('Error checking collaborator status:', collabError)
+        // Continue anyway - we'll let the server-side validation handle it
+      }
 
       if (existingCollab?.accepted_at) {
         // Already a collaborator, redirect to the story

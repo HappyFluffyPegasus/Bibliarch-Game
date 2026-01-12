@@ -734,7 +734,7 @@ export default function StoryPage({ params }: PageProps) {
 
     // Fallback: Reset canvas transition flag after a delay if not already reset
     // This ensures we don't get stuck in transition state if something goes wrong
-    // Use 1000ms to account for save-request delay (500ms) + network latency
+    // Use 3000ms to account for save-request delay (500ms) + collaborator saves (1500ms) + network latency
     if (isCanvasTransition.current) {
       if (canvasTransitionTimeout.current) {
         clearTimeout(canvasTransitionTimeout.current)
@@ -745,7 +745,7 @@ export default function StoryPage({ params }: PageProps) {
           isCanvasTransition.current = false
         }
         canvasTransitionTimeout.current = null
-      }, 1000)
+      }, 3000)
     }
   }, [canvasDataFromQuery, isCanvasLoading, currentCanvasId, storyAccess?.isOwner])
 
@@ -900,10 +900,15 @@ export default function StoryPage({ params }: PageProps) {
         e.preventDefault()
 
         // Save the data
-        saveBeforeUnload().then(() => {
-          // After save completes, allow navigation
-          console.log('✅ Saved before browser navigation')
-        })
+        saveBeforeUnload()
+          .then(() => {
+            // After save completes, allow navigation
+            console.log('✅ Saved before browser navigation')
+          })
+          .catch((err) => {
+            // Log error but don't block navigation
+            console.error('❌ Failed to save before navigation:', err)
+          })
 
         // Push the state back so user needs to click back again
         try {
@@ -1043,11 +1048,16 @@ export default function StoryPage({ params }: PageProps) {
     queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
 
     console.log('🔄 Refetching fresh data for destination canvas:', canvasId)
-    await queryClient.refetchQueries({
-      queryKey: queryKeys.canvas(resolvedParams.id, canvasId),
-      type: 'active'
-    })
-    console.log('✅ Fresh data loaded for:', canvasId)
+    try {
+      await queryClient.refetchQueries({
+        queryKey: queryKeys.canvas(resolvedParams.id, canvasId),
+        type: 'active'
+      })
+      console.log('✅ Fresh data loaded for:', canvasId)
+    } catch (error) {
+      console.error('❌ Failed to refetch canvas data:', error)
+      // Continue with navigation even if refetch fails - the useEffect will retry
+    }
 
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true
@@ -1138,11 +1148,16 @@ export default function StoryPage({ params }: PageProps) {
     queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
 
     console.log('🔄 Refetching fresh data for destination canvas:', destinationCanvasId)
-    await queryClient.refetchQueries({
-      queryKey: queryKeys.canvas(resolvedParams.id, destinationCanvasId),
-      type: 'active'
-    })
-    console.log('✅ Fresh data loaded for:', destinationCanvasId)
+    try {
+      await queryClient.refetchQueries({
+        queryKey: queryKeys.canvas(resolvedParams.id, destinationCanvasId),
+        type: 'active'
+      })
+      console.log('✅ Fresh data loaded for:', destinationCanvasId)
+    } catch (error) {
+      console.error('❌ Failed to refetch canvas data:', error)
+      // Continue with navigation even if refetch fails - the useEffect will retry
+    }
 
     // Mark that we're in a canvas transition to prevent stale broadcasts
     isCanvasTransition.current = true

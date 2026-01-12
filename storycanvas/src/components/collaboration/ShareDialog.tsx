@@ -49,8 +49,9 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle }: ShareDi
     if (!confirm('Remove this collaborator? They will lose access to this project.')) return
     try {
       await removeCollaborator.mutateAsync({ collaboratorId, storyId })
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to remove collaborator:', error)
+      setInviteError(error.message || 'Failed to remove collaborator')
     }
   }
 

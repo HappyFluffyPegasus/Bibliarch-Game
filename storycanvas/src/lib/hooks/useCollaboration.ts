@@ -30,7 +30,6 @@ export interface PresenceState {
   odataUserId: string
   username: string
   color: string
-  cursor?: { x: number; y: number }
   lastSeen: number
 }
 
@@ -252,7 +251,9 @@ export function useRemoveCollaborator() {
       if (error) throw error
     },
     onSuccess: (_, variables) => {
+      // Invalidate collaborators list and access check to ensure UI is in sync
       queryClient.invalidateQueries({ queryKey: collabQueryKeys.collaborators(variables.storyId) })
+      queryClient.invalidateQueries({ queryKey: collabQueryKeys.isCollaborator(variables.storyId) })
     },
   })
 }
@@ -437,14 +438,20 @@ export function useAcceptInvitation() {
         .update({ accepted_at: new Date().toISOString() })
         .eq('id', collaboratorId)
         .eq('user_id', user.id) // Security: only accept own invitations
-        .select()
+        .select('*, story_id')
         .single()
 
       if (error) throw error
       return data
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['myInvitations'] })
+      // Invalidate stories list so the accepted story appears on dashboard
+      queryClient.invalidateQueries({ queryKey: ['stories'] })
+      if (data?.story_id) {
+        queryClient.invalidateQueries({ queryKey: collabQueryKeys.collaborators(data.story_id) })
+        queryClient.invalidateQueries({ queryKey: collabQueryKeys.isCollaborator(data.story_id) })
+      }
     },
   })
 }
@@ -724,6 +731,13 @@ export function useStoryCoordination(
       return
     }
 
+    // CRITICAL FIX: Wait for userId to be loaded before subscribing
+    // This prevents processing messages before echo filtering is ready
+    if (!userIdLoaded) {
+      console.log('🔧 [STORY-COORD] Waiting for user ID to load before subscribing')
+      return
+    }
+
     // CRITICAL FIX: Cleanup existing channel before creating new one
     if (channelRef.current) {
       console.log('📡 Cleaning up existing story coordination channel before creating new one')
@@ -769,7 +783,7 @@ export function useStoryCoordination(
       channel.unsubscribe()
       channelRef.current = null
     }
-  }, [storyId])
+  }, [storyId, userIdLoaded])
 
   // Broadcast save request to ALL users in the story (regardless of canvas)
   const broadcastSaveRequest = useCallback(() => {
@@ -918,9 +932,12 @@ export function usePresence(
     setupPresence()
 
     return () => {
+      // Clear presence state on cleanup to prevent stale data
+      setPresenceState({})
       if (channel) {
         channel.unsubscribe()
       }
+      channelRef.current = null
     }
   }, [storyId, canvasType, username])
 

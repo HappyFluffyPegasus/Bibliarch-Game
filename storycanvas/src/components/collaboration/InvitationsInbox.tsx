@@ -11,6 +11,21 @@ import {
 } from '@/lib/hooks/useCollaboration'
 import { Mail, Check, X, Edit3, Eye, Users } from 'lucide-react'
 
+// Type for invitation data returned by useMyInvitations
+interface Invitation {
+  id: string
+  role: 'editor' | 'viewer'
+  invited_at: string
+  story: {
+    id: string
+    title: string
+  }
+  inviter: {
+    username: string | null
+    email: string | null
+  } | null
+}
+
 export function InvitationsInbox() {
   const router = useRouter()
   const { data: invitations = [], isLoading } = useMyInvitations()
@@ -54,7 +69,7 @@ export function InvitationsInbox() {
       </div>
 
       <div className="space-y-2">
-        {invitations.map((invitation: any) => (
+        {(invitations as Invitation[]).map((invitation) => (
           <div
             key={invitation.id}
             className="flex items-center gap-3 p-3 bg-background rounded-lg border"
@@ -71,8 +86,8 @@ export function InvitationsInbox() {
                 <span>from {invitation.inviter?.username || invitation.inviter?.email || 'Unknown'}</span>
                 <span className="text-xs">•</span>
                 <span className="flex items-center gap-1">
-                  <Edit3 className="w-3 h-3" />
-                  Editor
+                  {invitation.role === 'editor' ? <Edit3 className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  {invitation.role === 'editor' ? 'Editor' : 'Viewer'}
                 </span>
               </div>
             </div>
