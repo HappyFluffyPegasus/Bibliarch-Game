@@ -20,6 +20,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ExportDialog } from '@/components/export/ExportDialog'
 import { ShareDialog } from '@/components/collaboration/ShareDialog'
 import { useStoryAccess, useCollaborators, useRealtimeCanvas, usePresence, useStoryCoordination, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
+import { toast } from 'sonner'
 
 // Collaboration timing configuration (in milliseconds)
 const COLLAB_TIMING = {
@@ -254,16 +255,43 @@ export default function StoryPage({ params }: PageProps) {
     handleNodeUnlock
   )
 
+  // Handle role change from owner (refresh access state)
+  const handleRoleChange = useCallback((targetUserId: string, newRole: string) => {
+    console.log('👤 [PAGE] Role changed for current user to:', newRole)
+    // Invalidate storyAccess to refetch the role
+    queryClient.invalidateQueries({ queryKey: ['isCollaborator', resolvedParams.id] })
+    // Show a toast notification
+    toast(`Your role has been changed to ${newRole === 'viewer' ? 'Viewer' : 'Editor'}`, {
+      icon: '👤',
+      duration: 4000,
+    })
+  }, [queryClient, resolvedParams.id])
+
+  // Handle being removed from the project - defined later after isInternalNavigation ref
+  const handleCollaboratorRemovedRef = useRef<() => void>(() => {})
+
+  // Handle collaborators list change (someone joined/left/role changed)
+  const handleCollaboratorsChanged = useCallback(() => {
+    console.log('👥 [PAGE] Collaborators changed, refreshing list')
+    queryClient.invalidateQueries({ queryKey: ['collaborators', resolvedParams.id] })
+  }, [queryClient, resolvedParams.id])
+
   // Subscribe to story-level coordination (for save requests that reach ALL users)
   console.log('🔧 [PAGE] About to call useStoryCoordination with storyId:', resolvedParams.id)
-  const { broadcastSaveRequest } = useStoryCoordination(
+  const { broadcastSaveRequest, broadcastRoleChange, broadcastCollaboratorRemoved, broadcastCollaboratorsChanged } = useStoryCoordination(
     resolvedParams.id,
-    handleSaveRequest
+    handleSaveRequest,
+    handleRoleChange,
+    () => handleCollaboratorRemovedRef.current(), // Use ref to access isInternalNavigation
+    handleCollaboratorsChanged
   )
   console.log('🔧 [PAGE] useStoryCoordination returned broadcastSaveRequest:', !!broadcastSaveRequest)
 
   // Viewer mode - collaborators with 'viewer' role can see but not edit
   const isViewer = storyAccess?.role === 'viewer'
+
+  // Track previous presence for join/leave notifications
+  const previousPresenceRef = useRef<Set<string>>(new Set())
 
   // Auto-unlock nodes when users leave (presence change)
   useEffect(() => {
@@ -284,6 +312,43 @@ export default function StoryPage({ params }: PageProps) {
       return newLocked
     })
   }, [presenceState])
+
+  // Show toast notifications when collaborators join or leave
+  useEffect(() => {
+    const currentUserIds = new Set(Object.keys(presenceState))
+    const previousUserIds = previousPresenceRef.current
+
+    // Find users who joined (in current but not in previous)
+    for (const odataUserId of currentUserIds) {
+      if (!previousUserIds.has(odataUserId)) {
+        const userPresence = presenceState[odataUserId]
+        // Get username from the first presence entry for this user
+        const presenceData = userPresence?.[0] as { username?: string } | undefined
+        const userName = presenceData?.username || 'Someone'
+        // Don't show toast for our own presence
+        if (userName !== username) {
+          toast(`${userName} joined the canvas`, {
+            icon: '👋',
+            duration: 3000,
+          })
+        }
+      }
+    }
+
+    // Find users who left (in previous but not in current)
+    for (const odataUserId of previousUserIds) {
+      if (!currentUserIds.has(odataUserId)) {
+        // We don't have their name anymore since they left, but we can check if it wasn't us
+        toast('A collaborator left the canvas', {
+          icon: '👋',
+          duration: 3000,
+        })
+      }
+    }
+
+    // Update the ref with current state
+    previousPresenceRef.current = currentUserIds
+  }, [presenceState, username])
 
   // Set project context for color palette persistence
   useEffect(() => {
@@ -356,6 +421,21 @@ export default function StoryPage({ params }: PageProps) {
   const isInternalNavigation = useRef(false) // Track if navigation is internal (home button, etc.)
   const isCanvasTransition = useRef(false) // Track canvas transitions to prevent stale broadcasts
   const canvasTransitionTimeout = useRef<NodeJS.Timeout | null>(null) // Cleanup ref for transition timeout
+
+  // Set up the collaborator removed handler now that isInternalNavigation is available
+  useEffect(() => {
+    handleCollaboratorRemovedRef.current = () => {
+      console.log('🚫 [PAGE] Current user has been removed from project!')
+      // Mark as internal navigation to skip beforeunload prompt
+      isInternalNavigation.current = true
+      // Show a toast notification
+      toast.error('You have been removed from this project', {
+        duration: 3000,
+      })
+      // Redirect immediately
+      window.location.replace('/dashboard')
+    }
+  }, [])
 
   // Cleanup canvas transition timeout on unmount
   useEffect(() => {
@@ -909,6 +989,10 @@ export default function StoryPage({ params }: PageProps) {
 
   // Handle browser back/forward/refresh/close
   useEffect(() => {
+    // Push initial state so we can detect back navigation
+    // This creates a "buffer" entry in history that we can use to catch back button
+    window.history.pushState({ bibliarch: true, initial: true }, '', window.location.href)
+
     // Save when page is about to unload (refresh, close, navigate away)
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       // Don't interfere with internal navigation (home button, etc.)
@@ -944,24 +1028,20 @@ export default function StoryPage({ params }: PageProps) {
 
       // If we have unsaved changes, save them first
       if (hasUnsavedChanges.current) {
-        e.preventDefault()
-
         // Save the data
         saveBeforeUnload()
           .then(() => {
-            // After save completes, allow navigation
             console.log('✅ Saved before browser navigation')
           })
           .catch((err) => {
-            // Log error but don't block navigation
             console.error('❌ Failed to save before navigation:', err)
           })
 
         // Push the state back so user needs to click back again
+        // This effectively "cancels" the navigation by pushing us forward
         try {
           window.history.pushState({ bibliarch: true }, '', window.location.href)
         } catch (err) {
-          // Some mobile browsers restrict pushState
           console.warn('pushState failed:', err)
         }
       }
@@ -1816,6 +1896,11 @@ export default function StoryPage({ params }: PageProps) {
         storyId={resolvedParams.id}
         storyTitle={story?.title || 'Untitled'}
         isOwner={storyAccess?.isOwner ?? false}
+        ownerName={(story?.owner as any)?.username || (story?.owner as any)?.email}
+        onlineUserIds={new Set(Object.keys(presenceState))}
+        onRoleChange={broadcastRoleChange}
+        onCollaboratorRemoved={broadcastCollaboratorRemoved}
+        onCollaboratorsChanged={broadcastCollaboratorsChanged}
       />
 
     </div>

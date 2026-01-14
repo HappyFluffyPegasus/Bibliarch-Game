@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,10 +9,14 @@ import {
   useCollaborators,
   useRemoveCollaborator,
   useUpdateCollaboratorRole,
+  useLeaveCollaboration,
   useSearchUsers,
   useInviteUser,
+  useTransferOwnership,
 } from '@/lib/hooks/useCollaboration'
-import { Trash2, Users, Check, X, Edit3, Eye, Search, UserPlus, AtSign, Mail, Clock, AlertTriangle } from 'lucide-react'
+import { Trash2, Users, Check, X, Edit3, Eye, Search, UserPlus, AtSign, Mail, Clock, AlertTriangle, Crown, LogOut, ArrowRightLeft } from 'lucide-react'
+
+const MAX_COLLABORATORS = 10
 
 interface ShareDialogProps {
   open: boolean
@@ -19,19 +24,31 @@ interface ShareDialogProps {
   storyId: string
   storyTitle: string
   isOwner?: boolean
+  ownerName?: string
+  onlineUserIds?: Set<string>
+  onRoleChange?: (targetUserId: string, newRole: string) => void
+  onCollaboratorRemoved?: (targetUserId: string) => void
+  onCollaboratorsChanged?: () => void
 }
 
-export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner = true }: ShareDialogProps) {
+export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner = true, ownerName, onlineUserIds = new Set(), onRoleChange, onCollaboratorRemoved, onCollaboratorsChanged }: ShareDialogProps) {
+  const router = useRouter()
   const [searchQuery, setSearchQuery] = useState('')
   const [inviteRole, setInviteRole] = useState<'editor' | 'viewer'>('editor')
   const [inviteError, setInviteError] = useState<string | null>(null)
   const [inviteSuccess, setInviteSuccess] = useState<string | null>(null)
+  const [showTransferConfirm, setShowTransferConfirm] = useState<string | null>(null) // user_id to transfer to
 
   const { data: collaborators = [] } = useCollaborators(storyId)
   const { data: searchResults = [], isLoading: searchLoading } = useSearchUsers(searchQuery)
   const removeCollaborator = useRemoveCollaborator()
   const updateCollaboratorRole = useUpdateCollaboratorRole()
+  const leaveCollaboration = useLeaveCollaboration()
   const inviteUser = useInviteUser()
+  const transferOwnership = useTransferOwnership()
+
+  const acceptedCount = collaborators.filter(c => c.accepted_at).length
+  const canInviteMore = acceptedCount < MAX_COLLABORATORS
 
   // Clear messages after delay
   useEffect(() => {
@@ -48,10 +65,24 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
     }
   }, [inviteError])
 
-  const handleRemoveCollaborator = async (collaboratorId: string) => {
+  const handleRemoveCollaborator = async (collaboratorId: string, userId: string) => {
     if (!confirm('Remove this collaborator? They will lose access to this project.')) return
     try {
+      console.log('🚫 [ShareDialog] Removing collaborator:', collaboratorId, 'userId:', userId)
       await removeCollaborator.mutateAsync({ collaboratorId, storyId })
+      console.log('🚫 [ShareDialog] Collaborator removed from database')
+      // Broadcast removal to kick them out immediately
+      console.log('🚫 [ShareDialog] onCollaboratorRemoved exists:', !!onCollaboratorRemoved)
+      if (onCollaboratorRemoved) {
+        console.log('🚫 [ShareDialog] Broadcasting removal for userId:', userId)
+        onCollaboratorRemoved(userId)
+      }
+      // Broadcast that collaborators changed
+      console.log('🚫 [ShareDialog] onCollaboratorsChanged exists:', !!onCollaboratorsChanged)
+      if (onCollaboratorsChanged) {
+        console.log('🚫 [ShareDialog] Broadcasting collaborators changed')
+        onCollaboratorsChanged()
+      }
     } catch (error: any) {
       console.error('Failed to remove collaborator:', error)
       setInviteError(error.message || 'Failed to remove collaborator')
@@ -59,6 +90,10 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
   }
 
   const handleInviteUser = async (userId: string, displayName: string) => {
+    if (!canInviteMore) {
+      setInviteError(`Maximum ${MAX_COLLABORATORS} collaborators allowed`)
+      return
+    }
     try {
       setInviteError(null)
       await inviteUser.mutateAsync({
@@ -70,6 +105,48 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
       setSearchQuery('')
     } catch (error: any) {
       setInviteError(error.message || 'Failed to invite user')
+    }
+  }
+
+  const handleRoleChange = async (collaboratorId: string, userId: string, newRole: 'editor' | 'viewer', currentRole: string) => {
+    // Confirm when downgrading from editor to viewer
+    if (currentRole === 'editor' && newRole === 'viewer') {
+      if (!confirm('Change this collaborator to Viewer? They will no longer be able to edit.')) return
+    }
+    try {
+      await updateCollaboratorRole.mutateAsync({ collaboratorId, storyId, role: newRole })
+      // Broadcast role change to notify the affected user
+      if (onRoleChange) {
+        onRoleChange(userId, newRole)
+      }
+    } catch (error: any) {
+      setInviteError(error.message || 'Failed to update role')
+    }
+  }
+
+  const handleLeaveProject = async () => {
+    if (!confirm('Leave this project? You will lose access and need a new invitation to rejoin.')) return
+    try {
+      await leaveCollaboration.mutateAsync({ storyId })
+      // Close dialog first
+      onOpenChange(false)
+      // Use replace to prevent back button returning to a page user no longer has access to
+      router.replace('/dashboard')
+    } catch (error: any) {
+      setInviteError(error.message || 'Failed to leave project')
+    }
+  }
+
+  const handleTransferOwnership = async (newOwnerId: string) => {
+    try {
+      await transferOwnership.mutateAsync({ storyId, newOwnerId })
+      setShowTransferConfirm(null)
+      setInviteSuccess('Ownership transferred successfully. You are now a collaborator.')
+      // Refresh the page to update ownership state
+      window.location.reload()
+    } catch (error: any) {
+      setInviteError(error.message || 'Failed to transfer ownership')
+      setShowTransferConfirm(null)
     }
   }
 
@@ -90,8 +167,11 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
             <Users className="w-5 h-5" />
             {isOwner ? `Share "${storyTitle}"` : `Team - "${storyTitle}"`}
           </DialogTitle>
-          <DialogDescription>
-            {isOwner ? 'Invite others to collaborate on your project' : 'View the collaborators on this project'}
+          <DialogDescription className="flex items-center justify-between">
+            <span>{isOwner ? 'Invite others to collaborate on your project' : 'View the collaborators on this project'}</span>
+            <span className="text-xs text-muted-foreground">
+              {acceptedCount}/{MAX_COLLABORATORS} collaborators
+            </span>
           </DialogDescription>
         </DialogHeader>
 
@@ -222,7 +302,7 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => handleRemoveCollaborator(collab.id)}
+                      onClick={() => handleRemoveCollaborator(collab.id, collab.user_id)}
                       className="h-8 w-8 p-0 text-red-500 hover:text-red-600"
                       title="Cancel invitation"
                     >
@@ -234,69 +314,101 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
             </div>
           )}
 
+          {/* Owner Indicator - shown to everyone */}
+          <div className="flex items-center gap-3 p-3 bg-sky-50 dark:bg-sky-950/30 rounded-lg border border-sky-200 dark:border-sky-800">
+            <div className="w-8 h-8 rounded-full bg-sky-100 dark:bg-sky-900 flex items-center justify-center">
+              <Crown className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium">
+                {isOwner ? 'You (Owner)' : ownerName || 'Owner'}
+              </div>
+              <div className="text-xs text-muted-foreground">Full access</div>
+            </div>
+          </div>
+
           {/* Collaborators */}
           {acceptedCollaborators.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-medium">Collaborators</h3>
               <div className="space-y-2">
-                {acceptedCollaborators.map((collab) => (
-                  <div
-                    key={collab.id}
-                    className="flex items-center gap-3 p-3 bg-muted rounded-lg"
-                  >
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                      <span className="text-sm font-medium">
-                        {(collab.profile?.username || collab.profile?.email || 'U')[0].toUpperCase()}
-                      </span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">
-                        {collab.profile?.username || collab.profile?.email || 'Unknown User'}
+                {acceptedCollaborators.map((collab) => {
+                  const isOnline = onlineUserIds.has(collab.user_id)
+                  return (
+                    <div
+                      key={collab.id}
+                      className="flex items-center gap-3 p-3 bg-muted rounded-lg"
+                    >
+                      <div className="relative">
+                        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                          <span className="text-sm font-medium">
+                            {(collab.profile?.username || collab.profile?.email || 'U')[0].toUpperCase()}
+                          </span>
+                        </div>
+                        {/* Online indicator dot */}
+                        {isOnline && (
+                          <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-background" />
+                        )}
                       </div>
-                      {/* Role display for non-owners */}
-                      {!isOwner && (
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          {collab.role === 'editor' ? (
-                            <>
-                              <Edit3 className="w-3 h-3" />
-                              <span>Can Edit</span>
-                            </>
-                          ) : (
-                            <>
-                              <Eye className="w-3 h-3" />
-                              <span>View Only</span>
-                            </>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate flex items-center gap-2">
+                          {collab.profile?.username || collab.profile?.email || 'Unknown User'}
+                          {isOnline && (
+                            <span className="text-xs text-green-600 dark:text-green-400 font-normal">Online</span>
                           )}
                         </div>
+                        {/* Role display for non-owners */}
+                        {!isOwner && (
+                          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                            {collab.role === 'editor' ? (
+                              <>
+                                <Edit3 className="w-3 h-3" />
+                                <span>Can Edit</span>
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="w-3 h-3" />
+                                <span>View Only</span>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {/* Role selector for owners */}
+                      {isOwner && (
+                        <select
+                          value={collab.role}
+                          onChange={(e) => handleRoleChange(collab.id, collab.user_id, e.target.value as 'editor' | 'viewer', collab.role)}
+                          className="px-2 py-1 text-xs border rounded-md bg-background cursor-pointer"
+                        >
+                          <option value="editor">Editor</option>
+                          <option value="viewer">Viewer</option>
+                        </select>
+                      )}
+                      {isOwner && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setShowTransferConfirm(collab.user_id)}
+                          className="h-8 w-8 p-0 text-sky-500 hover:text-sky-600"
+                          title="Transfer ownership"
+                        >
+                          <ArrowRightLeft className="w-4 h-4" />
+                        </Button>
+                      )}
+                      {isOwner && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleRemoveCollaborator(collab.id, collab.user_id)}
+                          className="h-8 w-8 p-0 text-red-500 hover:text-red-600"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
                       )}
                     </div>
-                    {/* Role selector for owners */}
-                    {isOwner && (
-                      <select
-                        value={collab.role}
-                        onChange={(e) => updateCollaboratorRole.mutate({
-                          collaboratorId: collab.id,
-                          storyId,
-                          role: e.target.value as 'editor' | 'viewer'
-                        })}
-                        className="px-2 py-1 text-xs border rounded-md bg-background cursor-pointer"
-                      >
-                        <option value="editor">Editor</option>
-                        <option value="viewer">Viewer</option>
-                      </select>
-                    )}
-                    {isOwner && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => handleRemoveCollaborator(collab.id)}
-                        className="h-8 w-8 p-0 text-red-500 hover:text-red-600"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    )}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}
@@ -307,6 +419,55 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
               <Users className="w-10 h-10 mx-auto mb-2 opacity-50" />
               <p className="text-sm">No collaborators yet</p>
               {isOwner && <p className="text-xs mt-1">Search for users above to send an invitation</p>}
+            </div>
+          )}
+
+          {/* Leave Project Button - for non-owners */}
+          {!isOwner && (
+            <div className="pt-4 border-t">
+              <Button
+                variant="outline"
+                className="w-full text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/20"
+                onClick={handleLeaveProject}
+                disabled={leaveCollaboration.isPending}
+              >
+                <LogOut className="w-4 h-4 mr-2" />
+                {leaveCollaboration.isPending ? 'Leaving...' : 'Leave Project'}
+              </Button>
+            </div>
+          )}
+
+          {/* Transfer Ownership Confirmation */}
+          {showTransferConfirm && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <div className="bg-background rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
+                <h3 className="text-lg font-semibold mb-2">Transfer Ownership</h3>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Are you sure you want to transfer ownership of "{storyTitle}" to{' '}
+                  <span className="font-medium text-foreground">
+                    {acceptedCollaborators.find(c => c.user_id === showTransferConfirm)?.profile?.username || 'this user'}
+                  </span>?
+                </p>
+                <p className="text-sm text-amber-600 dark:text-amber-500 mb-4">
+                  You will become a collaborator with editor access. This action cannot be undone without the new owner's consent.
+                </p>
+                <div className="flex gap-2 justify-end">
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowTransferConfirm(null)}
+                    disabled={transferOwnership.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="bg-sky-600 hover:bg-sky-700"
+                    onClick={() => handleTransferOwnership(showTransferConfirm)}
+                    disabled={transferOwnership.isPending}
+                  >
+                    {transferOwnership.isPending ? 'Transferring...' : 'Transfer Ownership'}
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
         </div>

@@ -101,6 +101,8 @@ export function useStoryAccess(storyId: string | null) {
 }
 
 // Get collaborators for a story
+// Updates are handled via broadcast events from useStoryCoordination
+// Also polls every 5 seconds to catch updates from users not on the story page (e.g., accepting invitations)
 export function useCollaborators(storyId: string | null) {
   const supabase = createClient()
 
@@ -128,6 +130,7 @@ export function useCollaborators(storyId: string | null) {
       return (data || []) as Collaborator[]
     },
     enabled: !!storyId,
+    refetchInterval: 5000, // Poll every 5 seconds for updates
   })
 }
 
@@ -258,6 +261,33 @@ export function useRemoveCollaborator() {
   })
 }
 
+// Leave a collaboration (remove yourself)
+export function useLeaveCollaboration() {
+  const supabase = createClient()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ storyId }: { storyId: string }) => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const { error } = await supabase
+        .from('story_collaborators')
+        .delete()
+        .eq('story_id', storyId)
+        .eq('user_id', user.id)
+
+      if (error) throw error
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: collabQueryKeys.collaborators(variables.storyId) })
+      queryClient.invalidateQueries({ queryKey: collabQueryKeys.storyAccess(variables.storyId) })
+      // Also invalidate stories list since this story should no longer appear
+      queryClient.invalidateQueries({ queryKey: ['stories'] })
+    },
+  })
+}
+
 // Update a collaborator's role
 export function useUpdateCollaboratorRole() {
   const supabase = createClient()
@@ -274,6 +304,66 @@ export function useUpdateCollaboratorRole() {
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: collabQueryKeys.collaborators(variables.storyId) })
+    },
+  })
+}
+
+// Transfer ownership to another collaborator
+export function useTransferOwnership() {
+  const supabase = createClient()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ storyId, newOwnerId }: { storyId: string; newOwnerId: string }) => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      // Verify current user is the owner
+      const { data: story, error: storyError } = await supabase
+        .from('stories')
+        .select('user_id')
+        .eq('id', storyId)
+        .single()
+
+      if (storyError) throw storyError
+      if (story.user_id !== user.id) throw new Error('Only the owner can transfer ownership')
+
+      // Start transaction-like operations:
+      // 1. Update story owner
+      const { error: updateError } = await supabase
+        .from('stories')
+        .update({ user_id: newOwnerId })
+        .eq('id', storyId)
+
+      if (updateError) throw updateError
+
+      // 2. Remove the new owner from collaborators (they're now the owner)
+      await supabase
+        .from('story_collaborators')
+        .delete()
+        .eq('story_id', storyId)
+        .eq('user_id', newOwnerId)
+
+      // 3. Add current user as a collaborator (editor role)
+      const { error: addError } = await supabase
+        .from('story_collaborators')
+        .insert({
+          story_id: storyId,
+          user_id: user.id,
+          role: 'editor',
+          invited_by: newOwnerId,
+          accepted_at: new Date().toISOString()
+        })
+
+      if (addError) throw addError
+
+      return { success: true }
+    },
+    onSuccess: (_, variables) => {
+      // Invalidate all relevant queries
+      queryClient.invalidateQueries({ queryKey: collabQueryKeys.collaborators(variables.storyId) })
+      queryClient.invalidateQueries({ queryKey: collabQueryKeys.isCollaborator(variables.storyId) })
+      queryClient.invalidateQueries({ queryKey: ['stories'] })
     },
   })
 }
@@ -523,7 +613,8 @@ export function useRealtimeCanvas(
   canvasType: string,
   onRemoteChange: (data: { nodes: any[]; connections: any[]; userId: string }) => void,
   onNodeLock?: (data: LockedNode) => void,
-  onNodeUnlock?: (data: { nodeId: string; odataUserId: string }) => void
+  onNodeUnlock?: (data: { nodeId: string; odataUserId: string }) => void,
+  onReconnect?: () => void
 ) {
   // Use ref for supabase client to avoid recreating channel on every render
   const supabaseRef = useRef(createClient())
@@ -534,6 +625,7 @@ export function useRealtimeCanvas(
   const onRemoteChangeRef = useRef(onRemoteChange)
   const onNodeLockRef = useRef(onNodeLock)
   const onNodeUnlockRef = useRef(onNodeUnlock)
+  const onReconnectRef = useRef(onReconnect)
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
 
   // Keep refs in sync with props (avoid re-running effects)
@@ -548,6 +640,10 @@ export function useRealtimeCanvas(
   useEffect(() => {
     onNodeUnlockRef.current = onNodeUnlock
   }, [onNodeUnlock])
+
+  useEffect(() => {
+    onReconnectRef.current = onReconnect
+  }, [onReconnect])
 
   // Get current user ID once before subscribing to channels
   // CRITICAL: Must complete before channel subscription to prevent echo loops
@@ -626,8 +722,14 @@ export function useRealtimeCanvas(
         console.log('📡 Broadcast channel status:', status)
         if (status === 'SUBSCRIBED') {
           setConnectionStatus('connected')
+          // Trigger data resync after reconnection
+          if (onReconnectRef.current) {
+            console.log('📡 Triggering data resync after connection')
+            onReconnectRef.current()
+          }
         } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           setConnectionStatus('disconnected')
+          console.warn('📡 Connection lost, Supabase will auto-reconnect...')
         } else {
           setConnectionStatus('connecting')
         }
@@ -713,7 +815,10 @@ export function useRealtimeCanvas(
 // All users in a story subscribe to this channel regardless of which canvas they're on
 export function useStoryCoordination(
   storyId: string | null,
-  onSaveRequest?: () => void
+  onSaveRequest?: () => void,
+  onRoleChange?: (targetUserId: string, newRole: string) => void,
+  onCollaboratorRemoved?: (targetUserId: string) => void,
+  onCollaboratorsChanged?: () => void
 ) {
   console.log('🔧 [STORY-COORD] Hook called with storyId:', storyId)
 
@@ -723,13 +828,28 @@ export function useStoryCoordination(
   const userIdRef = useRef<string | null>(null)
   const [userIdLoaded, setUserIdLoaded] = useState(false) // Track when userId is ready
   const onSaveRequestRef = useRef(onSaveRequest)
+  const onRoleChangeRef = useRef(onRoleChange)
+  const onCollaboratorRemovedRef = useRef(onCollaboratorRemoved)
+  const onCollaboratorsChangedRef = useRef(onCollaboratorsChanged)
 
   console.log('🔧 [STORY-COORD] channelRef.current is:', channelRef.current ? 'CHANNEL EXISTS' : 'NULL')
 
-  // Keep ref in sync
+  // Keep refs in sync
   useEffect(() => {
     onSaveRequestRef.current = onSaveRequest
   }, [onSaveRequest])
+
+  useEffect(() => {
+    onRoleChangeRef.current = onRoleChange
+  }, [onRoleChange])
+
+  useEffect(() => {
+    onCollaboratorRemovedRef.current = onCollaboratorRemoved
+  }, [onCollaboratorRemoved])
+
+  useEffect(() => {
+    onCollaboratorsChangedRef.current = onCollaboratorsChanged
+  }, [onCollaboratorsChanged])
 
   // Get current user ID before subscribing
   // CRITICAL: Must complete before channel subscription to prevent echo loops
@@ -787,6 +907,35 @@ export function useStoryCoordination(
           console.error('💾 [STORY-LEVEL] onSaveRequestRef.current is null!')
         }
       })
+      .on('broadcast', { event: 'role-change' }, (payload) => {
+        console.log('👤 [STORY-LEVEL] Received role change event:', payload)
+
+        // Check if this role change affects the current user
+        if (payload.payload?.targetUserId === userIdRef.current) {
+          console.log('👤 [STORY-LEVEL] Role change affects current user, new role:', payload.payload?.newRole)
+          if (onRoleChangeRef.current) {
+            onRoleChangeRef.current(payload.payload?.targetUserId, payload.payload?.newRole)
+          }
+        }
+      })
+      .on('broadcast', { event: 'collaborator-removed' }, (payload) => {
+        console.log('🚫 [STORY-LEVEL] Received collaborator removed event:', payload)
+
+        // Check if this removal affects the current user
+        if (payload.payload?.targetUserId === userIdRef.current) {
+          console.log('🚫 [STORY-LEVEL] Current user has been removed from project!')
+          if (onCollaboratorRemovedRef.current) {
+            onCollaboratorRemovedRef.current(payload.payload?.targetUserId)
+          }
+        }
+      })
+      .on('broadcast', { event: 'collaborators-changed' }, (payload) => {
+        console.log('👥 [STORY-LEVEL] Received collaborators changed event:', payload)
+        // Notify all users to refresh collaborators list
+        if (onCollaboratorsChangedRef.current) {
+          onCollaboratorsChangedRef.current()
+        }
+      })
       .subscribe((status) => {
         console.log('📡 Story coordination channel status:', status)
         if (status === 'SUBSCRIBED') {
@@ -834,7 +983,68 @@ export function useStoryCoordination(
     })
   }, [])
 
-  return { broadcastSaveRequest }
+  // Broadcast role change to notify the affected user
+  const broadcastRoleChange = useCallback((targetUserId: string, newRole: string) => {
+    console.log('👤 [STORY-LEVEL] broadcastRoleChange called for user:', targetUserId, 'new role:', newRole)
+
+    if (!channelRef.current) {
+      console.error('👤 [STORY-LEVEL] Cannot broadcast - no channel!')
+      return
+    }
+
+    channelRef.current.send({
+      type: 'broadcast',
+      event: 'role-change',
+      payload: {
+        targetUserId,
+        newRole,
+        changedBy: userIdRef.current
+      }
+    }).then((result) => {
+      console.log('👤 [STORY-LEVEL] Role change broadcast result:', result)
+    }).catch((err) => {
+      console.error('👤 [STORY-LEVEL] Role change broadcast error:', err)
+    })
+  }, [])
+
+  // Broadcast collaborator removal to kick them out
+  const broadcastCollaboratorRemoved = useCallback((targetUserId: string) => {
+    console.log('🚫 [STORY-LEVEL] broadcastCollaboratorRemoved called for user:', targetUserId)
+
+    if (!channelRef.current) {
+      console.error('🚫 [STORY-LEVEL] Cannot broadcast - no channel!')
+      return
+    }
+
+    channelRef.current.send({
+      type: 'broadcast',
+      event: 'collaborator-removed',
+      payload: {
+        targetUserId,
+        removedBy: userIdRef.current
+      }
+    })
+  }, [])
+
+  // Broadcast collaborators changed to refresh everyone's list
+  const broadcastCollaboratorsChanged = useCallback(() => {
+    console.log('👥 [STORY-LEVEL] broadcastCollaboratorsChanged called')
+
+    if (!channelRef.current) {
+      console.error('👥 [STORY-LEVEL] Cannot broadcast - no channel!')
+      return
+    }
+
+    channelRef.current.send({
+      type: 'broadcast',
+      event: 'collaborators-changed',
+      payload: {
+        changedBy: userIdRef.current
+      }
+    })
+  }, [])
+
+  return { broadcastSaveRequest, broadcastRoleChange, broadcastCollaboratorRemoved, broadcastCollaboratorsChanged }
 }
 
 // Presence hook for showing online collaborators (cursor tracking removed for performance)

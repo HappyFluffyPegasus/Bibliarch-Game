@@ -152,7 +152,16 @@ export function useStory(storyId: string | null | undefined) {
 
       const { data, error } = await supabase
         .from('stories')
-        .select('id, title, bio')
+        .select(`
+          id,
+          title,
+          bio,
+          user_id,
+          owner:profiles!user_id (
+            username,
+            email
+          )
+        `)
         .eq('id', storyId)
         .single()
 
