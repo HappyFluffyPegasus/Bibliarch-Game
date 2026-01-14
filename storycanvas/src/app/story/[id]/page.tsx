@@ -421,6 +421,7 @@ export default function StoryPage({ params }: PageProps) {
   const isInternalNavigation = useRef(false) // Track if navigation is internal (home button, etc.)
   const isCanvasTransition = useRef(false) // Track canvas transitions to prevent stale broadcasts
   const canvasTransitionTimeout = useRef<NodeJS.Timeout | null>(null) // Cleanup ref for transition timeout
+  const lastKnownNodeCount = useRef<Record<string, number>>({}) // Track node counts per canvas to prevent saving empty data
 
   // Set up the collaborator removed handler now that isInternalNavigation is available
   useEffect(() => {
@@ -570,10 +571,18 @@ export default function StoryPage({ params }: PageProps) {
         } else {
           setCanvasData(loadedData)
           latestCanvasData.current = loadedData
+          // Track node count to prevent accidental empty saves
+          if (loadedData.nodes.length > 0) {
+            lastKnownNodeCount.current[currentCanvasId] = loadedData.nodes.length
+          }
         }
       } else {
         setCanvasData(loadedData)
         latestCanvasData.current = loadedData
+        // Track node count to prevent accidental empty saves
+        if (loadedData.nodes.length > 0) {
+          lastKnownNodeCount.current[currentCanvasId] = loadedData.nodes.length
+        }
       }
     } else {
       // No existing canvas data - this is expected for new folder canvases
@@ -896,6 +905,15 @@ export default function StoryPage({ params }: PageProps) {
     }
     lastSaveTime.current = now
 
+    // CRITICAL: Prevent saving empty data when we previously had data
+    // This protects against race conditions during loading/navigation that could wipe out user data
+    const previousNodeCount = lastKnownNodeCount.current[saveToCanvasId] || 0
+    if (nodes.length === 0 && previousNodeCount > 0) {
+      console.error('⚠️ PREVENTED DATA LOSS: Refusing to save empty canvas when we had', previousNodeCount, 'nodes')
+      console.error('Canvas:', saveToCanvasId)
+      return // Abort the save
+    }
+
     // CRITICAL: Safety check to prevent overwriting main canvas with folder data
     // If we're about to save to main canvas but data looks suspiciously small, abort
     if (saveToCanvasId === 'main') {
@@ -911,6 +929,11 @@ export default function StoryPage({ params }: PageProps) {
     // Update the ref with latest data
     latestCanvasData.current = { nodes, connections }
     latestCanvasDataId.current = saveToCanvasId // Track which canvas this data belongs to
+
+    // Update last known node count for this canvas (only if we have data)
+    if (nodes.length > 0) {
+      lastKnownNodeCount.current[saveToCanvasId] = nodes.length
+    }
 
     console.log(`💾 Saving to canvas: ${saveToCanvasId}, nodes: ${nodes.length}, connections: ${connections.length}`)
 
