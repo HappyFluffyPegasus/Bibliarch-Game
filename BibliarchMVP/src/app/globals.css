@@ -266,13 +266,6 @@ html, body {
   animation: fade-out 0.2s ease-in;
 }
 
-[data-state="open"] {
-  animation: zoom-in 0.2s ease-out;
-}
-
-[data-state="closed"] {
-  animation: zoom-out 0.2s ease-in;
-}
 
 /* Canvas styles that adapt to color palette */
 .canvas-grid {

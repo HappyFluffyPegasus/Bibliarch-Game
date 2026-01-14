@@ -39,9 +39,6 @@ function DialogOverlay({
       data-slot="dialog-overlay"
       className={cn(
         "fixed inset-0 z-50 bg-black/50",
-        "data-[state=open]:animate-in data-[state=open]:fade-in-0",
-        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
-        "duration-150",
         className
       )}
       {...props}
@@ -65,10 +62,6 @@ function DialogContent({
         className={cn(
           // Liquid Glass dialog - subtle, consistent
           "bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl text-foreground fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-2xl border border-black/10 dark:border-white/10 p-6 shadow-xl sm:max-w-lg",
-          // Subtle fade animation
-          "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-98",
-          "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-98",
-          "duration-150",
           className
         )}
         {...props}

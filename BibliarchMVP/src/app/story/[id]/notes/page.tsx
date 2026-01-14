@@ -206,17 +206,25 @@ export default function NotesPage() {
     // Expandable node types
     const expandableTypes = ['folder', 'character', 'location', 'event']
 
+    // Track visited nodes to prevent infinite recursion
+    const visitedNodes = new Set<string>()
+
     // Helper function to recursively save sub-canvas templates
-    const saveSubCanvases = (nodes: any[]) => {
+    const saveSubCanvases = (nodes: any[], depth: number = 0) => {
+      // Prevent infinite recursion with depth limit
+      if (depth > 10) return
+
       nodes.forEach((node: any) => {
         if (!expandableTypes.includes(node.type)) return
+        if (visitedNodes.has(node.id)) return
+        visitedNodes.add(node.id)
 
         const template = getTemplateForNode(node)
         if (template && template.nodes.length > 0) {
           const canvasId = getCanvasIdForNode(node)
           saveCanvasData(storyId, canvasId, template.nodes, template.connections)
-          // Recursively process nested nodes
-          saveSubCanvases(template.nodes)
+          // Recursively process nested nodes with increased depth
+          saveSubCanvases(template.nodes, depth + 1)
         }
       })
     }
@@ -231,7 +239,7 @@ export default function NotesPage() {
         if (template.nodes.length > 0) {
           saveCanvasData(storyId, key, template.nodes, template.connections)
           // Recursively process nested nodes
-          saveSubCanvases(template.nodes)
+          saveSubCanvases(template.nodes, 1)
         }
       }
     })
