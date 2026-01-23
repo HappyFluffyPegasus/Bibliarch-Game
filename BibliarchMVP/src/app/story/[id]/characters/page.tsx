@@ -17,6 +17,7 @@ import {
 import dynamic from "next/dynamic"
 import { useStoryStore } from "@/stores/storyStore"
 import { Button } from "@/components/ui/button"
+import { Slider } from "@/components/ui/slider"
 import ColorWheel from "@/components/characters/ColorWheel"
 import TransformControls from "@/components/characters/TransformControls"
 import ItemThumbnail from "@/components/characters/ItemThumbnail"
@@ -56,12 +57,20 @@ interface CategoryColors {
   body: { skinTone: string; eyeColor: string }
 }
 
+interface MorphTargetInfo {
+  meshName: string
+  targetName: string
+  index: number
+}
+
 interface CharacterData {
   id: string
   name: string
   visibleAssets: string[]
   colors: CategoryColors
   transforms?: Record<string, Transform>
+  heightScale?: number // 0.8 to 1.2, default 1.0
+  morphTargets?: Record<string, number> // key: "meshName:targetName", value: 0-1
 }
 
 const DEFAULT_COLORS: CategoryColors = {
@@ -108,6 +117,7 @@ export default function CharactersPage() {
   const [currentCategory, setCurrentCategory] = useState<Category>(null)
   const [currentSubcategory, setCurrentSubcategory] = useState<string | null>(null)
   const [availableMeshes, setAvailableMeshes] = useState<string[]>([])
+  const [availableMorphTargets, setAvailableMorphTargets] = useState<MorphTargetInfo[]>([])
   const [colorPickerOpen, setColorPickerOpen] = useState<string | null>(null)
   const [transformingMesh, setTransformingMesh] = useState<string | null>(null)
 
@@ -287,6 +297,42 @@ export default function CharactersPage() {
     }))
   }
 
+  // Height scale management
+  const handleHeightScaleChange = (scale: number) => {
+    if (!selectedCharacterId) return
+
+    setCharacters(characters.map(char => {
+      if (char.id !== selectedCharacterId) return char
+      return { ...char, heightScale: scale }
+    }))
+  }
+
+  // Morph target (shape key) management
+  const handleMorphTargetChange = (meshName: string, targetName: string, value: number) => {
+    if (!selectedCharacterId) return
+
+    const key = `${meshName}:${targetName}`
+    setCharacters(characters.map(char => {
+      if (char.id !== selectedCharacterId) return char
+      return {
+        ...char,
+        morphTargets: {
+          ...(char.morphTargets || {}),
+          [key]: value
+        }
+      }
+    }))
+  }
+
+  const handleResetAllMorphTargets = () => {
+    if (!selectedCharacterId) return
+
+    setCharacters(characters.map(char => {
+      if (char.id !== selectedCharacterId) return char
+      return { ...char, morphTargets: {} }
+    }))
+  }
+
   // Transform management
   const handleTransformChange = (meshName: string, transform: Transform) => {
     if (!selectedCharacterId) return
@@ -406,6 +452,9 @@ export default function CharactersPage() {
           categoryColors={selectedCharacter?.colors}
           transforms={selectedCharacter?.transforms}
           onMeshesLoaded={setAvailableMeshes}
+          onMorphTargetsLoaded={setAvailableMorphTargets}
+          morphTargetValues={selectedCharacter?.morphTargets}
+          heightScale={selectedCharacter?.heightScale ?? 1.0}
         />
 
         {/* Empty State */}
@@ -511,6 +560,86 @@ export default function CharactersPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Height Slider */}
+              <div className="p-3 bg-muted/50 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-foreground">Height</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground w-12 text-right">
+                      {Math.round((selectedCharacter.heightScale ?? 1.0) * 100)}%
+                    </span>
+                    <button
+                      onClick={() => handleHeightScaleChange(1.0)}
+                      className="text-muted-foreground hover:text-foreground"
+                      title="Reset height"
+                    >
+                      <RotateCcw size={14} />
+                    </button>
+                  </div>
+                </div>
+                <Slider
+                  value={[(selectedCharacter.heightScale ?? 1.0) * 100]}
+                  onValueChange={(value) => handleHeightScaleChange(value[0] / 100)}
+                  min={80}
+                  max={120}
+                  step={1}
+                  className="w-full"
+                />
+                <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                  <span>Short</span>
+                  <span>Tall</span>
+                </div>
+              </div>
+
+              {/* Body Shape Keys */}
+              {availableMorphTargets.length > 0 && (
+                <div className="p-3 bg-muted/50 rounded-lg">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-medium text-foreground">Body Shape</span>
+                    <button
+                      onClick={handleResetAllMorphTargets}
+                      className="text-muted-foreground hover:text-foreground text-xs flex items-center gap-1"
+                      title="Reset all shape keys"
+                    >
+                      <RotateCcw size={12} />
+                      Reset All
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    {availableMorphTargets.map((target) => {
+                      const key = `${target.meshName}:${target.targetName}`
+                      const value = selectedCharacter.morphTargets?.[key] ?? 0
+                      // Clean up target name for display (remove mesh prefix if present)
+                      const displayName = target.targetName
+                        .replace(/^Key\s*/i, '')
+                        .replace(/_/g, ' ')
+                        .replace(/([a-z])([A-Z])/g, '$1 $2')
+
+                      return (
+                        <div key={key} className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-muted-foreground truncate flex-1 mr-2">
+                              {displayName}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground w-8 text-right">
+                              {Math.round(value * 100)}%
+                            </span>
+                          </div>
+                          <Slider
+                            value={[value * 100]}
+                            onValueChange={(v) => handleMorphTargetChange(target.meshName, target.targetName, v[0] / 100)}
+                            min={0}
+                            max={100}
+                            step={1}
+                            className="w-full"
+                          />
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Eyes Selector */}
               <div>
