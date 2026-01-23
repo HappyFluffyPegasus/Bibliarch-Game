@@ -39,7 +39,10 @@
       "Bash(git revert:*)",
       "Bash(npm install:*)",
       "Bash(npm run:*)",
-      "Bash(git diff:*)"
+      "Bash(git diff:*)",
+      "Bash(git merge:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(git fetch:*)"
     ],
     "deny": [],
     "ask": []

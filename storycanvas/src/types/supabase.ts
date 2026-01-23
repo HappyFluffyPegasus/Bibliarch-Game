@@ -99,3 +99,9 @@ export interface Database {
     }
   }
 }
+
+// Story settings stored in the settings JSON column
+export interface StorySettings {
+  collaborationEnabled?: boolean
+  // Add other settings here as needed
+}

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { Story, CanvasData, MasterDoc } from '@/types/story'
 import { Character } from '@/types/character'
-import { TimelineEvent } from '@/types/timeline'
+import { TimelineEvent, TimelineTrack } from '@/types/timeline'
 import { Scene } from '@/types/scene'
 import { World } from '@/types/world'
 
@@ -17,6 +17,7 @@ interface StoryState {
   canvasData: Record<string, CanvasData[]>
   characters: Record<string, Character[]>
   timelineEvents: Record<string, TimelineEvent[]>
+  timelineTracks: Record<string, TimelineTrack[]>
   scenes: Record<string, Scene[]>
   worlds: Record<string, World>
   masterDocs: Record<string, MasterDoc[]>
@@ -36,11 +37,16 @@ interface StoryState {
   updateCharacter: (storyId: string, characterId: string, updates: Partial<Character>) => void
   deleteCharacter: (storyId: string, characterId: string) => void
 
-  // Actions - Timeline
+  // Actions - Timeline Events
   addTimelineEvent: (storyId: string, event: TimelineEvent) => void
   updateTimelineEvent: (storyId: string, eventId: string, updates: Partial<TimelineEvent>) => void
   deleteTimelineEvent: (storyId: string, eventId: string) => void
   reorderTimelineEvents: (storyId: string, events: TimelineEvent[]) => void
+
+  // Actions - Timeline Tracks
+  addTimelineTrack: (storyId: string, track: TimelineTrack) => void
+  updateTimelineTrack: (storyId: string, trackId: string, updates: Partial<TimelineTrack>) => void
+  deleteTimelineTrack: (storyId: string, trackId: string) => void
 
   // Actions - Scenes
   addScene: (storyId: string, scene: Scene) => void
@@ -67,6 +73,7 @@ export const useStoryStore = create<StoryState>()(
       canvasData: {},
       characters: {},
       timelineEvents: {},
+      timelineTracks: {},
       scenes: {},
       worlds: {},
       masterDocs: {},
@@ -99,6 +106,7 @@ export const useStoryStore = create<StoryState>()(
           const { [id]: _canvas, ...restCanvas } = state.canvasData
           const { [id]: _chars, ...restChars } = state.characters
           const { [id]: _timeline, ...restTimeline } = state.timelineEvents
+          const { [id]: _tracks, ...restTracks } = state.timelineTracks
           const { [id]: _scenes, ...restScenes } = state.scenes
           const { [id]: _world, ...restWorlds } = state.worlds
           const { [id]: _docs, ...restDocs } = state.masterDocs
@@ -109,6 +117,7 @@ export const useStoryStore = create<StoryState>()(
             canvasData: restCanvas,
             characters: restChars,
             timelineEvents: restTimeline,
+            timelineTracks: restTracks,
             scenes: restScenes,
             worlds: restWorlds,
             masterDocs: restDocs,
@@ -219,6 +228,36 @@ export const useStoryStore = create<StoryState>()(
           timelineEvents: {
             ...state.timelineEvents,
             [storyId]: events,
+          },
+        }))
+      },
+
+      // Timeline Track actions
+      addTimelineTrack: (storyId, track) => {
+        set((state) => ({
+          timelineTracks: {
+            ...state.timelineTracks,
+            [storyId]: [...(state.timelineTracks[storyId] || []), track],
+          },
+        }))
+      },
+
+      updateTimelineTrack: (storyId, trackId, updates) => {
+        set((state) => ({
+          timelineTracks: {
+            ...state.timelineTracks,
+            [storyId]: (state.timelineTracks[storyId] || []).map((t) =>
+              t.id === trackId ? { ...t, ...updates } : t
+            ),
+          },
+        }))
+      },
+
+      deleteTimelineTrack: (storyId, trackId) => {
+        set((state) => ({
+          timelineTracks: {
+            ...state.timelineTracks,
+            [storyId]: (state.timelineTracks[storyId] || []).filter((t) => t.id !== trackId),
           },
         }))
       },

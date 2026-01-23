@@ -149,6 +149,14 @@ interface HTMLCanvasProps {
   onZoomChange?: (zoom: number) => void
   eventDepth?: number  // Tracks event-to-event navigation depth (ignores folders/characters/locations)
   realtimeSave?: boolean  // If true, saves on every change (for multi-user). If false, only saves on navigation/manual (default)
+  // Collaboration props
+  collaborators?: Record<string, CollaboratorPresence>
+  isViewer?: boolean  // If true, user can only view (not edit) the canvas
+  connectionStatus?: 'connected' | 'connecting' | 'disconnected'  // Real-time connection status
+  collaborationEnabled?: boolean  // If true, show Live indicator and enable real-time features
+  lockedNodes?: Record<string, LockedNodeInfo>  // Nodes currently being edited by other users
+  onNodeLock?: (nodeId: string, field: string) => void  // Called when user starts editing a field
+  onNodeUnlock?: (nodeId: string) => void  // Called when user stops editing a field
 }
 
 // Updated with smaller sidebar and trackpad support
@@ -182,7 +190,14 @@ export default function HTMLCanvas({
   zoom: controlledZoom,
   onZoomChange,
   eventDepth = 0,
-  realtimeSave = false
+  realtimeSave = false,
+  collaborators = {},
+  isViewer = false,
+  connectionStatus = 'disconnected',
+  collaborationEnabled = false,
+  lockedNodes = {},
+  onNodeLock,
+  onNodeUnlock
 }: HTMLCanvasProps) {
   const colorContext = useColorContext()
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
@@ -3996,6 +4011,32 @@ export default function HTMLCanvas({
               Save Template
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Connection Status Indicator - bottom right, only visible when collaboration is enabled */}
+      {collaborationEnabled && connectionStatus !== 'disconnected' && (
+        <div className="absolute bottom-4 right-4 z-[100] flex items-center gap-2 bg-background/90 backdrop-blur-sm rounded-full px-3 py-1.5 shadow border">
+          {/* Viewer Mode Indicator - shown inline with connection status */}
+          {isViewer && (
+            <>
+              <Eye className="w-4 h-4 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">View Only</span>
+              <span className="text-muted-foreground">|</span>
+            </>
+          )}
+          {connectionStatus === 'connected' && (
+            <>
+              <Wifi className="w-4 h-4 text-green-500" />
+              <span className="text-xs text-green-600">Live</span>
+            </>
+          )}
+          {connectionStatus === 'connecting' && (
+            <>
+              <Loader2 className="w-4 h-4 text-yellow-500 animate-spin" />
+              <span className="text-xs text-yellow-600">Connecting...</span>
+            </>
+          )}
         </div>
       )}
 

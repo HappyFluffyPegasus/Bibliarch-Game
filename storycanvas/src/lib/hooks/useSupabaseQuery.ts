@@ -237,12 +237,13 @@ export function useUpdateStory() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ storyId, title, bio }: { storyId: string; title?: string; bio?: string }) => {
+    mutationFn: async ({ storyId, title, bio, settings }: { storyId: string; title?: string; bio?: string; settings?: Record<string, any> }) => {
       const { data, error } = await supabase
         .from('stories')
         .update({
           ...(title !== undefined && { title: title.trim() }),
           ...(bio !== undefined && { bio: bio.trim() }),
+          ...(settings !== undefined && { settings }),
           updated_at: new Date().toISOString()
         })
         .eq('id', storyId)

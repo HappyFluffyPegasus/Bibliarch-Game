@@ -51,6 +51,8 @@ export default function StoryPage({ params }: PageProps) {
   const [canvasPath, setCanvasPath] = useState<{id: string, title: string}[]>([])
   const [showCanvasSettings, setShowCanvasSettings] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
+  const [showShareDialog, setShowShareDialog] = useState(false)
+  const [collaborationEnabled, setCollaborationEnabled] = useState(false)
   const [editedTitle, setEditedTitle] = useState('')
   const [editedBio, setEditedBio] = useState('')
   const [zoom, setZoom] = useState(1)
@@ -145,6 +147,14 @@ export default function StoryPage({ params }: PageProps) {
     }
   }, [story?.title, story?.bio])
 
+  // Sync collaborationEnabled from story settings
+  useEffect(() => {
+    if (story?.settings) {
+      const settings = story.settings as { collaborationEnabled?: boolean }
+      setCollaborationEnabled(settings.collaborationEnabled ?? false)
+    }
+  }, [story?.settings])
+
   // Apply canvas-page class to body to prevent scrolling
   useEffect(() => {
     document.body.classList.add('canvas-page')
@@ -160,7 +170,9 @@ export default function StoryPage({ params }: PageProps) {
 
   // Handle canvas data loading from cache
   useEffect(() => {
-    if (isCanvasLoading) {
+    // Only show loading screen on initial load, not on refetches
+    // If we already have canvasData displayed, don't show loading for background refetches
+    if (isCanvasLoading && canvasData === null) {
       setIsLoadingCanvas(true)
       return
     }
@@ -695,11 +707,64 @@ export default function StoryPage({ params }: PageProps) {
       return
     }
 
-    // SAVE CURRENT CANVAS FIRST! Use the latest data from the ref
-    if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
-      await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
-      hasUnsavedChanges.current = false // Reset flag after successful save
-      console.log('Saved canvas before navigation:', currentCanvasId, latestCanvasData.current)
+    // ============================================================================
+    // CRITICAL COLLABORATION SAVE SEQUENCE
+    // ============================================================================
+    // IMPORTANT: Presence is canvas-specific, so it only shows users on THIS canvas
+    // But we need to know if ANYONE in the story might have unsaved changes
+    // Solution: Check if this is a collaborative project (has collaborators AND collaboration enabled)
+    // If yes, always apply delays. If no collaborators or collaboration disabled, skip delays.
+    const hasCollaborators = (collaborators || []).length > 0
+    const isCollaborativeProject = hasCollaborators && collaborationEnabled
+
+    console.log('💾 [NAVIGATION] ==========================================')
+    console.log('💾 [NAVIGATION] Navigating from:', currentCanvasId, 'to:', canvasId)
+    console.log('💾 [NAVIGATION] Collaborators count:', (collaborators || []).length)
+    console.log('💾 [NAVIGATION] Collaboration enabled:', collaborationEnabled)
+    console.log('💾 [NAVIGATION] Is collaborative project:', isCollaborativeProject)
+    console.log('💾 [NAVIGATION] Will apply delays:', isCollaborativeProject)
+
+    if (isCollaborativeProject) {
+      // Apply collaboration delays - there are collaborators who might have unsaved changes
+      console.log('💾💾💾 [NAVIGATION] ========== STARTING SAVE COORDINATION ==========')
+      console.log('💾 [NAVIGATION] Broadcasting save-request to ALL collaborators in the story')
+
+      if (!broadcastSaveRequest) {
+        console.error('💾 [NAVIGATION] ❌ CRITICAL: broadcastSaveRequest is undefined!')
+      } else {
+        broadcastSaveRequest()
+        console.log('💾 [NAVIGATION] ✅ Save request broadcasted successfully')
+      }
+
+      // PHASE 1: Wait for broadcast to propagate
+      console.log('💾 [NAVIGATION] Phase 1: Waiting 500ms for broadcast propagation...')
+      await new Promise(resolve => setTimeout(resolve, COLLAB_TIMING.BROADCAST_PROPAGATION_DELAY))
+
+      // PHASE 2: Save our own canvas
+      if (latestCanvasDataId.current === currentCanvasId &&
+          (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+        console.log('💾 [NAVIGATION] Phase 2: Saving our own canvas...')
+        await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+        hasUnsavedChanges.current = false
+        console.log('💾 [NAVIGATION] ✅ Our canvas saved successfully')
+      }
+
+      // PHASE 3: Wait for collaborators' saves
+      const collaboratorSaveDelay = COLLAB_TIMING.COLLABORATOR_SAVE_DELAY
+      console.log(`💾 [NAVIGATION] Phase 3: Waiting ${collaboratorSaveDelay}ms for collaborators...`)
+      await new Promise(resolve => setTimeout(resolve, collaboratorSaveDelay))
+
+      console.log('💾💾💾 [NAVIGATION] ========== SAVE COORDINATION COMPLETE ==========')
+    } else {
+      // No collaborators - just save our own canvas quickly (solo mode)
+      console.log('💾 [NAVIGATION] Solo mode - skipping coordination delays')
+      if (latestCanvasDataId.current === currentCanvasId &&
+          (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+        console.log('💾 [NAVIGATION] Saving our own canvas...')
+        await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+        hasUnsavedChanges.current = false
+        console.log('💾 [NAVIGATION] ✅ Canvas saved')
+      }
     }
 
     // Add to path for breadcrumbs (only if not already in path)
@@ -721,11 +786,59 @@ export default function StoryPage({ params }: PageProps) {
   async function handleNavigateBack() {
     if (canvasPath.length === 0) return
 
-    // SAVE CURRENT CANVAS FIRST!
-    if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
-      await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
-      hasUnsavedChanges.current = false // Reset flag after successful save
-      console.log('Saved canvas before navigating back:', currentCanvasId, latestCanvasData.current)
+    // ============================================================================
+    // CRITICAL COLLABORATION SAVE SEQUENCE (BACK NAVIGATION)
+    // ============================================================================
+    // Check if this is a collaborative project (has collaborators AND collaboration enabled)
+    const hasCollaborators = (collaborators || []).length > 0
+    const isCollaborativeProject = hasCollaborators && collaborationEnabled
+
+    console.log('💾 [NAVIGATION BACK] ==========================================')
+    console.log('💾 [NAVIGATION BACK] Navigating back')
+    console.log('💾 [NAVIGATION BACK] Collaborators count:', (collaborators || []).length)
+    console.log('💾 [NAVIGATION BACK] Collaboration enabled:', collaborationEnabled)
+    console.log('💾 [NAVIGATION BACK] Is collaborative project:', isCollaborativeProject)
+    console.log('💾 [NAVIGATION BACK] Will apply delays:', isCollaborativeProject)
+
+    if (isCollaborativeProject) {
+      console.log('💾💾💾 [NAVIGATION BACK] ========== STARTING SAVE COORDINATION ==========')
+
+      if (!broadcastSaveRequest) {
+        console.error('💾 [NAVIGATION BACK] ❌ CRITICAL: broadcastSaveRequest is undefined!')
+      } else {
+        broadcastSaveRequest()
+        console.log('💾 [NAVIGATION BACK] ✅ Save request broadcasted')
+      }
+
+      // PHASE 1: Wait for broadcast propagation
+      console.log('💾 [NAVIGATION BACK] Phase 1: Waiting 500ms for broadcast propagation...')
+      await new Promise(resolve => setTimeout(resolve, COLLAB_TIMING.BROADCAST_PROPAGATION_DELAY))
+
+      // PHASE 2: Save our own canvas
+      if (latestCanvasDataId.current === currentCanvasId &&
+          (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+        console.log('💾 [NAVIGATION BACK] Phase 2: Saving our own canvas...')
+        await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+        hasUnsavedChanges.current = false
+        console.log('💾 [NAVIGATION BACK] ✅ Our canvas saved successfully')
+      }
+
+      // PHASE 3: Wait for collaborators' saves
+      const collaboratorSaveDelay = COLLAB_TIMING.COLLABORATOR_SAVE_DELAY
+      console.log(`💾 [NAVIGATION BACK] Phase 3: Waiting ${collaboratorSaveDelay}ms for collaborators...`)
+      await new Promise(resolve => setTimeout(resolve, collaboratorSaveDelay))
+
+      console.log('💾💾💾 [NAVIGATION BACK] ========== SAVE COORDINATION COMPLETE ==========')
+    } else {
+      // No collaborators - solo mode, save quickly
+      console.log('💾 [NAVIGATION BACK] Solo mode - skipping coordination delays')
+      if (latestCanvasDataId.current === currentCanvasId &&
+          (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+        console.log('💾 [NAVIGATION BACK] Saving our own canvas...')
+        await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+        hasUnsavedChanges.current = false
+        console.log('💾 [NAVIGATION BACK] ✅ Canvas saved')
+      }
     }
 
     const newPath = [...canvasPath]
@@ -1193,6 +1306,14 @@ export default function StoryPage({ params }: PageProps) {
           zoom={zoom}
           onZoomChange={setZoom}
           eventDepth={canvasPath.filter(item => item.id.startsWith('event-canvas-')).length}
+          // Collaboration props
+          collaborators={presenceState}
+          isViewer={isViewer}
+          connectionStatus={collaborationEnabled ? connectionStatus : 'disconnected'}
+          collaborationEnabled={collaborationEnabled}
+          lockedNodes={lockedNodes}
+          onNodeLock={(nodeId, field) => broadcastNodeLock(nodeId, field, username)}
+          onNodeUnlock={broadcastNodeUnlock}
         />
 
         {/* Loading overlay when switching canvases */}
@@ -1285,6 +1406,22 @@ export default function StoryPage({ params }: PageProps) {
           storyTitle={story.title}
         />
       )}
+
+      {/* Share Dialog */}
+      <ShareDialog
+        open={showShareDialog}
+        onOpenChange={setShowShareDialog}
+        storyId={resolvedParams.id}
+        storyTitle={story?.title || 'Untitled'}
+        isOwner={storyAccess?.isOwner ?? false}
+        ownerName={(story?.owner as any)?.username || (story?.owner as any)?.email}
+        onlineUserIds={new Set(Object.keys(presenceState))}
+        onRoleChange={broadcastRoleChange}
+        onCollaboratorRemoved={broadcastCollaboratorRemoved}
+        onCollaboratorsChanged={broadcastCollaboratorsChanged}
+        collaborationEnabled={collaborationEnabled}
+        onCollaborationToggle={setCollaborationEnabled}
+      />
 
     </div>
   )

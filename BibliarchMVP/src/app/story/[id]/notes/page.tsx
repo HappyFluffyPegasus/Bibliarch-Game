@@ -208,6 +208,7 @@ export default function NotesPage() {
 
     // Helper function to recursively save sub-canvas templates
     const saveSubCanvases = (nodes: any[]) => {
+      if (!nodes || !Array.isArray(nodes)) return
       nodes.forEach((node: any) => {
         if (!expandableTypes.includes(node.type)) return
 
