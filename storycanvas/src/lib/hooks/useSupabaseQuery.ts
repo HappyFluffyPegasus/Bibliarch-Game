@@ -19,10 +19,31 @@ export function useUser() {
     queryKey: queryKeys.user,
     queryFn: async () => {
       const { data: { user }, error } = await supabase.auth.getUser()
-      if (error) throw error
+
+      // If JWT is expired, try to refresh the session
+      if (error?.message?.includes('JWT') || error?.message?.includes('expired')) {
+        console.warn('🔐 JWT expired, attempting to refresh session...')
+        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession()
+
+        if (refreshError || !session) {
+          console.error('🔐 Session refresh failed, user needs to log in again')
+          // Return null to trigger redirect to login
+          return null
+        }
+
+        console.log('🔐 Session refreshed successfully')
+        return session.user
+      }
+
+      if (error) {
+        console.error('🔐 Auth error:', error.message)
+        throw error
+      }
+
       return user
     },
     staleTime: 10 * 60 * 1000, // User data rarely changes, cache for 10 min
+    retry: 1, // Only retry once for auth errors
   })
 }
 
@@ -77,6 +98,7 @@ export function useStories(userId: string | null | undefined) {
 }
 
 // Get stories with pagination (20 per page)
+// RLS handles filtering - shows owned stories + collaborated stories
 const STORIES_PER_PAGE = 20
 
 export function useStoriesPaginated(userId: string | null | undefined) {
@@ -90,10 +112,11 @@ export function useStoriesPaginated(userId: string | null | undefined) {
       const from = pageParam * STORIES_PER_PAGE
       const to = from + STORIES_PER_PAGE - 1
 
+      // Don't filter by user_id - RLS handles access control
+      // This returns both owned stories and collaborated stories
       const { data, error, count } = await supabase
         .from('stories')
-        .select('id, title, bio, created_at, updated_at', { count: 'exact' })
-        .eq('user_id', userId)
+        .select('id, title, bio, created_at, updated_at, user_id', { count: 'exact' })
         .order('updated_at', { ascending: false })
         .range(from, to)
 
@@ -118,26 +141,34 @@ export function useStoriesPaginated(userId: string | null | undefined) {
   })
 }
 
-// Get a single story
-export function useStory(storyId: string | null | undefined, userId: string | null | undefined) {
+// Get a single story (RLS handles access control for owners and collaborators)
+export function useStory(storyId: string | null | undefined) {
   const supabase = createClient()
 
   return useQuery({
     queryKey: storyId ? queryKeys.story(storyId) : ['story', 'null'],
     queryFn: async () => {
-      if (!storyId || !userId) return null
+      if (!storyId) return null
 
       const { data, error } = await supabase
         .from('stories')
-        .select('id, title, bio')
+        .select(`
+          id,
+          title,
+          bio,
+          user_id,
+          owner:profiles!user_id (
+            username,
+            email
+          )
+        `)
         .eq('id', storyId)
-        .eq('user_id', userId)
         .single()
 
       if (error) throw error
       return data
     },
-    enabled: !!storyId && !!userId,
+    enabled: !!storyId,
     staleTime: 5 * 60 * 1000, // Individual story metadata, cache for 5 min
   })
 }
@@ -145,11 +176,22 @@ export function useStory(storyId: string | null | undefined, userId: string | nu
 // Get canvas data
 export function useCanvas(storyId: string | null | undefined, canvasType: string) {
   const supabase = createClient()
+  const queryClient = useQueryClient()
+
+  // Validate storyId is a proper UUID, not "undefined" string
+  const isValidUUID = storyId &&
+    typeof storyId === 'string' &&
+    storyId !== 'undefined' &&
+    storyId !== 'null' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storyId)
 
   return useQuery({
-    queryKey: storyId ? queryKeys.canvas(storyId, canvasType) : ['canvas', 'null', canvasType],
+    queryKey: isValidUUID ? queryKeys.canvas(storyId, canvasType) : ['canvas', 'invalid', canvasType],
     queryFn: async () => {
-      if (!storyId) return null
+      if (!isValidUUID) {
+        console.error('Invalid storyId passed to useCanvas:', storyId, typeof storyId)
+        return null
+      }
 
       const { data, error } = await supabase
         .from('canvas_data')
@@ -162,13 +204,22 @@ export function useCanvas(storyId: string | null | undefined, canvasType: string
 
       // PGRST116 means no rows found, which is normal for new canvases
       if (error && error.code !== 'PGRST116') {
-        console.error('Error loading canvas:', error)
+        console.error('Error loading canvas:', error.code, error.message, error.details, error.hint)
+
+        // PGRST303 is JWT expired - redirect to login
+        if (error.code === 'PGRST303' || error.message?.includes('JWT') || error.message?.includes('expired')) {
+          console.error('🔐 JWT expired while loading canvas, user needs to re-authenticate')
+          // Invalidate user query to trigger redirect to login
+          queryClient.invalidateQueries({ queryKey: queryKeys.user })
+          throw new Error('Authentication expired')
+        }
       }
 
       return data || null
     },
-    enabled: !!storyId,
-    staleTime: 5 * 1000, // Canvas data changes frequently, cache for only 5 seconds to prevent stale data
+    enabled: !!isValidUUID,
+    staleTime: 5000, // Consider fresh for 5 seconds to prevent duplicate requests on rapid navigation
+    refetchOnMount: 'always', // Always refetch when component mounts (critical for collaboration)
   })
 }
 
@@ -292,10 +343,24 @@ export function useSaveCanvas() {
         })
         .select()
 
-      if (error) {
+      // Check if error is actually an error (not just an empty object)
+      if (error && (error.message || error.code || Object.keys(error).length > 0)) {
         console.error('Supabase save error:', error)
+        console.error('Error details:', JSON.stringify(error, null, 2))
         throw error
       }
+
+      // Sometimes Supabase returns empty error object, treat as success but verify data
+      if (error && Object.keys(error).length === 0) {
+        console.warn('⚠️ Received empty error object from Supabase, verifying data was saved')
+        // Verify by checking if data was returned
+        if (!data || data.length === 0) {
+          console.error('⚠️ Empty error with no data returned - save may have failed silently')
+        }
+      }
+
+      // Log successful save
+      console.log('✅ Canvas saved successfully:', canvasType, 'nodes:', nodes.length)
 
       return data
     },

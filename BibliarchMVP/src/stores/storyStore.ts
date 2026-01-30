@@ -4,7 +4,7 @@ import { Story, CanvasData, MasterDoc } from '@/types/story'
 import { Character } from '@/types/character'
 import { TimelineEvent, TimelineTrack } from '@/types/timeline'
 import { Scene } from '@/types/scene'
-import { World } from '@/types/world'
+import { World, SerializedWorld, serializeWorld, deserializeWorld } from '@/types/world'
 
 interface StoryState {
   // All stories
@@ -323,7 +323,7 @@ export const useStoryStore = create<StoryState>()(
     }),
     {
       name: 'bibliarch-mvp-storage',
-      // Serialize dates properly
+      // Custom serialization for dates and typed arrays
       storage: {
         getItem: (name) => {
           const str = localStorage.getItem(name)
@@ -337,10 +337,31 @@ export const useStoryStore = create<StoryState>()(
               updatedAt: new Date(s.updatedAt),
             }))
           }
+          // Deserialize worlds (convert plain arrays back to typed arrays)
+          if (data.state?.worlds) {
+            const deserializedWorlds: Record<string, World> = {}
+            for (const [key, val] of Object.entries(data.state.worlds)) {
+              try {
+                deserializedWorlds[key] = deserializeWorld(val as SerializedWorld)
+              } catch {
+                // Skip corrupted world data
+              }
+            }
+            data.state.worlds = deserializedWorlds
+          }
           return data
         },
         setItem: (name, value) => {
-          localStorage.setItem(name, JSON.stringify(value))
+          // Serialize worlds (convert typed arrays to plain arrays)
+          const toSerialize = { ...value }
+          if (toSerialize.state?.worlds) {
+            const serializedWorlds: Record<string, SerializedWorld> = {}
+            for (const [key, val] of Object.entries(toSerialize.state.worlds as Record<string, World>)) {
+              serializedWorlds[key] = serializeWorld(val)
+            }
+            toSerialize.state = { ...toSerialize.state, worlds: serializedWorlds as unknown as Record<string, World> }
+          }
+          localStorage.setItem(name, JSON.stringify(toSerialize))
         },
         removeItem: (name) => {
           localStorage.removeItem(name)

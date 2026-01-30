@@ -4,7 +4,7 @@ import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { flushSync } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Plus, Minus, MousePointer, Hand, Type, Folder, User, MapPin, Calendar, Undo, Redo, X, List, Move, Image as ImageIcon, Table, Heart, Settings, SlidersHorizontal, TextCursor, Palette, ArrowRight, Menu, Grid3x3, Bold, Italic, Underline, ArrowUpRight, StickyNote, LayoutTemplate, Trash2, Copy, Edit3, Smile, Home, Castle, TreePine, Mountain, Building2, Landmark, Church, Store, Hospital, School, Factory, Waves, Palmtree, Tent, Map, Star, Bookmark, Flag, Compass, Globe, Sun, Moon, Cloud, Zap, Flame, Snowflake, Crown, Shield, Sword, Gem, Key, Lock, Gift, Music, Camera, Gamepad2, Trophy, Target, Lightbulb, Rocket, Anchor, Plane, Car, Ship, Train, FileText, File, ClipboardList, Pin, Paperclip, Sparkles, FolderOpen, Book, BookOpen, Library, Archive, Package, Box, Notebook, FileStack, Circle, Square, Triangle, Diamond, Hexagon, Octagon, Pentagon, Check, Droplet, Flower, Leaf, TreeDeciduous, Drama, Film, Mic, Dice5, Users, UserCircle, Skull, Ghost, Bot, Orbit, Wand2, Baby, Bird, Bug, Cat, Dog, Fish, Rabbit, Snail, Turtle, Squirrel, Rat, Building, Crosshair, ScrollText } from 'lucide-react'
+import { Plus, Minus, MousePointer, Hand, Type, Folder, User, MapPin, Calendar, Undo, Redo, X, List, Move, Image as ImageIcon, Table, Heart, Settings, SlidersHorizontal, TextCursor, Palette, ArrowRight, Menu, Grid3x3, Bold, Italic, Underline, ArrowUpRight, StickyNote, LayoutTemplate, Trash2, Copy, Edit3, Smile, Home, Castle, TreePine, Mountain, Building2, Landmark, Church, Store, Hospital, School, Factory, Waves, Palmtree, Tent, Map, Star, Bookmark, Flag, Compass, Globe, Sun, Moon, Cloud, Zap, Flame, Snowflake, Crown, Shield, Sword, Gem, Key, Lock, Gift, Music, Camera, Gamepad2, Trophy, Target, Lightbulb, Rocket, Anchor, Plane, Car, Ship, Train, FileText, File, ClipboardList, Pin, Paperclip, Sparkles, FolderOpen, Book, BookOpen, Library, Archive, Package, Box, Notebook, FileStack, Circle, Square, Triangle, Diamond, Hexagon, Octagon, Pentagon, Check, Droplet, Flower, Leaf, TreeDeciduous, Drama, Film, Mic, Dice5, Users, UserCircle, Skull, Ghost, Bot, Orbit, Wand2, Baby, Bird, Bug, Cat, Dog, Fish, Rabbit, Snail, Turtle, Squirrel, Rat, Building, Crosshair, ScrollText, CloudOff, Wifi, Loader2, Eye } from 'lucide-react'
 import { PaletteSelector } from '@/components/ui/palette-selector'
 import { NodeStylePanel } from '@/components/ui/node-style-panel'
 import { PerformanceOptimizer } from '@/lib/performance-utils'
@@ -128,6 +128,23 @@ interface CustomTemplate {
   updatedAt: number
 }
 
+// Collaborator presence state
+interface CollaboratorPresence {
+  odataUserId: string
+  username: string
+  color: string
+  cursor?: { x: number; y: number }
+  lastSeen: number
+}
+
+// Locked node info (for collaboration)
+interface LockedNodeInfo {
+  nodeId: string
+  odataUserId: string
+  username: string
+  field: string
+}
+
 interface HTMLCanvasProps {
   storyId: string
   currentCanvasId?: string // Current canvas ID to check depth
@@ -136,7 +153,10 @@ interface HTMLCanvasProps {
   currentFolderTitle?: string | null // Current folder title for folder-specific palettes
   initialNodes?: Node[]
   initialConnections?: Connection[]
+  remoteNodes?: Node[] // For real-time collaboration updates
+  remoteConnections?: Connection[] // For real-time collaboration updates
   onSave?: (nodes: Node[], connections: Connection[]) => void
+  onBroadcastChange?: (nodes: Node[], connections: Connection[]) => void // Broadcast to collaborators
   onNavigateToCanvas?: (canvasId: string, nodeTitle: string) => void
   onStateChange?: (nodes: Node[], connections: Connection[]) => void  // Called when state changes (no save)
   onPaletteSave?: (palette: any) => void  // Called when palette is applied to save to database
@@ -153,7 +173,6 @@ interface HTMLCanvasProps {
   collaborators?: Record<string, CollaboratorPresence>
   isViewer?: boolean  // If true, user can only view (not edit) the canvas
   connectionStatus?: 'connected' | 'connecting' | 'disconnected'  // Real-time connection status
-  collaborationEnabled?: boolean  // If true, show Live indicator and enable real-time features
   lockedNodes?: Record<string, LockedNodeInfo>  // Nodes currently being edited by other users
   onNodeLock?: (nodeId: string, field: string) => void  // Called when user starts editing a field
   onNodeUnlock?: (nodeId: string) => void  // Called when user stops editing a field
@@ -178,7 +197,10 @@ export default function HTMLCanvas({
   currentFolderTitle = null,
   initialNodes = [],
   initialConnections = [],
+  remoteNodes,
+  remoteConnections,
   onSave,
+  onBroadcastChange,
   onNavigateToCanvas,
   onStateChange,
   onPaletteSave,
@@ -194,18 +216,88 @@ export default function HTMLCanvas({
   collaborators = {},
   isViewer = false,
   connectionStatus = 'disconnected',
-  collaborationEnabled = false,
   lockedNodes = {},
   onNodeLock,
   onNodeUnlock
 }: HTMLCanvasProps) {
   const colorContext = useColorContext()
+
+  // Keep refs for callbacks to avoid stale closures in useEffects
+  const onStateChangeRef = useRef(onStateChange)
+  const onBroadcastChangeRef = useRef(onBroadcastChange)
+  useEffect(() => {
+    onStateChangeRef.current = onStateChange
+  }, [onStateChange])
+  useEffect(() => {
+    onBroadcastChangeRef.current = onBroadcastChange
+  }, [onBroadcastChange])
+
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
   const [connections, setConnections] = useState<Connection[]>(initialConnections)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Track when applying remote changes to prevent re-broadcasting
+  const isApplyingRemote = useRef(false)
+
+  // Helper to check if user can edit
+  const canEdit = !isViewer
+
+  // Helper to check if a node is locked by another user
+  const isNodeLocked = useCallback((nodeId: string) => {
+    return !!lockedNodes[nodeId]
+  }, [lockedNodes])
+
+  // Get lock info for a node (returns undefined if not locked)
+  const getNodeLockInfo = useCallback((nodeId: string) => {
+    return lockedNodes[nodeId]
+  }, [lockedNodes])
+
+  // Sync remote changes from collaborators
+  useEffect(() => {
+    console.log('📡 HTMLCanvas remote sync effect - remoteNodes:', remoteNodes?.length, 'remoteConnections:', remoteConnections?.length)
+    if (remoteNodes !== undefined && remoteConnections !== undefined) {
+      console.log('📡 HTMLCanvas APPLYING remote changes:', remoteNodes.length, 'nodes')
+      isApplyingRemote.current = true
+      setNodes(remoteNodes)
+      setConnections(remoteConnections)
+      // Also update visible nodes to include any new nodes
+      setVisibleNodeIds(remoteNodes.map((n: any) => n.id))
+      // Reset flag after React processes the state update
+      requestAnimationFrame(() => {
+        isApplyingRemote.current = false
+      })
+    }
+  }, [remoteNodes, remoteConnections])
   const [tool, setTool] = useState<'pan' | 'select' | 'text' | 'character' | 'event' | 'location' | 'folder' | 'list' | 'image' | 'table' | 'connect' | 'relationship-canvas' | 'line' | 'compact-text'>('select')
-  const [editingField, setEditingField] = useState<{nodeId: string, field: string} | null>(null)
+  const [editingField, setEditingFieldState] = useState<{nodeId: string, field: string} | null>(null)
   const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Wrapper for setEditingField that handles lock/unlock broadcasting
+  const setEditingField = useCallback((newValue: {nodeId: string, field: string} | null) => {
+    // Viewers cannot edit any fields
+    if (isViewer && newValue) {
+      console.log('👁️ Viewer mode - editing blocked')
+      return
+    }
+
+    // If trying to edit a node that's locked by another user, don't allow it
+    if (newValue && lockedNodes[newValue.nodeId]) {
+      console.log('🔒 Cannot edit - node is locked by', lockedNodes[newValue.nodeId].username)
+      return // Don't allow editing locked nodes
+    }
+
+    setEditingFieldState(prev => {
+      // Unlock the previous node if we were editing something
+      if (prev && onNodeUnlock) {
+        onNodeUnlock(prev.nodeId)
+      }
+      // Lock the new node if we're starting to edit
+      if (newValue && onNodeLock) {
+        onNodeLock(newValue.nodeId, newValue.field)
+      }
+      return newValue
+    })
+  }, [onNodeLock, onNodeUnlock, lockedNodes, isViewer])
   const [isPanning, setIsPanning] = useState(false)
   const [lastPanPoint, setLastPanPoint] = useState({ x: 0, y: 0 })
   const [isSpaceHeld, setIsSpaceHeld] = useState(false) // For Space+drag panning
@@ -228,9 +320,17 @@ export default function HTMLCanvas({
 
   // Node style preferences state
   const [nodeStylePreferences, setNodeStylePreferences] = useState<NodeStylePreferences>(() => {
-    // Load from localStorage on init
-    const saved = localStorage.getItem('neighbornotes-node-styles')
-    return saved ? JSON.parse(saved) : {
+    // Load from localStorage on init (with SSR safety check)
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('neighbornotes-node-styles')
+      return saved ? JSON.parse(saved) : {
+        corners: 'rounded',
+        outlines: 'mixed',
+        textColor: 'dark',
+        textAlign: 'left'
+      }
+    }
+    return {
       corners: 'rounded',
       outlines: 'mixed',
       textColor: 'dark',
@@ -296,19 +396,36 @@ export default function HTMLCanvas({
 
   // Wrapper for onSave that skips saving when in template editor mode or when realtimeSave is disabled
   // When realtimeSave is false, saves only happen on navigation/manual button (parent handles via onStateChange)
+  // Also enforces viewer mode - viewers cannot save changes
+  // Broadcasting for realtime collaboration happens regardless of realtimeSave flag
   const handleSave = useCallback((nodesToSave: Node[], connectionsToSave: Connection[]) => {
+    // Viewers cannot save or broadcast changes
+    if (isViewer) {
+      console.log('📡 Viewer mode - save blocked')
+      return
+    }
     if (templateEditorMode) {
       // Don't save to parent when editing a template
       return
     }
-    if (!realtimeSave) {
-      // Don't auto-save on every change - parent will save on navigation/manual
-      return
+
+    // Always broadcast to collaborators for real-time sync (regardless of realtimeSave)
+    // Use ref to always get the latest callback
+    if (onBroadcastChangeRef.current) {
+      onBroadcastChangeRef.current(nodesToSave, connectionsToSave)
     }
-    if (onSave) {
+
+    // Only auto-save to database if realtimeSave is enabled
+    if (realtimeSave && onSave) {
       onSave(nodesToSave, connectionsToSave)
     }
-  }, [templateEditorMode, realtimeSave, onSave])
+  }, [templateEditorMode, realtimeSave, onSave, isViewer])
+
+  // Keep a ref to handleSave so callbacks can always access the latest version
+  const handleSaveRef = useRef(handleSave)
+  useEffect(() => {
+    handleSaveRef.current = handleSave
+  }, [handleSave])
 
   // Use controlled zoom if provided, otherwise use internal state
   const [internalZoom, setInternalZoom] = useState(1)
@@ -557,7 +674,7 @@ export default function HTMLCanvas({
 
     const handleMouseUp = () => {
       saveToHistory(nodesRef.current, connectionsRef.current)
-      handleSave(nodesRef.current, connectionsRef.current)
+      handleSaveRef.current(nodesRef.current, connectionsRef.current)
       columnWidthsRef.current = null
       setResizingColumn(null)
     }
@@ -580,7 +697,7 @@ export default function HTMLCanvas({
       document.removeEventListener('touchmove', handleTouchMove)
       document.removeEventListener('touchend', handleMouseUp)
     }
-  }, [resizingColumn, onSave])
+  }, [resizingColumn])
 
   // Undo/Redo system - completely rebuilt
   const [history, setHistory] = useState<{ nodes: Node[], connections: Connection[] }[]>([])
@@ -621,6 +738,15 @@ export default function HTMLCanvas({
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current)
       blurTimeoutRef.current = null
+    }
+  }, [])
+
+  // Cleanup blur timeout on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (blurTimeoutRef.current) {
+        clearTimeout(blurTimeoutRef.current)
+      }
     }
   }, [])
 
@@ -890,7 +1016,7 @@ export default function HTMLCanvas({
   useEffect(() => {
     const timeoutId = setTimeout(async () => {
       if (onSave && (nodes.length > 0 || connections.length > 0)) {
-        await handleSave(nodes, connections)
+        await handleSaveRef.current(nodes, connections)
 
         // Check if any character nodes exist in current canvas
         const hasCharacters = nodes.some(node => node.type === 'character')
@@ -983,14 +1109,29 @@ export default function HTMLCanvas({
     setHistoryIndex(0)
   }, [initialNodes, initialConnections])
 
-  // Notify parent when state changes (for navigation saves, without auto-saving)
-  // onStateChange excluded from deps to prevent cursor jumping from constant re-renders
+  // Track if this is the initial mount - don't broadcast initial data
+  const isInitialMount = useRef(true)
   useEffect(() => {
-    if (onStateChange) {
-      onStateChange(nodes, connections)
+    // Set to false after first render cycle completes
+    const timer = setTimeout(() => {
+      isInitialMount.current = false
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // Notify parent when state changes (for navigation saves, without auto-saving)
+  // Uses ref to always get the latest callback without triggering re-renders
+  // Skip if applying remote changes to prevent echo/re-broadcast
+  // Skip if viewer to prevent any state changes from propagating
+  // Skip initial mount to prevent broadcasting stale data during navigation
+  useEffect(() => {
+    if (isInitialMount.current) return // Don't broadcast on initial mount
+    if (isApplyingRemote.current) return
+    if (isViewer) return // Viewers should never trigger state changes
+    if (onStateChangeRef.current) {
+      onStateChangeRef.current(nodes, connections)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, connections])
+  }, [nodes, connections, isViewer])
 
   // Update visible nodes when nodes change - memoized to prevent infinite loops
   const nodeIdsSnapshot = useMemo(() =>
@@ -1324,7 +1465,7 @@ export default function HTMLCanvas({
           setNodes(newNodes)
           setConnections(newConnections)
           saveToHistory(newNodes, newConnections)
-          handleSave(newNodes, newConnections)
+          handleSaveRef.current(newNodes, newConnections)
           setSelectedId(null)
           setSelectedIds([])
         }
@@ -1336,12 +1477,16 @@ export default function HTMLCanvas({
             ...n,
             id: generateUniqueId(n.type || 'node'),
             x: n.x + 30,
-            y: n.y + 30
+            y: n.y + 30,
+            linkedCanvasId: undefined,
+            childIds: [],
+            parentId: undefined
           }))
           const newNodes = [...nodes, ...pastedNodes]
           setNodes(newNodes)
+          setVisibleNodeIds([...visibleNodeIds, ...pastedNodes.map(n => n.id)])
           saveToHistory(newNodes, connections)
-          handleSave(newNodes, connections)
+          handleSaveRef.current(newNodes, connections)
           // Select the pasted nodes
           setSelectedIds(pastedNodes.map(n => n.id))
           if (pastedNodes.length === 1) {
@@ -1359,12 +1504,16 @@ export default function HTMLCanvas({
             ...n,
             id: generateUniqueId(n.type || 'node'),
             x: n.x + 30,
-            y: n.y + 30
+            y: n.y + 30,
+            linkedCanvasId: undefined,
+            childIds: [],
+            parentId: undefined
           }))
           const newNodes = [...nodes, ...dupedNodes]
           setNodes(newNodes)
+          setVisibleNodeIds([...visibleNodeIds, ...dupedNodes.map(n => n.id)])
           saveToHistory(newNodes, connections)
-          handleSave(newNodes, connections)
+          handleSaveRef.current(newNodes, connections)
           // Select the duplicated nodes
           setSelectedIds(dupedNodes.map(n => n.id))
           if (dupedNodes.length === 1) {
@@ -1459,6 +1608,9 @@ export default function HTMLCanvas({
       return
     }
 
+    // Viewers cannot create nodes
+    if (isViewer) return
+
     // Only create nodes when a creation tool is selected
     if (!['text', 'character', 'event', 'location', 'folder', 'list', 'image', 'table', 'relationship-canvas', 'line', 'compact-text'].includes(tool)) {
       return
@@ -1499,7 +1651,15 @@ export default function HTMLCanvas({
     setNodes(newNodes)
     setVisibleNodeIds([...visibleNodeIds, newNode.id])  // Add to visible nodes so it renders!
     saveToHistory(newNodes, connections)
-    handleSave(newNodes, connections)  // Save to database immediately
+
+    // CRITICAL: Broadcast immediately for real-time collaboration
+    // Call broadcast directly to ensure it happens
+    if (onBroadcastChangeRef.current) {
+      console.log('📡 Node creation - broadcasting directly:', newNodes.length, 'nodes')
+      onBroadcastChangeRef.current(newNodes, connections)
+    }
+
+    handleSaveRef.current(newNodes, connections)  // Also save to database
 
     // Clear any multi-selection and select only the newly created node
     // Use flushSync to prevent the auto-sync useEffect from interfering
@@ -1509,7 +1669,7 @@ export default function HTMLCanvas({
     })
     setTool('select')  // Switch to select tool after creating node for immediate interaction
 
-  }, [tool, nodes, connections, saveToHistory, editingField, onSave, visibleNodeIds])
+  }, [tool, nodes, connections, saveToHistory, editingField, visibleNodeIds])
 
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
     // Blur any active text field when clicking on canvas background
@@ -1588,6 +1748,7 @@ export default function HTMLCanvas({
   // Helper function to handle node drag start for both mouse and touch events
   const handleNodeDragStart = useCallback((node: Node, clientX: number, clientY: number, isTouch: boolean = false) => {
     if (tool !== 'select') return false
+    if (isViewer) return false // Viewers cannot drag nodes
 
     // For touch events, check for double-tap to open context menu
     if (isTouch) {
@@ -1761,6 +1922,11 @@ export default function HTMLCanvas({
       const dragThreshold = 3
 
       if (distance > dragThreshold) {
+        // Viewers cannot drag nodes
+        if (isViewer) {
+          setIsDragReady(null)
+          return
+        }
         // Start dragging the node
         const draggedNode = nodes.find(n => n.id === isDragReady)
         if (draggedNode) {
@@ -1782,6 +1948,11 @@ export default function HTMLCanvas({
       const resizeThreshold = 3
 
       if (distance > resizeThreshold) {
+        // Viewers cannot resize nodes
+        if (isViewer) {
+          setIsResizeReady(null)
+          return
+        }
         // Start resizing the node
         setResizingNode(isResizeReady)
         setIsResizeReady(null)
@@ -2008,7 +2179,7 @@ export default function HTMLCanvas({
       }
     }
 
-  }, [isPanning, lastPanPoint, draggingNode, isDragReady, dragOffset, dragStartPos, resizingNode, resizeStartPos, resizeStartSize, isDraggingCharacter, isSelecting, tool, selectionStart, nodes, draggingLineVertex])
+  }, [isPanning, lastPanPoint, draggingNode, isDragReady, dragOffset, dragStartPos, resizingNode, resizeStartPos, resizeStartSize, isDraggingCharacter, isSelecting, tool, selectionStart, nodes, draggingLineVertex, zoom])
 
   const handleCanvasMouseUp = useCallback((e?: React.MouseEvent) => {
     setIsPanning(false)
@@ -2119,7 +2290,7 @@ export default function HTMLCanvas({
             setDragPosition({ x: 0, y: 0 })
             saveToHistory(updatedNodes, connections)
             // Save drop into list to database
-            handleSave(updatedNodes, connections)
+            handleSaveRef.current(updatedNodes, connections)
 
             droppedIntoList = true
             break
@@ -2257,7 +2428,7 @@ export default function HTMLCanvas({
         setDragPosition({ x: 0, y: 0 })
         saveToHistory(updatedNodes, connections)
         // Save node position to database
-        handleSave(updatedNodes, connections)
+        handleSaveRef.current(updatedNodes, connections)
       }
     }
 
@@ -2270,7 +2441,7 @@ export default function HTMLCanvas({
       // Re-enable text selection after resize
       document.body.style.userSelect = ''
       // Save resize to database
-      handleSave(nodes, connections)
+      handleSaveRef.current(nodes, connections)
     }
 
     if (draggingLineVertex) {
@@ -2278,7 +2449,7 @@ export default function HTMLCanvas({
       saveToHistory(nodes, connections)
       setDraggingLineVertex(null)
       if (onSave) {
-        handleSave(nodes, connections)
+        handleSaveRef.current(nodes, connections)
       }
     }
 
@@ -2286,7 +2457,7 @@ export default function HTMLCanvas({
       // Delay to allow final render with high quality after movement stops
       setTimeout(() => setIsMoving(false), 100)
     }
-  }, [isMoving, draggingNode, isDragReady, isResizeReady, resizingNode, nodes, connections, saveToHistory, dragPosition, tool, selectedIds, zoom, isSelecting, selectionStart, zoomCenter, draggingLineVertex, onSave])
+  }, [isMoving, draggingNode, isDragReady, isResizeReady, resizingNode, nodes, connections, saveToHistory, dragPosition, tool, selectedIds, zoom, isSelecting, selectionStart, zoomCenter, draggingLineVertex])
 
   // Note: Mouse wheel zoom is now handled by native event listener with passive:false (see useEffect above)
   // This ensures preventDefault() works to stop browser zoom
@@ -2736,7 +2907,6 @@ export default function HTMLCanvas({
   const getLightBorderColor = (nodeType: string) => {
     const nodeColor = getNodeColor(nodeType, undefined, undefined, false)
     const borderColor = darkenColor(nodeColor, 0.2)
-    console.log(`Light border for ${nodeType}: node=${nodeColor}, border=${borderColor}`)
     return borderColor
   }
 
@@ -2876,6 +3046,18 @@ export default function HTMLCanvas({
 
     // Handle double-click on relationship-canvas nodes
     if (e.detail === 2 && node.type === 'relationship-canvas') {
+      // Check if node is locked by another user
+      const lockedBy = lockedNodes[node.id]
+      if (lockedBy) {
+        alert(`This relationship canvas is currently being edited by ${lockedBy.username}`)
+        return
+      }
+
+      // Lock the node for editing
+      if (onNodeLock) {
+        onNodeLock(node.id, 'relationship-editor')
+      }
+
       // Refresh character list to ensure dropdown is populated
       refreshAllCharacters()
       setRelationshipCanvasModal({
@@ -2983,8 +3165,28 @@ export default function HTMLCanvas({
     }
   }
 
+  // Render lock indicator for nodes being edited by other users
+  const renderLockIndicator = (nodeId: string) => {
+    const lockInfo = lockedNodes[nodeId]
+    if (!lockInfo) return null
 
-
+    return (
+      <div
+        className="absolute -top-6 left-0 right-0 flex items-center justify-center z-50 pointer-events-none"
+      >
+        <div
+          className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium shadow-lg"
+          style={{
+            backgroundColor: 'rgba(239, 68, 68, 0.9)',
+            color: 'white',
+          }}
+        >
+          <Lock className="w-3 h-3" />
+          <span>{lockInfo.username} is editing</span>
+        </div>
+      </div>
+    )
+  }
 
   const calculateAutoSize = (node: Node, content: string) => {
     // Auto-sizing logic based on node type and content
@@ -3134,7 +3336,7 @@ export default function HTMLCanvas({
     saveToHistory(newNodes, newConnections)
     setSelectedId(null)
     // Save deletion to database
-    handleSave(newNodes, newConnections)
+    handleSaveRef.current(newNodes, newConnections)
   }
 
   const handleDeleteConnection = (connectionId: string) => {
@@ -3143,7 +3345,7 @@ export default function HTMLCanvas({
     saveToHistory(nodes, newConnections)
     setConnectionContextMenu(null)
     // Save deletion to database
-    handleSave(nodes, newConnections)
+    handleSaveRef.current(nodes, newConnections)
   }
 
   const handleColorChange = (nodeId: string, color: string) => {
@@ -3157,7 +3359,7 @@ export default function HTMLCanvas({
 
     // Save color change to database
     if (onSave) {
-      handleSave(newNodes, connections)
+      handleSaveRef.current(newNodes, connections)
     }
   }
 
@@ -3185,7 +3387,7 @@ export default function HTMLCanvas({
 
     // Save setting change to database
     if (onSave) {
-      handleSave(newNodes, connections)
+      handleSaveRef.current(newNodes, connections)
     }
   }
 
@@ -3217,7 +3419,7 @@ export default function HTMLCanvas({
 
     // Save immediately to database
     if (onSave) {
-      handleSave(newNodes, connections)
+      handleSaveRef.current(newNodes, connections)
     }
 
   }
@@ -3412,7 +3614,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   const addTableColumn = (nodeId: string) => {
@@ -3435,7 +3637,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   const deleteTableRow = (nodeId: string, rowIndex: number) => {
@@ -3448,7 +3650,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   const deleteTableColumn = (nodeId: string, colKey: string) => {
@@ -3492,7 +3694,7 @@ export default function HTMLCanvas({
     )
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
   }
 
   // Template system functions
@@ -3547,12 +3749,11 @@ export default function HTMLCanvas({
 
     // Create a new folder node with the template's interior
     const folderId = `folder-${Date.now()}`
+    const linkedCanvasId = `canvas-${Date.now()}`
 
     // Determine node type and properties based on display type
-    // Use type-specific linkedCanvasId patterns to match navigation logic
     let newNode: Node
     if (template.displayType === 'character') {
-      const linkedCanvasId = `character-canvas-${folderId}`
       newNode = {
         id: folderId,
         x: viewportCenterX - 160,
@@ -3566,7 +3767,6 @@ export default function HTMLCanvas({
         profileImageUrl: template.profileImageUrl
       }
     } else if (template.displayType === 'location') {
-      const linkedCanvasId = `location-canvas-${folderId}`
       newNode = {
         id: folderId,
         x: viewportCenterX - 160,
@@ -3580,7 +3780,6 @@ export default function HTMLCanvas({
         linkedCanvasId
       }
     } else if (template.displayType === 'event') {
-      const linkedCanvasId = `event-canvas-${folderId}`
       newNode = {
         id: folderId,
         x: viewportCenterX - 140,
@@ -3596,7 +3795,6 @@ export default function HTMLCanvas({
       }
     } else {
       // folder type (default)
-      const linkedCanvasId = `folder-canvas-${folderId}`
       newNode = {
         id: folderId,
         x: viewportCenterX - 150,
@@ -3613,7 +3811,7 @@ export default function HTMLCanvas({
     const updatedNodes = [...nodes, newNode]
     setNodes(updatedNodes)
     saveToHistory(updatedNodes, connections)
-    handleSave(updatedNodes, connections)
+    handleSaveRef.current(updatedNodes, connections)
 
     // Save template interior nodes to the linked canvas
     // Always create the canvas record so it can be edited later
@@ -3639,19 +3837,9 @@ export default function HTMLCanvas({
           idMapping[node.id] = newId
 
           // Also generate new linkedCanvasId for folder/character/location nodes
-          // Use type-specific patterns to match navigation logic
           let newLinkedCanvasId = node.linkedCanvasId
           if (node.linkedCanvasId && (node.type === 'folder' || node.type === 'character' || node.type === 'location' || node.type === 'event')) {
-            const suffix = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-            if (node.type === 'character') {
-              newLinkedCanvasId = `character-canvas-${newId}`
-            } else if (node.type === 'location') {
-              newLinkedCanvasId = `location-canvas-${newId}`
-            } else if (node.type === 'event') {
-              newLinkedCanvasId = `event-canvas-${newId}`
-            } else {
-              newLinkedCanvasId = `folder-canvas-${newId}`
-            }
+            newLinkedCanvasId = `canvas-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
             canvasIdMapping[node.linkedCanvasId] = newLinkedCanvasId
           }
 
@@ -3672,14 +3860,14 @@ export default function HTMLCanvas({
           to: idMapping[conn.to] || conn.to
         }))
 
-        console.log('[Template] Saving interior canvas:', newNode.linkedCanvasId, 'with', newTemplateNodes.length, 'nodes')
+        console.log('[Template] Saving interior canvas:', linkedCanvasId, 'with', newTemplateNodes.length, 'nodes')
         console.log('[Template] Position offset applied:', { offsetX, offsetY })
 
         const { error } = await supabase
           .from('canvas_data')
           .upsert({
             story_id: storyId,
-            canvas_type: newNode.linkedCanvasId,
+            canvas_type: linkedCanvasId,
             nodes: newTemplateNodes,
             connections: newTemplateConnections,
             updated_at: new Date().toISOString()
@@ -3690,7 +3878,7 @@ export default function HTMLCanvas({
         if (error) {
           console.error('[Template] Error saving interior:', error)
         } else {
-          console.log('[Template] Interior saved successfully to canvas:', newNode.linkedCanvasId)
+          console.log('[Template] Interior saved successfully to canvas:', linkedCanvasId)
         }
       } catch (error) {
         console.error('[Template] Error saving template interior:', error)
@@ -4014,8 +4202,8 @@ export default function HTMLCanvas({
         </div>
       )}
 
-      {/* Connection Status Indicator - bottom right, only visible when collaboration is enabled */}
-      {collaborationEnabled && connectionStatus !== 'disconnected' && (
+      {/* Connection Status Indicator - bottom right, always visible when connected */}
+      {connectionStatus !== 'disconnected' && (
         <div className="absolute bottom-4 right-4 z-[100] flex items-center gap-2 bg-background/90 backdrop-blur-sm rounded-full px-3 py-1.5 shadow border">
           {/* Viewer Mode Indicator - shown inline with connection status */}
           {isViewer && (
@@ -4193,10 +4381,11 @@ export default function HTMLCanvas({
               </Button>
             </div>
 
-        {/* Divider */}
-        <div className="w-8 h-px bg-border my-2" />
+        {/* Divider - only show if not viewer */}
+        {!isViewer && <div className="w-8 h-px bg-border my-2" />}
 
-        {/* Creation Tools */}
+        {/* Creation Tools - hidden for viewers */}
+        {!isViewer && (
         <div className="flex flex-col gap-1">
           <div
             className="relative"
@@ -4353,11 +4542,13 @@ export default function HTMLCanvas({
             </Button>
           </div>
         </div>
+        )}
 
-        {/* Divider */}
-        <div className="w-8 h-px bg-border my-2" />
+        {/* Divider - only show if not viewer */}
+        {!isViewer && <div className="w-8 h-px bg-border my-2" />}
 
-        {/* Template Button */}
+        {/* Template Button - hidden for viewers */}
+        {!isViewer && (
         <div className="flex flex-col gap-1">
           <div
             className="relative"
@@ -4374,11 +4565,13 @@ export default function HTMLCanvas({
             </Button>
           </div>
         </div>
+        )}
 
-        {/* Divider */}
-        <div className="w-8 h-px bg-border my-2" />
+        {/* Divider - only show if not viewer */}
+        {!isViewer && <div className="w-8 h-px bg-border my-2" />}
 
-        {/* Undo/Redo Controls */}
+        {/* Undo/Redo Controls - hidden for viewers */}
+        {!isViewer && (
         <div className="flex flex-col gap-1">
           <div
             className="relative"
@@ -4419,6 +4612,7 @@ export default function HTMLCanvas({
             </Button>
           </div>
         </div>
+        )}
 
         {/* Divider */}
         <div className="w-8 h-px bg-border my-2" />
@@ -5564,6 +5758,8 @@ export default function HTMLCanvas({
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
                   } ${
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500 opacity-75' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -5573,10 +5769,10 @@ export default function HTMLCanvas({
                     maxHeight: '400px',
                     overflow: 'hidden',
                     backgroundColor: getNodeColor('text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor('text') : getNodeBorderColor('text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor('text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor('text'),
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor('text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     padding: '8px',
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
@@ -5653,6 +5849,8 @@ export default function HTMLCanvas({
                   }}
                   onClick={(e) => handleNodeClick(node, e)}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   <div
                     contentEditable={editingField?.nodeId === node.id && editingField?.field === 'content'}
                     suppressContentEditableWarning
@@ -5682,7 +5880,7 @@ export default function HTMLCanvas({
                         setNodes(updatedNodes)
                         saveToHistory(updatedNodes, connections)
                         if (onSave) {
-                          handleSave(updatedNodes, connections)
+                          handleSaveRef.current(updatedNodes, connections)
                         }
                         // Use flushSync to ensure editing mode exits AFTER history updates complete
                         flushSync(() => {
@@ -5737,6 +5935,8 @@ export default function HTMLCanvas({
                   data-node-id={node.id}
                   className={`absolute cursor-move ${
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -5750,7 +5950,7 @@ export default function HTMLCanvas({
                     userSelect: 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'image')}` : 'none',
                     outlineOffset: '-1px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -5824,6 +6024,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   <div className="w-full h-full flex flex-col">
                     {/* Header */}
                     {(node.settings?.show_header ?? false) && (
@@ -5850,7 +6052,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -6071,7 +6273,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -6145,19 +6347,21 @@ export default function HTMLCanvas({
                   data-node-id={node.id}
                   className={`absolute cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm ${
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
                     top: getNodeDragPosition(node).y,
                     width: node.width || 240,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    border: `1px solid ${getNodeBorderColor(node.type || 'text')}`,
+                    border: `1px solid ${lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text')}`,
                     padding: '0',
                     overflow: 'visible',
                     userSelect: 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-1px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -6231,6 +6435,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   <div className="w-full h-auto relative">
                     <table className="w-full border-collapse" style={{ tableLayout: 'fixed' }}>
                       {(node.settings?.show_header_row ?? true) && node.tableData && node.tableData.length > 0 && (
@@ -6526,6 +6732,8 @@ export default function HTMLCanvas({
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
                     renderSettings.skipAnimations ? '' : 'transition-all'
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -6533,42 +6741,20 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     userSelect: tool === 'textedit' ? 'auto' : 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
-                  onDoubleClick={async (e) => {
+                  onDoubleClick={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
                     // Handle double-click navigation for location nodes
-                    if (!onNavigateToCanvas) return
-
-                    const nodeTitle = node.text || 'Location'
-
-                    if (node.linkedCanvasId) {
-                      colorContext.setCurrentFolderId(node.id)
-                      onNavigateToCanvas(node.linkedCanvasId, nodeTitle)
-                    } else {
-                      // Create new linkedCanvasId
-                      const linkedCanvasId = `location-canvas-${node.id}`
-
-                      const updatedNodes = nodes.map(n =>
-                        n.id === node.id ? { ...n, linkedCanvasId } : n
-                      )
-
-                      setNodes(updatedNodes)
-                      saveToHistory(updatedNodes, connections)
-
-                      if (onSave) {
-                        await onSave(updatedNodes, connections)
-                      }
-
-                      colorContext.setCurrentFolderId(node.id)
-                      onNavigateToCanvas(linkedCanvasId, nodeTitle)
+                    if (onNavigateToCanvas) {
+                      onNavigateToCanvas(node.id, 'location')
                     }
                   }}
                   onMouseDown={(e) => {
@@ -6641,6 +6827,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Location node layout similar to character but without profile picture */}
                   <div className="flex h-full items-center">
                     {/* Location icon area - show custom lucide icon if set, otherwise MapPin */}
@@ -6676,7 +6864,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -6786,6 +6974,8 @@ export default function HTMLCanvas({
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
                     renderSettings.skipAnimations ? '' : 'transition-all'
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -6793,11 +6983,11 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     userSelect: tool === 'textedit' ? 'auto' : 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -6877,6 +7067,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Event node storyboard layout */}
                   <div className="flex flex-col h-full">
                     {/* Title area with icon */}
@@ -6924,7 +7116,7 @@ export default function HTMLCanvas({
                           setNodes(updatedNodes)
                           saveToHistory(updatedNodes, connections)
                           if (onSave) {
-                            handleSave(updatedNodes, connections)
+                            handleSaveRef.current(updatedNodes, connections)
                           }
                           // Use flushSync to ensure editing mode exits AFTER history updates complete
                           flushSync(() => {
@@ -7008,7 +7200,7 @@ export default function HTMLCanvas({
                           setNodes(updatedNodes)
                           saveToHistory(updatedNodes, connections)
                           if (onSave) {
-                            handleSave(updatedNodes, connections)
+                            handleSaveRef.current(updatedNodes, connections)
                           }
                           // Use flushSync to ensure editing mode exits AFTER history updates complete
                           flushSync(() => {
@@ -7147,6 +7339,8 @@ export default function HTMLCanvas({
                     'rounded-lg'
                   } ${
                     connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -7154,12 +7348,12 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     padding: '12px',
                     overflow: 'hidden',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -7222,6 +7416,8 @@ export default function HTMLCanvas({
                     })
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Header */}
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
@@ -7246,6 +7442,19 @@ export default function HTMLCanvas({
                       if (e.target === e.currentTarget) {
                         e.preventDefault()
                         e.stopPropagation()
+
+                        // Check if node is locked by another user
+                        const lockedBy = lockedNodes[node.id]
+                        if (lockedBy) {
+                          alert(`This relationship canvas is currently being edited by ${lockedBy.username}`)
+                          return
+                        }
+
+                        // Lock the node for editing
+                        if (onNodeLock) {
+                          onNodeLock(node.id, 'relationship-editor')
+                        }
+
                         // Refresh character list to ensure dropdown is populated
                         refreshAllCharacters()
                         setRelationshipCanvasModal({
@@ -7627,6 +7836,8 @@ export default function HTMLCanvas({
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
                     renderSettings.skipAnimations ? '' : 'transition-all'
+                  } ${
+                    lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -7634,11 +7845,11 @@ export default function HTMLCanvas({
                     width: node.width || 240,
                     height: node.height || 120,
                     backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                    borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                     userSelect: tool === 'textedit' ? 'auto' : 'none',
                     outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                     outlineOffset: '-3px',
-                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                    opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                     transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                     touchAction: 'none'
                   }}
@@ -7720,6 +7931,8 @@ export default function HTMLCanvas({
                     }
                   }}
                 >
+                  {/* Lock indicator for collaboration */}
+                  {renderLockIndicator(node.id)}
                   {/* Character node layout with profile picture */}
                   <div className="flex h-full items-center">
                     {/* Profile picture area */}
@@ -7812,7 +8025,7 @@ export default function HTMLCanvas({
                             saveToHistory(updatedNodes, connections)
                             setEditingField(null)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
                           })
                         }}
@@ -7914,6 +8127,8 @@ export default function HTMLCanvas({
                 isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
               } ${
                 renderSettings.skipAnimations ? '' : 'transition-all'
+              } ${
+                lockedNodes[node.id] ? 'ring-2 ring-red-500' : ''
               }`}
               style={{
                 left: getNodeDragPosition(node).x,
@@ -7921,11 +8136,11 @@ export default function HTMLCanvas({
                 width: node.width || 240,
                 height: node.height || 120,
                 backgroundColor: getNodeColor(node.type || 'text', node.color, node.id),
-                borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : getNodeBorderColor(node.type || 'text'),
+                borderColor: (selectedId === node.id || selectedIds.includes(node.id)) ? getResizeHandleColor(node.type || 'text') : lockedNodes[node.id] ? '#ef4444' : getNodeBorderColor(node.type || 'text'),
                 userSelect: tool === 'textedit' ? 'auto' : 'none',
                 outline: (selectedId === node.id || selectedIds.includes(node.id)) ? `3px solid ${getResizeHandleColor(node.type || 'text')}` : 'none',
                 outlineOffset: '-3px',
-                opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : 1,
+                opacity: (draggingNode === node.id || (draggingNode && selectedIds.includes(node.id))) ? 0.7 : lockedNodes[node.id] ? 0.75 : 1,
                 overflow: 'hidden',
                 transition: draggingNode ? 'none' : 'opacity 0.1s ease',
                 touchAction: 'none'
@@ -8013,6 +8228,8 @@ export default function HTMLCanvas({
                 }
               }}
             >
+              {/* Lock indicator for collaboration */}
+              {renderLockIndicator(node.id)}
               {/* Extended draggable border strips for easier grabbing - only around edges */}
               {/* Top border strip */}
               <div className="absolute left-0 right-0 cursor-move" style={{ top: '-8px', height: '14px', pointerEvents: 'auto' }}
@@ -8136,7 +8353,7 @@ export default function HTMLCanvas({
                       setNodes(updatedNodes)
                       saveToHistory(updatedNodes, connections)
                       setEditingField(null)
-                      handleSave(updatedNodes, connections)
+                      handleSaveRef.current(updatedNodes, connections)
                     }}
                     onClick={(e) => {
                       e.stopPropagation()
@@ -8368,7 +8585,7 @@ export default function HTMLCanvas({
                                           saveToHistory(updatedNodes, connections)
                                           setEditingField(null)
                                           if (onSave) {
-                                            handleSave(updatedNodes, connections)
+                                            handleSaveRef.current(updatedNodes, connections)
                                           }
                                         }}
                                         onClick={(e) => {
@@ -8500,7 +8717,7 @@ export default function HTMLCanvas({
                                           saveToHistory(updatedNodes, connections)
                                           setEditingField(null)
                                           if (onSave) {
-                                            handleSave(updatedNodes, connections)
+                                            handleSaveRef.current(updatedNodes, connections)
                                           }
                                         }}
                                         onClick={(e) => {
@@ -8621,7 +8838,7 @@ export default function HTMLCanvas({
                                           saveToHistory(updatedNodes, connections)
                                           setEditingField(null)
                                           if (onSave) {
-                                            handleSave(updatedNodes, connections)
+                                            handleSaveRef.current(updatedNodes, connections)
                                           }
                                         }}
                                         onClick={(e) => {
@@ -8765,7 +8982,7 @@ export default function HTMLCanvas({
                                       saveToHistory(updatedNodes, connections)
                                       setEditingField(null)
                                       if (onSave) {
-                                        handleSave(updatedNodes, connections)
+                                        handleSaveRef.current(updatedNodes, connections)
                                       }
                                     }}
                                     onClick={(e) => {
@@ -8848,7 +9065,7 @@ export default function HTMLCanvas({
                                     saveToHistory(updatedNodes, connections)
                                     setEditingField(null)
                                     if (onSave) {
-                                      handleSave(updatedNodes, connections)
+                                      handleSaveRef.current(updatedNodes, connections)
                                     }
                                   }}
                                   onClick={(e) => {
@@ -9004,7 +9221,7 @@ export default function HTMLCanvas({
                         setNodes(updatedNodes)
                         saveToHistory(updatedNodes, connections)
                         if (onSave) {
-                          handleSave(updatedNodes, connections)
+                          handleSaveRef.current(updatedNodes, connections)
                         }
                         // Use flushSync to ensure editing mode exits AFTER history updates complete
                         flushSync(() => {
@@ -9333,6 +9550,7 @@ export default function HTMLCanvas({
               }}
             />
           )}
+
         </div>
         </div>
       </div>
@@ -9529,7 +9747,13 @@ export default function HTMLCanvas({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setRelationshipCanvasModal(null)}
+                onClick={() => {
+                  // Unlock the node when closing modal
+                  if (relationshipCanvasModal && onNodeUnlock) {
+                    onNodeUnlock(relationshipCanvasModal.nodeId)
+                  }
+                  setRelationshipCanvasModal(null)
+                }}
               >
                 <X className="w-4 h-4" />
               </Button>
@@ -9612,7 +9836,7 @@ export default function HTMLCanvas({
                             setNodes(updatedNodes)
                             saveToHistory(updatedNodes, connections)
                             if (onSave) {
-                              handleSave(updatedNodes, connections)
+                              handleSaveRef.current(updatedNodes, connections)
                             }
 
                             // Update modal state
@@ -9681,7 +9905,7 @@ export default function HTMLCanvas({
                               setNodes(updatedNodes)
                               saveToHistory(updatedNodes, connections)
                               if (onSave) {
-                                handleSave(updatedNodes, connections)
+                                handleSaveRef.current(updatedNodes, connections)
                               }
 
                               // Update modal state
@@ -9753,7 +9977,7 @@ export default function HTMLCanvas({
                           // Call saveToHistory and onSave in next tick to avoid state update conflicts
                           setTimeout(() => {
                             saveToHistory(currentNodes, connections)
-                            handleSave(currentNodes, connections)
+                            handleSaveRef.current(currentNodes, connections)
                           }, 0)
                           return currentNodes // Don't modify nodes
                         })
@@ -9872,14 +10096,25 @@ export default function HTMLCanvas({
             <div className="flex justify-end gap-2 mt-6">
               <Button
                 variant="outline"
-                onClick={() => setRelationshipCanvasModal(null)}
+                onClick={() => {
+                  // Unlock the node when closing modal
+                  if (relationshipCanvasModal && onNodeUnlock) {
+                    onNodeUnlock(relationshipCanvasModal.nodeId)
+                  }
+                  setRelationshipCanvasModal(null)
+                }}
               >
                 Close
               </Button>
               <Button
                 onClick={() => {
                   // Save the relationship canvas data to database
-                  handleSave(nodes, connections)
+                  handleSaveRef.current(nodes, connections)
+
+                  // Unlock the node after saving
+                  if (relationshipCanvasModal && onNodeUnlock) {
+                    onNodeUnlock(relationshipCanvasModal.nodeId)
+                  }
                   setRelationshipCanvasModal(null)
                 }}
               >
@@ -10109,7 +10344,7 @@ export default function HTMLCanvas({
 
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
 
                     // Update modal state
                     const updatedNode = updatedNodes.find(n => n.id === currentNode.id)
@@ -10191,7 +10426,7 @@ export default function HTMLCanvas({
 
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
 
                     // Update modal state
                     const updatedNode = updatedNodes.find(n => n.id === currentNode.id)
@@ -10307,7 +10542,7 @@ export default function HTMLCanvas({
 
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
 
                     // Update modal state
                     const updatedNode = updatedNodes.find(n => n.id === currentNode.id)
@@ -10353,7 +10588,7 @@ export default function HTMLCanvas({
               setNodes(newNodes)
               setConnections(newConnections)
               saveToHistory(newNodes, newConnections)
-              handleSave(newNodes, newConnections)
+              handleSaveRef.current(newNodes, newConnections)
               // Move to parent canvas
               onMoveNodeToParent(nodeToMove)
             }
@@ -10395,7 +10630,7 @@ export default function HTMLCanvas({
                     )
                     setNodes(updatedNodes)
                     saveToHistory(updatedNodes, connections)
-                    handleSave(updatedNodes, connections)
+                    handleSaveRef.current(updatedNodes, connections)
                   }
                   setMoveToFolderDialog(null)
                 }}
@@ -10413,7 +10648,7 @@ export default function HTMLCanvas({
                     setNodes(newNodes)
                     setConnections(newConnections)
                     saveToHistory(newNodes, newConnections)
-                    handleSave(newNodes, newConnections)
+                    handleSaveRef.current(newNodes, newConnections)
                     // Move to target folder
                     onMoveNodeToFolder(moveToFolderDialog.node, moveToFolderDialog.targetFolder.id)
                   }

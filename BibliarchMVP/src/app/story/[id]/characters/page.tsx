@@ -630,7 +630,7 @@ export default function CharactersPage() {
                             value={[value * 100]}
                             onValueChange={(v) => handleMorphTargetChange(target.meshName, target.targetName, v[0] / 100)}
                             min={0}
-                            max={target.targetName.toLowerCase().includes('weight') ? 250 : 100}
+                            max={100}
                             step={1}
                             className="w-full"
                           />

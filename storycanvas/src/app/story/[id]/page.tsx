@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState, use, useRef, useCallback } from 'react'
+import React, { useEffect, useLayoutEffect, useState, use, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { createClient } from '@/lib/supabase/client'
@@ -8,15 +8,28 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { Sparkles, ChevronRight, Settings, LogOut, Home as HomeIcon, ChevronLeft, Plus, Minus, RotateCcw, Bitcoin, Save, Cloud, CloudOff, Loader2, Download } from 'lucide-react'
+import { Sparkles, ChevronRight, Settings, LogOut, Home as HomeIcon, ChevronLeft, Plus, Minus, RotateCcw, Bitcoin, Save, Cloud, CloudOff, Loader2, Download, Users, Wifi } from 'lucide-react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ui/theme-toggle'
 import { useColorContext } from '@/components/providers/color-provider'
 import { subCanvasTemplates } from '@/lib/templates'
 import FeedbackButton from '@/components/feedback/FeedbackButton'
 import { signOut } from '@/lib/auth/actions'
-import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas } from '@/lib/hooks/useSupabaseQuery'
+import { useUser, useProfile, useStory, useCanvas, useUpdateStory, useSaveCanvas, queryKeys } from '@/lib/hooks/useSupabaseQuery'
+import { useQueryClient } from '@tanstack/react-query'
 import { ExportDialog } from '@/components/export/ExportDialog'
+import { ShareDialog } from '@/components/collaboration/ShareDialog'
+import { useStoryAccess, useCollaborators, useRealtimeCanvas, usePresence, useStoryCoordination, ConnectionStatus, LockedNode } from '@/lib/hooks/useCollaboration'
+import { toast } from 'sonner'
+
+// Collaboration timing configuration (in milliseconds)
+const COLLAB_TIMING = {
+  BROADCAST_PROPAGATION_DELAY: 500,   // Time for broadcast to reach all collaborators
+  COLLABORATOR_SAVE_DELAY: 1500,      // Time to wait for collaborators to save their changes
+  CANVAS_TRANSITION_TIMEOUT: 3000,    // Max time to wait for canvas transition to complete
+  EMPTY_DATA_GRACE_PERIOD: 5000,      // Time after settling before accepting empty broadcasts
+  SAVE_DEBOUNCE_MS: 300,              // Minimum time between saves
+}
 
 // Use the HTML canvas instead to avoid Jest worker issues completely
 const Bibliarch = dynamic(
@@ -47,21 +60,27 @@ export default function StoryPage({ params }: PageProps) {
   // State must come before conditional hooks
   const [currentCanvasId, setCurrentCanvasId] = useState('main')
   const [canvasData, setCanvasData] = useState<any>(null)
+  const [remoteUpdate, setRemoteUpdate] = useState<{ nodes: any[], connections: any[] } | null>(null)
+  const [lockedNodes, setLockedNodes] = useState<Record<string, LockedNode>>({})
   const [isLoadingCanvas, setIsLoadingCanvas] = useState(false)
+  const isLoadingCanvasRef = useRef(false) // Ref version for callback access
+  const canvasSettledTimeRef = useRef<number>(0) // Timestamp when canvas finished loading
   const [canvasPath, setCanvasPath] = useState<{id: string, title: string}[]>([])
   const [showCanvasSettings, setShowCanvasSettings] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
   const [showShareDialog, setShowShareDialog] = useState(false)
-  const [collaborationEnabled, setCollaborationEnabled] = useState(false)
   const [editedTitle, setEditedTitle] = useState('')
   const [editedBio, setEditedBio] = useState('')
   const [zoom, setZoom] = useState(1)
   const [headerTooltip, setHeaderTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // Use cached queries - all called unconditionally
+  const queryClient = useQueryClient()
   const { data: user, isLoading: isUserLoading } = useUser()
   const { data: profile } = useProfile(user?.id)
-  const { data: story, isLoading: isStoryLoading } = useStory(resolvedParams.id, user?.id)
+  const { data: story, isLoading: isStoryLoading } = useStory(resolvedParams.id)
+  const { data: storyAccess } = useStoryAccess(resolvedParams.id)
+  const { data: collaborators } = useCollaborators(resolvedParams.id)
   const { data: canvasDataFromQuery, isLoading: isCanvasLoading } = useCanvas(resolvedParams.id, currentCanvasId)
   const updateStoryMutation = useUpdateStory()
   const saveCanvasMutation = useSaveCanvas()
@@ -71,6 +90,10 @@ export default function StoryPage({ params }: PageProps) {
 
   // Store the latest canvas state from Bibliarch component
   const latestCanvasData = useRef<{ nodes: any[], connections: any[] }>({ nodes: [], connections: [] })
+
+  // CRITICAL: Track which canvas the latestCanvasData belongs to
+  // This prevents saving wrong canvas data during rapid navigation
+  const latestCanvasDataId = useRef<string>(currentCanvasId)
 
   // Store current palette for saving
   const currentPaletteRef = useRef<any>(null)
@@ -92,6 +115,240 @@ export default function StoryPage({ params }: PageProps) {
       palette
     })
   }, [resolvedParams.id, currentCanvasId, user?.id, saveCanvasMutation])
+
+  // Track if we're currently applying remote changes (to avoid save loops)
+  const isApplyingRemoteChange = useRef(false)
+
+  // Handle remote canvas changes from other collaborators
+  const handleRemoteCanvasChange = useCallback((data: { nodes: any[]; connections: any[]; userId: string }) => {
+    // Don't process changes while we're applying one
+    if (isApplyingRemoteChange.current) return
+
+    console.log(`📡 [RECEIVE] Received remote canvas change: ${data.nodes.length} nodes, ${data.connections.length} connections on canvas: ${currentCanvasIdRef.current}`)
+    console.log(`📡 [RECEIVE] Current local data before applying: ${latestCanvasData.current.nodes.length} nodes`)
+
+    // SAFETY: Reject empty broadcasts during the grace period after loading
+    // When collaborator B enters a canvas, they briefly have empty state before loading from DB
+    // If they broadcast during this window, owner A would receive empty data
+    // However, after 5 seconds of being settled, accept empty broadcasts as intentional clears
+    const timeSinceSettled = Date.now() - canvasSettledTimeRef.current
+    const isInGracePeriod = timeSinceSettled < COLLAB_TIMING.EMPTY_DATA_GRACE_PERIOD
+
+    if (data.nodes.length === 0 && latestCanvasData.current.nodes.length > 0 && isInGracePeriod) {
+      console.warn(`🛑 [RECEIVE] REJECTED empty canvas data during grace period - protecting existing ${latestCanvasData.current.nodes.length} nodes`)
+      console.warn(`🛑 [RECEIVE] Time since settled: ${timeSinceSettled}ms (grace period: ${COLLAB_TIMING.EMPTY_DATA_GRACE_PERIOD}ms)`)
+      console.warn(`🛑 [RECEIVE] Remote userId: ${data.userId}, current canvas: ${currentCanvasIdRef.current}`)
+      return // Don't apply empty data during grace period
+    }
+
+    isApplyingRemoteChange.current = true
+
+    // Node-level merge: preserve locally-locked nodes, apply remote changes to others
+    // This prevents losing local edits when remote changes arrive
+    const locallyLockedNodeIds = new Set(Object.keys(lockedNodes))
+    let mergedNodes = data.nodes
+
+    if (locallyLockedNodeIds.size > 0 && latestCanvasData.current.nodes.length > 0) {
+      // Find local versions of locked nodes
+      const localNodeMap = new Map(latestCanvasData.current.nodes.map((n: any) => [n.id, n]))
+
+      // Merge: use local version for locked nodes, remote for everything else
+      mergedNodes = data.nodes.map((remoteNode: any) => {
+        if (locallyLockedNodeIds.has(remoteNode.id)) {
+          // Preserve local version of this locked node
+          const localNode = localNodeMap.get(remoteNode.id)
+          if (localNode) {
+            console.log(`🔒 [MERGE] Preserving local version of locked node: ${remoteNode.id}`)
+            return localNode
+          }
+        }
+        return remoteNode
+      })
+    }
+
+    // Update remote state with merged data
+    setRemoteUpdate({
+      nodes: mergedNodes,
+      connections: data.connections
+    })
+    latestCanvasData.current = { nodes: mergedNodes, connections: data.connections }
+
+    // Reset flag after a short delay
+    setTimeout(() => {
+      isApplyingRemoteChange.current = false
+    }, 100)
+  }, [])
+
+  // Handle node lock from other collaborators
+  const handleNodeLock = useCallback((data: LockedNode) => {
+    console.log('🔒 Node locked by', data.username, ':', data.nodeId)
+    setLockedNodes(prev => ({
+      ...prev,
+      [data.nodeId]: data
+    }))
+  }, [])
+
+  // Handle node unlock from other collaborators
+  const handleNodeUnlock = useCallback((data: { nodeId: string; odataUserId: string }) => {
+    console.log('🔓 Node unlocked:', data.nodeId)
+    setLockedNodes(prev => {
+      const newLocked = { ...prev }
+      delete newLocked[data.nodeId]
+      return newLocked
+    })
+  }, [])
+
+  // Subscribe to presence (who's online)
+  const { presenceState } = usePresence(
+    resolvedParams.id,
+    currentCanvasId,
+    username
+  )
+
+  // Ref to store the save function so handleSaveRequest can access it
+  const handleSaveCanvasRef = useRef<((nodes: any[], connections: any[]) => Promise<void>) | null>(null)
+
+  // Handle save request from collaborators (when they navigate, they ask us to save)
+  const handleSaveRequest = useCallback(() => {
+    console.log('💾 [PAGE] ===== SAVE REQUEST RECEIVED =====')
+    console.log('💾 [PAGE] currentCanvasIdRef.current:', currentCanvasIdRef.current)
+    console.log('💾 [PAGE] latestCanvasDataId.current:', latestCanvasDataId.current)
+    console.log('💾 [PAGE] latestCanvasData nodes:', latestCanvasData.current?.nodes?.length || 0)
+    console.log('💾 [PAGE] latestCanvasData connections:', latestCanvasData.current?.connections?.length || 0)
+    console.log('💾 [PAGE] handleSaveCanvasRef.current exists:', !!handleSaveCanvasRef.current)
+
+    // CRITICAL: Verify that latestCanvasData matches the current canvas
+    // This prevents saving stale data from a different canvas
+    if (latestCanvasDataId.current !== currentCanvasIdRef.current) {
+      console.warn('💾 [PAGE] ❌ SKIPPING SAVE - latestCanvasData is for wrong canvas')
+      console.warn('💾 [PAGE] Expected:', currentCanvasIdRef.current, 'Got:', latestCanvasDataId.current)
+      return
+    }
+
+    // Always save when requested, even if hasUnsavedChanges is false
+    // This ensures collaborators get the latest state when navigating
+    if (latestCanvasData.current &&
+        handleSaveCanvasRef.current &&
+        (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
+      console.log('💾 [PAGE] ✅ SAVING CANVAS - nodes:', latestCanvasData.current.nodes.length, 'connections:', latestCanvasData.current.connections.length)
+      handleSaveCanvasRef.current(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+        .then(() => {
+          hasUnsavedChanges.current = false
+          console.log('💾 [PAGE] ✅ Save completed successfully from remote request')
+        })
+        .catch(err => {
+          console.error('💾 [PAGE] ❌ Failed to save on remote request:', err)
+        })
+    } else {
+      console.warn('💾 [PAGE] ❌ Cannot save - no data or save function not ready')
+      console.warn('💾 [PAGE] latestCanvasData:', latestCanvasData.current)
+      console.warn('💾 [PAGE] handleSaveCanvasRef.current:', handleSaveCanvasRef.current)
+    }
+  }, [])
+
+  // Subscribe to realtime canvas changes (always broadcasts when connected)
+  const { broadcastChange, broadcastNodeLock, broadcastNodeUnlock, connectionStatus } = useRealtimeCanvas(
+    resolvedParams.id,
+    currentCanvasId,
+    handleRemoteCanvasChange,
+    handleNodeLock,
+    handleNodeUnlock
+  )
+
+  // Handle role change from owner (refresh access state)
+  const handleRoleChange = useCallback((targetUserId: string, newRole: string) => {
+    console.log('👤 [PAGE] Role changed for current user to:', newRole)
+    // Invalidate storyAccess to refetch the role
+    queryClient.invalidateQueries({ queryKey: ['isCollaborator', resolvedParams.id] })
+    // Show a toast notification
+    toast(`Your role has been changed to ${newRole === 'viewer' ? 'Viewer' : 'Editor'}`, {
+      icon: '👤',
+      duration: 4000,
+    })
+  }, [queryClient, resolvedParams.id])
+
+  // Handle being removed from the project - defined later after isInternalNavigation ref
+  const handleCollaboratorRemovedRef = useRef<() => void>(() => {})
+
+  // Handle collaborators list change (someone joined/left/role changed)
+  const handleCollaboratorsChanged = useCallback(() => {
+    console.log('👥 [PAGE] Collaborators changed, refreshing list')
+    queryClient.invalidateQueries({ queryKey: ['collaborators', resolvedParams.id] })
+  }, [queryClient, resolvedParams.id])
+
+  // Subscribe to story-level coordination (for save requests that reach ALL users)
+  console.log('🔧 [PAGE] About to call useStoryCoordination with storyId:', resolvedParams.id)
+  const { broadcastSaveRequest, broadcastRoleChange, broadcastCollaboratorRemoved, broadcastCollaboratorsChanged } = useStoryCoordination(
+    resolvedParams.id,
+    handleSaveRequest,
+    handleRoleChange,
+    () => handleCollaboratorRemovedRef.current(), // Use ref to access isInternalNavigation
+    handleCollaboratorsChanged
+  )
+  console.log('🔧 [PAGE] useStoryCoordination returned broadcastSaveRequest:', !!broadcastSaveRequest)
+
+  // Viewer mode - collaborators with 'viewer' role can see but not edit
+  const isViewer = storyAccess?.role === 'viewer'
+
+  // Track previous presence for join/leave notifications
+  const previousPresenceRef = useRef<Set<string>>(new Set())
+
+  // Auto-unlock nodes when users leave (presence change)
+  useEffect(() => {
+    // Get list of online user IDs
+    const onlineUserIds = new Set(Object.keys(presenceState))
+
+    // Remove locks for users who are no longer present
+    setLockedNodes(prev => {
+      const newLocked: Record<string, LockedNode> = {}
+      for (const [nodeId, lock] of Object.entries(prev)) {
+        if (onlineUserIds.has(lock.odataUserId)) {
+          // User is still online, keep the lock
+          newLocked[nodeId] = lock
+        } else {
+          console.log('🔓 Auto-unlocking node (user left):', nodeId)
+        }
+      }
+      return newLocked
+    })
+  }, [presenceState])
+
+  // Show toast notifications when collaborators join or leave
+  useEffect(() => {
+    const currentUserIds = new Set(Object.keys(presenceState))
+    const previousUserIds = previousPresenceRef.current
+
+    // Find users who joined (in current but not in previous)
+    for (const odataUserId of currentUserIds) {
+      if (!previousUserIds.has(odataUserId)) {
+        const userPresence = presenceState[odataUserId]
+        // Get username from the first presence entry for this user
+        const presenceData = userPresence?.[0] as { username?: string } | undefined
+        const userName = presenceData?.username || 'Someone'
+        // Don't show toast for our own presence
+        if (userName !== username) {
+          toast(`${userName} joined the canvas`, {
+            icon: '👋',
+            duration: 3000,
+          })
+        }
+      }
+    }
+
+    // Find users who left (in previous but not in current)
+    for (const odataUserId of previousUserIds) {
+      if (!currentUserIds.has(odataUserId)) {
+        // We don't have their name anymore since they left, but we can check if it wasn't us
+        toast('A collaborator left the canvas', {
+          icon: '👋',
+          duration: 3000,
+        })
+      }
+    }
+
+    // Update the ref with current state
+    previousPresenceRef.current = currentUserIds
+  }, [presenceState, username])
 
   // Set project context for color palette persistence
   useEffect(() => {
@@ -126,8 +383,10 @@ export default function StoryPage({ params }: PageProps) {
   }, [currentCanvasId, colorContext])
 
   // Track current canvas ID to prevent stale closures
+  // Use useLayoutEffect to update ref synchronously after render but before effects
+  // This ensures callbacks always have access to the latest canvas ID
   const currentCanvasIdRef = useRef(currentCanvasId)
-  useEffect(() => {
+  useLayoutEffect(() => {
     currentCanvasIdRef.current = currentCanvasId
   }, [currentCanvasId])
 
@@ -147,14 +406,6 @@ export default function StoryPage({ params }: PageProps) {
     }
   }, [story?.title, story?.bio])
 
-  // Sync collaborationEnabled from story settings
-  useEffect(() => {
-    if (story?.settings) {
-      const settings = story.settings as { collaborationEnabled?: boolean }
-      setCollaborationEnabled(settings.collaborationEnabled ?? false)
-    }
-  }, [story?.settings])
-
   // Apply canvas-page class to body to prevent scrolling
   useEffect(() => {
     document.body.classList.add('canvas-page')
@@ -166,21 +417,85 @@ export default function StoryPage({ params }: PageProps) {
   // Track if we have unsaved changes
   const hasUnsavedChanges = useRef(false)
   const isSaving = useRef(false)
+  const lastSaveTime = useRef(0) // Track last save time for debouncing
   const isInternalNavigation = useRef(false) // Track if navigation is internal (home button, etc.)
+  const isCanvasTransition = useRef(false) // Track canvas transitions to prevent stale broadcasts
+  const canvasTransitionTimeout = useRef<NodeJS.Timeout | null>(null) // Cleanup ref for transition timeout
+  const lastKnownNodeCount = useRef<Record<string, number>>({}) // Track node counts per canvas to prevent saving empty data
+
+  // Set up the collaborator removed handler now that isInternalNavigation is available
+  useEffect(() => {
+    handleCollaboratorRemovedRef.current = () => {
+      console.log('🚫 [PAGE] Current user has been removed from project!')
+      // Mark as internal navigation to skip beforeunload prompt
+      isInternalNavigation.current = true
+      // Show a toast notification
+      toast.error('You have been removed from this project', {
+        duration: 3000,
+      })
+      // Redirect immediately
+      window.location.replace('/dashboard')
+    }
+  }, [])
+
+  // Cleanup canvas transition timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+      }
+    }
+  }, [])
 
   // Handle canvas data loading from cache
   useEffect(() => {
-    // Only show loading screen on initial load, not on refetches
-    // If we already have canvasData displayed, don't show loading for background refetches
-    if (isCanvasLoading && canvasData === null) {
+    if (isCanvasLoading) {
       setIsLoadingCanvas(true)
+      isLoadingCanvasRef.current = true
       return
+    }
+
+    // CRITICAL: Only load data if it's for the canvas we're expecting
+    // This prevents showing stale cached data during transitions
+    const canvas = canvasDataFromQuery
+    const dataCanvasId = canvas?.canvas_type || null
+
+    // Check if we're in transition and this data is stale (from wrong canvas)
+    // IMPORTANT: Only block if we have ACTUAL stale data (dataCanvasId is not null)
+    // If dataCanvasId is null, it means "no data found" which is valid for new canvases
+    // and should proceed to the template application logic below
+    if (isCanvasTransition.current && dataCanvasId !== null && dataCanvasId !== currentCanvasId) {
+      console.log('⏳ Canvas transition: ignoring stale data from', dataCanvasId, 'expecting', currentCanvasId)
+      setIsLoadingCanvas(true)
+      isLoadingCanvasRef.current = true
+      return
+    }
+
+    // If we're in transition and dataCanvasId is null, that means query completed with no data
+    // This is valid for new canvases - clear the transition and proceed
+    if (isCanvasTransition.current && dataCanvasId === null) {
+      console.log('✅ Canvas transition: no existing data for', currentCanvasId, '- proceeding with empty/template canvas')
+      isCanvasTransition.current = false
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+        canvasTransitionTimeout.current = null
+      }
+    }
+
+    // If we're in transition and received correct data, transition is complete
+    if (isCanvasTransition.current && dataCanvasId === currentCanvasId) {
+      console.log('✅ Canvas transition complete: received fresh data for', currentCanvasId)
+      isCanvasTransition.current = false
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+        canvasTransitionTimeout.current = null
+      }
     }
 
     // Clear old data
     latestCanvasData.current = { nodes: [], connections: [] }
-
-    const canvas = canvasDataFromQuery
+    latestCanvasDataId.current = currentCanvasId // Update to reflect current canvas
+    setRemoteUpdate(null) // Clear remote updates when switching canvases
 
     if (canvas) {
       const loadedData = {
@@ -189,7 +504,9 @@ export default function StoryPage({ params }: PageProps) {
       }
 
       // CRITICAL: Only apply template if canvas exists but is EMPTY
-      if (loadedData.nodes.length === 0) {
+      // AND user is the owner (not a collaborator) to prevent loops
+      const isOwner = storyAccess?.isOwner ?? false
+      if (loadedData.nodes.length === 0 && isOwner) {
         // Check for characters-folder template
         if (currentCanvasId.includes('characters-folder') && subCanvasTemplates['characters-folder']) {
           console.log('✅ Applying Characters & Relationships folder template to empty canvas')
@@ -197,7 +514,7 @@ export default function StoryPage({ params }: PageProps) {
 
           const idMap: Record<string, string> = {}
           subCanvasTemplates['characters-folder'].nodes.forEach(node => {
-            idMap[node.id] = `${node.id}-${timestamp}`
+            idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
           })
 
           const templateData = {
@@ -209,7 +526,7 @@ export default function StoryPage({ params }: PageProps) {
             })),
             connections: subCanvasTemplates['characters-folder'].connections.map(conn => ({
               ...conn,
-              id: `${conn.id}-${timestamp}`,
+              id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
               from: idMap[conn.from] || conn.from,
               to: idMap[conn.to] || conn.to
             }))
@@ -228,7 +545,7 @@ export default function StoryPage({ params }: PageProps) {
 
           const idMap: Record<string, string> = {}
           subCanvasTemplates.character.nodes.forEach(node => {
-            idMap[node.id] = `${node.id}-${timestamp}`
+            idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
           })
 
           const templateData = {
@@ -240,7 +557,7 @@ export default function StoryPage({ params }: PageProps) {
             })),
             connections: subCanvasTemplates.character.connections.map(conn => ({
               ...conn,
-              id: `${conn.id}-${timestamp}`,
+              id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
               from: idMap[conn.from] || conn.from,
               to: idMap[conn.to] || conn.to
             }))
@@ -254,10 +571,18 @@ export default function StoryPage({ params }: PageProps) {
         } else {
           setCanvasData(loadedData)
           latestCanvasData.current = loadedData
+          // Track node count to prevent accidental empty saves
+          if (loadedData.nodes.length > 0) {
+            lastKnownNodeCount.current[currentCanvasId] = loadedData.nodes.length
+          }
         }
       } else {
         setCanvasData(loadedData)
         latestCanvasData.current = loadedData
+        // Track node count to prevent accidental empty saves
+        if (loadedData.nodes.length > 0) {
+          lastKnownNodeCount.current[currentCanvasId] = loadedData.nodes.length
+        }
       }
     } else {
       // No existing canvas data - this is expected for new folder canvases
@@ -278,7 +603,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['characters-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -292,7 +617,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['characters-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -310,7 +635,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['plot-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -326,7 +651,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['plot-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -344,7 +669,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['world-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -360,7 +685,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['world-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -378,7 +703,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['folder-canvas-timeline-folder'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -392,7 +717,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['folder-canvas-timeline-folder'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -410,7 +735,7 @@ export default function StoryPage({ params }: PageProps) {
         // Create ID mapping for updating references
         const idMap: Record<string, string> = {}
         subCanvasTemplates['country'].nodes.forEach(node => {
-          idMap[node.id] = `${node.id}-${timestamp}`
+          idMap[node.id] = `${node.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
         })
 
         templateData = {
@@ -424,7 +749,7 @@ export default function StoryPage({ params }: PageProps) {
           })),
           connections: subCanvasTemplates['country'].connections.map(conn => ({
             ...conn,
-            id: `${conn.id}-${timestamp}`,
+            id: `${conn.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
             from: idMap[conn.from] || conn.from,
             to: idMap[conn.to] || conn.to
           }))
@@ -533,7 +858,24 @@ export default function StoryPage({ params }: PageProps) {
     }
 
     setIsLoadingCanvas(false)
-  }, [canvasDataFromQuery, isCanvasLoading, currentCanvasId])
+    isLoadingCanvasRef.current = false
+    canvasSettledTimeRef.current = Date.now() // Track when canvas became settled
+
+    // Fallback: Reset canvas transition flag after a delay if not already reset
+    // This ensures we don't get stuck in transition state if something goes wrong
+    if (isCanvasTransition.current) {
+      if (canvasTransitionTimeout.current) {
+        clearTimeout(canvasTransitionTimeout.current)
+      }
+      canvasTransitionTimeout.current = setTimeout(() => {
+        if (isCanvasTransition.current) {
+          console.log('⚠️ Canvas transition timeout - forcing completion')
+          isCanvasTransition.current = false
+        }
+        canvasTransitionTimeout.current = null
+      }, COLLAB_TIMING.CANVAS_TRANSITION_TIMEOUT)
+    }
+  }, [canvasDataFromQuery, isCanvasLoading, currentCanvasId, storyAccess?.isOwner])
 
   // Load and apply palette from database when canvas data is loaded
   useEffect(() => {
@@ -547,12 +889,29 @@ export default function StoryPage({ params }: PageProps) {
     }
   }, [canvasDataFromQuery?.palette, currentCanvasId, resolvedParams.id])
 
-  const handleSaveCanvas = useCallback(async (nodes: any[], connections: any[] = []) => {
+  const handleSaveCanvas = useCallback(async (nodes: any[], connections: any[] = [], bypassDebounce = false) => {
     const saveToCanvasId = currentCanvasIdRef.current
 
     if (!user?.id) {
       console.warn('No user found, skipping save')
       return
+    }
+
+    // Debounce rapid saves to prevent conflicts (skip for navigation saves)
+    const now = Date.now()
+    if (!bypassDebounce && now - lastSaveTime.current < COLLAB_TIMING.SAVE_DEBOUNCE_MS) {
+      console.log('📡 Debouncing save - too soon after last save')
+      return
+    }
+    lastSaveTime.current = now
+
+    // CRITICAL: Prevent saving empty data when we previously had data
+    // This protects against race conditions during loading/navigation that could wipe out user data
+    const previousNodeCount = lastKnownNodeCount.current[saveToCanvasId] || 0
+    if (nodes.length === 0 && previousNodeCount > 0) {
+      console.error('⚠️ PREVENTED DATA LOSS: Refusing to save empty canvas when we had', previousNodeCount, 'nodes')
+      console.error('Canvas:', saveToCanvasId)
+      return // Abort the save
     }
 
     // CRITICAL: Safety check to prevent overwriting main canvas with folder data
@@ -569,6 +928,12 @@ export default function StoryPage({ params }: PageProps) {
 
     // Update the ref with latest data
     latestCanvasData.current = { nodes, connections }
+    latestCanvasDataId.current = saveToCanvasId // Track which canvas this data belongs to
+
+    // Update last known node count for this canvas (only if we have data)
+    if (nodes.length > 0) {
+      lastKnownNodeCount.current[saveToCanvasId] = nodes.length
+    }
 
     console.log(`💾 Saving to canvas: ${saveToCanvasId}, nodes: ${nodes.length}, connections: ${connections.length}`)
 
@@ -580,6 +945,46 @@ export default function StoryPage({ params }: PageProps) {
       connections
     })
   }, [resolvedParams.id, user?.id, saveCanvasMutation])
+
+  // Store handleSaveCanvas in ref so handleSaveRequest can access it
+  useEffect(() => {
+    handleSaveCanvasRef.current = handleSaveCanvas
+  }, [handleSaveCanvas])
+
+  // Handle state changes from canvas - broadcast to collaborators
+  const handleStateChange = useCallback((nodes: any[], connections: any[]) => {
+    // Update refs
+    latestCanvasData.current = { nodes, connections }
+    latestCanvasDataId.current = currentCanvasIdRef.current // Track which canvas this data belongs to
+    hasUnsavedChanges.current = true
+
+    // Skip broadcasting if we're applying remote changes (prevents echo)
+    if (isApplyingRemoteChange.current) return
+
+    // CRITICAL: Skip broadcasting while canvas is loading (use ref for immediate access)
+    // When User B navigates, canvasData is set to null and isLoadingCanvasRef is set to true
+    // During this time, the canvas mounts with empty initialNodes=[]
+    // We must NOT broadcast this empty state to other users
+    if (isLoadingCanvasRef.current) {
+      console.log('📡 Skipping broadcast - canvas is still loading (ref check)')
+      return
+    }
+
+    // Skip broadcasting during canvas transitions to prevent stale data from old canvas
+    // reaching collaborators on the new canvas channel
+    if (isCanvasTransition.current) {
+      console.log('📡 Skipping broadcast during canvas transition')
+      return
+    }
+
+    // Log what we're about to broadcast
+    console.log(`📡 [BROADCAST] About to broadcast: ${nodes.length} nodes, ${connections.length} connections on canvas: ${currentCanvasIdRef.current}`)
+
+    // Broadcast to all collaborators
+    if (broadcastChange) {
+      broadcastChange(nodes, connections)
+    }
+  }, [broadcastChange])
 
   // Save function that can be called synchronously for browser navigation
   const saveBeforeUnload = useCallback(async () => {
@@ -607,6 +1012,10 @@ export default function StoryPage({ params }: PageProps) {
 
   // Handle browser back/forward/refresh/close
   useEffect(() => {
+    // Push initial state so we can detect back navigation
+    // This creates a "buffer" entry in history that we can use to catch back button
+    window.history.pushState({ bibliarch: true, initial: true }, '', window.location.href)
+
     // Save when page is about to unload (refresh, close, navigate away)
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       // Don't interfere with internal navigation (home button, etc.)
@@ -642,21 +1051,24 @@ export default function StoryPage({ params }: PageProps) {
 
       // If we have unsaved changes, save them first
       if (hasUnsavedChanges.current) {
-        e.preventDefault()
-
         // Save the data
-        saveBeforeUnload().then(() => {
-          // After save completes, allow navigation
-          console.log('✅ Saved before browser navigation')
-        })
+        saveBeforeUnload()
+          .then(() => {
+            console.log('✅ Saved before browser navigation')
+          })
+          .catch((err) => {
+            console.error('❌ Failed to save before navigation:', err)
+          })
 
         // Push the state back so user needs to click back again
-        window.history.pushState({ bibliarch: true }, '', window.location.href)
+        // This effectively "cancels" the navigation by pushing us forward
+        try {
+          window.history.pushState({ bibliarch: true }, '', window.location.href)
+        } catch (err) {
+          console.warn('pushState failed:', err)
+        }
       }
     }
-
-    // Push initial state to catch first back button click
-    window.history.pushState({ bibliarch: true }, '', window.location.href)
 
     // Add event listeners
     window.addEventListener('beforeunload', handleBeforeUnload)
@@ -669,7 +1081,8 @@ export default function StoryPage({ params }: PageProps) {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('popstate', handlePopState)
     }
-  }, [saveBeforeUnload])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function handleSaveCanvasSettings() {
     if (!editedTitle.trim()) {
@@ -712,15 +1125,14 @@ export default function StoryPage({ params }: PageProps) {
     // ============================================================================
     // IMPORTANT: Presence is canvas-specific, so it only shows users on THIS canvas
     // But we need to know if ANYONE in the story might have unsaved changes
-    // Solution: Check if this is a collaborative project (has collaborators AND collaboration enabled)
-    // If yes, always apply delays. If no collaborators or collaboration disabled, skip delays.
+    // Solution: Check if this is a collaborative project (has collaborators added)
+    // If yes, always apply delays. If no collaborators, skip delays.
     const hasCollaborators = (collaborators || []).length > 0
-    const isCollaborativeProject = hasCollaborators && collaborationEnabled
+    const isCollaborativeProject = hasCollaborators
 
     console.log('💾 [NAVIGATION] ==========================================')
     console.log('💾 [NAVIGATION] Navigating from:', currentCanvasId, 'to:', canvasId)
     console.log('💾 [NAVIGATION] Collaborators count:', (collaborators || []).length)
-    console.log('💾 [NAVIGATION] Collaboration enabled:', collaborationEnabled)
     console.log('💾 [NAVIGATION] Is collaborative project:', isCollaborativeProject)
     console.log('💾 [NAVIGATION] Will apply delays:', isCollaborativeProject)
 
@@ -767,6 +1179,8 @@ export default function StoryPage({ params }: PageProps) {
       }
     }
 
+    console.log('💾 [NAVIGATION] Proceeding with navigation to:', canvasId)
+
     // Add to path for breadcrumbs (only if not already in path)
     const alreadyInPath = canvasPath.some(item => item.id === canvasId)
     const newPath = alreadyInPath ? canvasPath : [...canvasPath, { id: canvasId, title: nodeTitle }]
@@ -776,6 +1190,27 @@ export default function StoryPage({ params }: PageProps) {
     // This prevents showing stale data from the previous canvas
     setCanvasData(null)
     setIsLoadingCanvas(true)
+    isLoadingCanvasRef.current = true
+
+    // CRITICAL: Instead of just invalidating, we need to REFETCH and WAIT for fresh data
+    // This ensures we load the latest data AFTER collaborators have saved
+    console.log('🔄 Invalidating cache for canvas we\'re leaving:', currentCanvasId)
+    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+
+    console.log('🔄 Refetching fresh data for destination canvas:', canvasId)
+    try {
+      await queryClient.refetchQueries({
+        queryKey: queryKeys.canvas(resolvedParams.id, canvasId),
+        type: 'active'
+      })
+      console.log('✅ Fresh data loaded for:', canvasId)
+    } catch (error) {
+      console.error('❌ Failed to refetch canvas data:', error)
+      // Continue with navigation even if refetch fails - the useEffect will retry
+    }
+
+    // Mark that we're in a canvas transition to prevent stale broadcasts
+    isCanvasTransition.current = true
 
     // Now update canvas ID - the useEffect will load new data
     setCurrentCanvasId(canvasId)
@@ -789,14 +1224,13 @@ export default function StoryPage({ params }: PageProps) {
     // ============================================================================
     // CRITICAL COLLABORATION SAVE SEQUENCE (BACK NAVIGATION)
     // ============================================================================
-    // Check if this is a collaborative project (has collaborators AND collaboration enabled)
+    // Check if this is a collaborative project (has collaborators added)
     const hasCollaborators = (collaborators || []).length > 0
-    const isCollaborativeProject = hasCollaborators && collaborationEnabled
+    const isCollaborativeProject = hasCollaborators
 
     console.log('💾 [NAVIGATION BACK] ==========================================')
     console.log('💾 [NAVIGATION BACK] Navigating back')
     console.log('💾 [NAVIGATION BACK] Collaborators count:', (collaborators || []).length)
-    console.log('💾 [NAVIGATION BACK] Collaboration enabled:', collaborationEnabled)
     console.log('💾 [NAVIGATION BACK] Is collaborative project:', isCollaborativeProject)
     console.log('💾 [NAVIGATION BACK] Will apply delays:', isCollaborativeProject)
 
@@ -841,6 +1275,9 @@ export default function StoryPage({ params }: PageProps) {
       }
     }
 
+    console.log('💾 [NAVIGATION BACK] Proceeding with back navigation')
+
+
     const newPath = [...canvasPath]
     newPath.pop() // Remove current location from path
     setCanvasPath(newPath)
@@ -849,10 +1286,34 @@ export default function StoryPage({ params }: PageProps) {
     // This prevents showing stale data from the previous canvas
     setCanvasData(null)
     setIsLoadingCanvas(true)
+    isLoadingCanvasRef.current = true
 
-    // Navigate to the previous location (last item in the new path, or main if empty)
+    // Calculate where we're going
     const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null
-    setCurrentCanvasId(previousLocation?.id || 'main')
+    const destinationCanvasId = previousLocation?.id || 'main'
+
+    // CRITICAL: Instead of just invalidating, we need to REFETCH and WAIT for fresh data
+    // This ensures we load the latest data AFTER collaborators have saved
+    console.log('🔄 Invalidating cache for canvas we\'re leaving:', currentCanvasId)
+    queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+
+    console.log('🔄 Refetching fresh data for destination canvas:', destinationCanvasId)
+    try {
+      await queryClient.refetchQueries({
+        queryKey: queryKeys.canvas(resolvedParams.id, destinationCanvasId),
+        type: 'active'
+      })
+      console.log('✅ Fresh data loaded for:', destinationCanvasId)
+    } catch (error) {
+      console.error('❌ Failed to refetch canvas data:', error)
+      // Continue with navigation even if refetch fails - the useEffect will retry
+    }
+
+    // Mark that we're in a canvas transition to prevent stale broadcasts
+    isCanvasTransition.current = true
+
+    // Navigate to the previous location
+    setCurrentCanvasId(destinationCanvasId)
   }
 
   // Move a node to the parent canvas
@@ -1020,22 +1481,7 @@ export default function StoryPage({ params }: PageProps) {
                   variant="ghost"
                   size="sm"
                   className="h-8 w-8 p-0"
-                  onClick={async () => {
-                    // Save current canvas
-                    if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
-                      await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
-                    }
-
-                    const newPath = [...canvasPath]
-                    newPath.pop()
-                    setCanvasPath(newPath)
-
-                    const previousLocation = newPath.length > 0 ? newPath[newPath.length - 1] : null
-                    if (!previousLocation) {
-                      colorContext.setCurrentFolderId(null)
-                    }
-                    setCurrentCanvasId(previousLocation?.id || 'main')
-                  }}
+                  onClick={() => handleNavigateBack()}
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </Button>
@@ -1116,12 +1562,38 @@ export default function StoryPage({ params }: PageProps) {
                 onClick={async () => {
                   if (canvasPath.length === 0) return // Already on main canvas
 
+                  // COLLABORATION FIX: Ask all users to save before we navigate
+                  console.log('💾 Broadcasting save request to all collaborators before navigating to main')
+                  broadcastSaveRequest()
+
+                  // Wait 500ms + random jitter for other users to save their changes
+                  const jitter = Math.random() * 100 // 0-100ms random delay
+                  await new Promise(resolve => setTimeout(resolve, 500 + jitter))
+
                   // Save current canvas
-                  if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
+                  // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
+                  if (latestCanvasDataId.current === currentCanvasId &&
+                      (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
                     await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+                  } else if (latestCanvasDataId.current !== currentCanvasId) {
+                    console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
                   }
+
+                  // Invalidate cache for BOTH canvases:
+                  // 1. The canvas we're leaving
+                  queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+                  // 2. Main canvas (where we're going)
+                  queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, 'main') })
+                  console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and main')
+
+                  // Mark transition to prevent stale broadcasts
+                  isCanvasTransition.current = true
+
                   // Reset folder context and navigate to main
                   colorContext.setCurrentFolderId(null)
+                  setCanvasData(null)
+                  setIsLoadingCanvas(true)
+                  isLoadingCanvasRef.current = true
                   setCanvasPath([])
                   setCurrentCanvasId('main')
                 }}
@@ -1142,10 +1614,32 @@ export default function StoryPage({ params }: PageProps) {
                     onClick={async () => {
                       if (index === canvasPath.length - 1) return // Already at this location
 
+                      // COLLABORATION FIX: Ask all users to save before we navigate
+                      console.log('💾 Broadcasting save request to all collaborators before breadcrumb navigation')
+                      broadcastSaveRequest()
+
+                      // Wait 500ms + random jitter for other users to save their changes
+                      const jitter = Math.random() * 100 // 0-100ms random delay
+                      await new Promise(resolve => setTimeout(resolve, 500 + jitter))
+
                       // Save current canvas
-                      if (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0) {
+                      // CRITICAL: Validate that latestCanvasData actually belongs to the canvas we're leaving
+                      if (latestCanvasDataId.current === currentCanvasId &&
+                          (latestCanvasData.current.nodes.length > 0 || latestCanvasData.current.connections.length > 0)) {
                         await handleSaveCanvas(latestCanvasData.current.nodes, latestCanvasData.current.connections)
+                      } else if (latestCanvasDataId.current !== currentCanvasId) {
+                        console.warn('⚠️ Skipping save - latestCanvasData belongs to', latestCanvasDataId.current, 'not', currentCanvasId)
                       }
+
+                      // Invalidate cache for BOTH canvases:
+                      // 1. The canvas we're leaving
+                      queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, currentCanvasId) })
+                      // 2. The canvas we're going to
+                      queryClient.invalidateQueries({ queryKey: queryKeys.canvas(resolvedParams.id, pathItem.id) })
+                      console.log('🔄 Invalidated cache for both canvases:', currentCanvasId, 'and', pathItem.id)
+
+                      // Mark transition to prevent stale broadcasts
+                      isCanvasTransition.current = true
 
                       // Navigate to clicked path level
                       const newPath = canvasPath.slice(0, index + 1)
@@ -1154,6 +1648,9 @@ export default function StoryPage({ params }: PageProps) {
                       const folderId = pathItem.id.replace(/^(folder-canvas-|character-canvas-|location-canvas-)/, '')
                       colorContext.setCurrentFolderId(folderId)
 
+                      setCanvasData(null)
+                      setIsLoadingCanvas(true)
+                      isLoadingCanvasRef.current = true
                       setCanvasPath(newPath)
                       setCurrentCanvasId(pathItem.id)
                     }}
@@ -1170,7 +1667,7 @@ export default function StoryPage({ params }: PageProps) {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1 md:gap-4">
             {/* Save indicator and manual save button */}
             <div className="flex items-center gap-1">
               {saveCanvasMutation.isPending ? (
@@ -1200,6 +1697,17 @@ export default function StoryPage({ params }: PageProps) {
               </div>
               )}
             </div>
+            {/* Share button - visible to all users (owner and collaborators) */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowShareDialog(true)}
+              title={storyAccess?.isOwner ? "Share Project" : "View Collaborators"}
+              className="gap-1 h-8 w-8 md:w-auto md:px-3 p-0 md:p-2"
+            >
+              <Users className="w-4 h-4" />
+              <span className="hidden md:inline text-xs">{storyAccess?.isOwner ? 'Share' : 'Team'}</span>
+            </Button>
             <div
               className="relative"
               onMouseEnter={(e) => { const r = e.currentTarget.getBoundingClientRect(); setHeaderTooltip({ text: 'Support Bibliarch', x: r.left, y: r.bottom }) }}
@@ -1290,14 +1798,12 @@ export default function StoryPage({ params }: PageProps) {
           currentFolderTitle={canvasPath.length > 0 ? canvasPath[canvasPath.length - 1].title : null}
           initialNodes={canvasData?.nodes || []}
           initialConnections={canvasData?.connections || []}
+          remoteNodes={remoteUpdate ? remoteUpdate.nodes : undefined}
+          remoteConnections={remoteUpdate ? remoteUpdate.connections : undefined}
           onSave={handleSaveCanvas}
+          onBroadcastChange={broadcastChange}
           onNavigateToCanvas={handleNavigateToCanvas}
-          onStateChange={(nodes, connections) => {
-            // Update ref when state changes (for navigation saves, without triggering saves)
-            latestCanvasData.current = { nodes, connections }
-            // Mark as having unsaved changes
-            hasUnsavedChanges.current = true
-          }}
+          onStateChange={handleStateChange}
           onPaletteSave={savePaletteToDatabase}
           onMoveNodeToParent={handleMoveNodeToParent}
           onMoveNodeToFolder={handleMoveNodeToFolder}
@@ -1309,8 +1815,7 @@ export default function StoryPage({ params }: PageProps) {
           // Collaboration props
           collaborators={presenceState}
           isViewer={isViewer}
-          connectionStatus={collaborationEnabled ? connectionStatus : 'disconnected'}
-          collaborationEnabled={collaborationEnabled}
+          connectionStatus={connectionStatus}
           lockedNodes={lockedNodes}
           onNodeLock={(nodeId, field) => broadcastNodeLock(nodeId, field, username)}
           onNodeUnlock={broadcastNodeUnlock}
@@ -1419,8 +1924,6 @@ export default function StoryPage({ params }: PageProps) {
         onRoleChange={broadcastRoleChange}
         onCollaboratorRemoved={broadcastCollaboratorRemoved}
         onCollaboratorsChanged={broadcastCollaboratorsChanged}
-        collaborationEnabled={collaborationEnabled}
-        onCollaborationToggle={setCollaborationEnabled}
       />
 
     </div>

@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
 import {
   useCollaborators,
   useRemoveCollaborator,
@@ -15,8 +14,7 @@ import {
   useInviteUser,
   useTransferOwnership,
 } from '@/lib/hooks/useCollaboration'
-import { useUpdateStory } from '@/lib/hooks/useSupabaseQuery'
-import { Trash2, Users, Check, X, Edit3, Eye, Search, UserPlus, AtSign, Mail, Clock, AlertTriangle, Crown, LogOut, ArrowRightLeft, Wifi } from 'lucide-react'
+import { Trash2, Users, Check, X, Edit3, Eye, Search, UserPlus, AtSign, Mail, Clock, AlertTriangle, Crown, LogOut, ArrowRightLeft } from 'lucide-react'
 
 const MAX_COLLABORATORS = 10
 
@@ -31,11 +29,9 @@ interface ShareDialogProps {
   onRoleChange?: (targetUserId: string, newRole: string) => void
   onCollaboratorRemoved?: (targetUserId: string) => void
   onCollaboratorsChanged?: () => void
-  collaborationEnabled?: boolean
-  onCollaborationToggle?: (enabled: boolean) => void
 }
 
-export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner = true, ownerName, onlineUserIds = new Set(), onRoleChange, onCollaboratorRemoved, onCollaboratorsChanged, collaborationEnabled = false, onCollaborationToggle }: ShareDialogProps) {
+export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner = true, ownerName, onlineUserIds = new Set(), onRoleChange, onCollaboratorRemoved, onCollaboratorsChanged }: ShareDialogProps) {
   const router = useRouter()
   const [searchQuery, setSearchQuery] = useState('')
   const [inviteRole, setInviteRole] = useState<'editor' | 'viewer'>('editor')
@@ -50,21 +46,6 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
   const leaveCollaboration = useLeaveCollaboration()
   const inviteUser = useInviteUser()
   const transferOwnership = useTransferOwnership()
-  const updateStory = useUpdateStory()
-
-  const handleCollaborationToggle = async (enabled: boolean) => {
-    try {
-      await updateStory.mutateAsync({
-        storyId,
-        settings: { collaborationEnabled: enabled }
-      })
-      if (onCollaborationToggle) {
-        onCollaborationToggle(enabled)
-      }
-    } catch (error: any) {
-      setInviteError(error.message || 'Failed to update collaboration settings')
-    }
-  }
 
   const acceptedCount = collaborators.filter(c => c.accepted_at).length
   const canInviteMore = acceptedCount < MAX_COLLABORATORS
@@ -194,28 +175,7 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
           </DialogDescription>
         </DialogHeader>
 
-        {/* Collaboration Mode Toggle - only for owner */}
-        {isOwner && (
-          <div className="flex items-center justify-between p-4 bg-muted/50 rounded-lg border">
-            <div className="flex items-center gap-3">
-              <Wifi className={`w-5 h-5 ${collaborationEnabled ? 'text-green-500' : 'text-muted-foreground'}`} />
-              <div>
-                <h4 className="text-sm font-medium">Collaborative Mode</h4>
-                <p className="text-xs text-muted-foreground">
-                  {collaborationEnabled ? 'Real-time sync is active' : 'Enable to sync changes with collaborators'}
-                </p>
-              </div>
-            </div>
-            <Switch
-              checked={collaborationEnabled}
-              onCheckedChange={handleCollaborationToggle}
-              disabled={updateStory.isPending}
-            />
-          </div>
-        )}
-
-        {/* Beta Warning Banner - only show when collaboration is enabled */}
-        {collaborationEnabled && (
+        {/* Beta Warning Banner */}
         <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
           <div className="flex gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-500 flex-shrink-0 mt-0.5" />
@@ -231,11 +191,10 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
             </div>
           </div>
         </div>
-        )}
 
         <div className="space-y-6 py-4">
-          {/* Invite by Username/Email - only show to owner when collaboration is enabled */}
-          {isOwner && collaborationEnabled && (
+          {/* Invite by Username/Email - only show to owner */}
+          {isOwner && (
           <div className="space-y-3">
             <h3 className="text-sm font-medium">Invite Collaborator</h3>
             <div className="flex gap-2">
@@ -318,8 +277,8 @@ export function ShareDialog({ open, onOpenChange, storyId, storyTitle, isOwner =
           </div>
           )}
 
-          {/* Pending Invitations - only show to owner when collaboration is enabled */}
-          {isOwner && collaborationEnabled && pendingCollaborators.length > 0 && (
+          {/* Pending Invitations - only show to owner */}
+          {isOwner && pendingCollaborators.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-medium">Pending Invitations</h3>
               <div className="space-y-2">
