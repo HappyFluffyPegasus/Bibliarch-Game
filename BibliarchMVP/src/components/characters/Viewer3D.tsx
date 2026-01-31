@@ -40,6 +40,7 @@ interface Viewer3DProps {
   currentSection: Section
   visibleAssets: string[]
   categoryColors?: CategoryColors
+  meshColors?: Record<string, string>
   transforms?: Record<string, Transform>
   onMeshesLoaded?: (meshes: string[]) => void
   onMorphTargetsLoaded?: (morphTargets: MorphTargetInfo[]) => void
@@ -61,7 +62,7 @@ const CAMERA_POSITIONS = {
   POSES: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
 }
 
-export default function Viewer3D({ currentSection, visibleAssets, categoryColors, transforms, onMeshesLoaded, onMorphTargetsLoaded, morphTargetValues, selectedPose, heightScale = 1.0 }: Viewer3DProps) {
+export default function Viewer3D({ currentSection, visibleAssets, categoryColors, meshColors, transforms, onMeshesLoaded, onMorphTargetsLoaded, morphTargetValues, selectedPose, heightScale = 1.0 }: Viewer3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const controlsRef = useRef<OrbitControls | null>(null)
@@ -136,6 +137,10 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4)
     scene.add(hemiLight)
 
+    const fillLight = new THREE.PointLight(0xffffff, 30, 20, 1)
+    fillLight.position.set(-3, 1.5, 0)
+    scene.add(fillLight)
+
     const grid = new THREE.GridHelper(10, 10, 0x404040, 0x404040)
     scene.add(grid)
 
@@ -146,8 +151,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
       '/models/Bibliarch Maybe.fbx',
       (fbx) => {
         fbx.scale.setScalar(0.01)
-        fbx.name = 'metarig'
-        // Rotate model to face camera (camera is at -X looking at origin)
+        fbx.name = 'Character Rig'
         fbx.rotation.y = -Math.PI / 2
 
         const wrapper = new THREE.Group()
@@ -156,11 +160,21 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
         scene.add(wrapper)
         sceneObjectsRef.current = wrapper
 
+        // Rebind all SkinnedMeshes AFTER adding to scene.
+        // Calling bind() without a second argument forces Three.js to
+        // recompute bind matrices from the current (scaled) world matrices.
+        // Without this, the 0.01 scale causes armatures to collapse.
+        fbx.updateMatrixWorld(true)
+        fbx.traverse((node) => {
+          if (node instanceof THREE.SkinnedMesh) {
+            node.bind(node.skeleton)
+          }
+        })
+
         const meshes: string[] = []
         const morphTargets: MorphTargetInfo[] = []
         const boneNames: string[] = []
 
-        // Collect mesh references from working model
         const workingMeshes = new Map<string, THREE.SkinnedMesh>()
 
         fbx.traverse((node) => {
@@ -201,6 +215,18 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
                   color: mat.color,
                   map: mat.map,
                   normalMap: mat.normalMap,
+                  emissive: mat.emissive,
+                  emissiveMap: mat.emissiveMap,
+                  emissiveIntensity: mat.emissiveIntensity,
+                  aoMap: mat.aoMap,
+                  bumpMap: mat.bumpMap,
+                  bumpScale: mat.bumpScale,
+                  alphaMap: mat.alphaMap,
+                  opacity: mat.opacity,
+                  transparent: mat.transparent,
+                  side: mat.side,
+                  roughness: 0.8,
+                  metalness: 0.0,
                 })
                 node.material = stdMat
                 const matName = mat.name || `${meshName}_mat_${matIndex}`
@@ -313,21 +339,18 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     const animate = () => {
       animationId = requestAnimationFrame(animate)
 
-      // Update animation mixer
-      const delta = clockRef.current.getDelta()
-      if (mixerRef.current) {
-        mixerRef.current.update(delta)
-      }
-
-      // Reapply head counter-scale after animation update (prevents animation from overwriting it)
-      if (sceneObjectsRef.current && heightScaleRef.current !== 1.0) {
-        sceneObjectsRef.current.traverse((node) => {
-          if (node instanceof THREE.Bone && node.name === 'spine005') {
-            const counterScale = 1 / heightScaleRef.current
-            node.scale.setScalar(counterScale)
-          }
-        })
-      }
+      // DISABLED - bone movement causes collapse after rebind
+      // const delta = clockRef.current.getDelta()
+      // if (mixerRef.current) {
+      //   mixerRef.current.update(delta)
+      // }
+      // if (sceneObjectsRef.current && heightScaleRef.current !== 1.0) {
+      //   sceneObjectsRef.current.traverse((node) => {
+      //     if (node instanceof THREE.Bone && node.name === 'spine005') {
+      //       node.scale.setScalar(1 / heightScaleRef.current)
+      //     }
+      //   })
+      // }
 
       controls.update()
       renderer.render(scene, camera)
@@ -345,86 +368,12 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     }
   }, [])
 
-  // Animation/Pose control effect
-  useEffect(() => {
-    console.log('Animation effect triggered:', { selectedPose, modelReady, hasMixer: !!mixerRef.current })
-
-    if (!modelReady || !mixerRef.current || !sceneObjectsRef.current) return
-
-    const mixer = mixerRef.current
-    const fbx = sceneObjectsRef.current
-
-    // Reset to bind pose
-    const resetToBindPose = () => {
-      if (currentActionRef.current) {
-        currentActionRef.current.stop()
-        currentActionRef.current = null
-      }
-      mixer.stopAllAction()
-
-      fbx.traverse((node) => {
-        if (node instanceof THREE.Bone) {
-          const bind = bindPoseRef.current.get(node.name)
-          if (bind) {
-            node.position.copy(bind.position)
-            node.quaternion.copy(bind.quaternion)
-            // Don't reset scale - height scaling manages that separately
-          }
-        }
-      })
-    }
-
-    // No pose selected - reset to bind pose
-    if (!selectedPose) {
-      resetToBindPose()
-      return
-    }
-
-    // Map pose ID to animation file path
-    const poseToPath: Record<string, string> = {
-      'bodyblock': '/animations/Body Block.fbx'
-    }
-
-    const animPath = poseToPath[selectedPose]
-    if (!animPath) {
-      console.warn('Unknown pose:', selectedPose)
-      return
-    }
-
-    console.log('Loading animation:', animPath)
-
-    const animLoader = new FBXLoader()
-    animLoader.load(
-      animPath,
-      (animFbx) => {
-        if (animFbx.animations.length === 0) {
-          console.warn('No animations in file')
-          return
-        }
-
-        // Stop current animation
-        resetToBindPose()
-
-        const clip = animFbx.animations[0]
-        console.log(`Playing animation: "${clip.name}" with ${clip.tracks.length} tracks`)
-
-        const action = mixer.clipAction(clip)
-        action.reset()
-        action.play()
-        currentActionRef.current = action
-      },
-      undefined,
-      (error) => {
-        console.error('Failed to load animation:', error)
-      }
-    )
-
-    return () => {
-      if (currentActionRef.current) {
-        currentActionRef.current.stop()
-      }
-    }
-  }, [selectedPose, modelReady])
+  // DISABLED - pose/animation system moves bones and causes collapse after rebind
+  // Will need to re-capture bind pose AFTER rebind to fix this properly
+  // useEffect(() => {
+  //   if (!modelReady || !mixerRef.current || !sceneObjectsRef.current) return
+  //   ...
+  // }, [selectedPose, modelReady])
 
   // Morph target control effect
   useEffect(() => {
@@ -452,7 +401,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
 
     const wrapper = sceneObjectsRef.current
     // Find the metarig (fbx) inside the wrapper
-    const metarig = wrapper.getObjectByName('metarig')
+    const metarig = wrapper.getObjectByName('Character Rig')
     if (metarig) {
       console.log('Height scale effect: scaling to', heightScale, 'metarig found:', !!metarig)
 
@@ -465,16 +414,16 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
       // Ensure rotation is preserved
       metarig.rotation.y = currentRotation
 
-      // Counter-scale head bones so they stay original size
-      // Head is spine005 and spine006 - counter-scale spine005 to affect both
-      const headBones = ['spine005']
-      wrapper.traverse((node) => {
-        if (node instanceof THREE.Bone && headBones.includes(node.name)) {
-          // Counter-scale to cancel parent scaling
-          const counterScale = 1 / heightScale
-          node.scale.setScalar(counterScale)
+      // No bone counter-scale — just counter-scale hair meshes directly
+      const counterScale = 1 / heightScale
+      const HAIR_KW = ['hair', 'pigtail', 'ponytail', 'bob', 'bangs', 'bun', 'braids', 'luke']
+      meshMapRef.current.forEach((mesh, name) => {
+        const lower = name.toLowerCase()
+        if (HAIR_KW.some(kw => lower.includes(kw))) {
+          mesh.scale.setScalar(counterScale)
         }
       })
+
     } else {
       console.warn('Height scale effect: metarig not found!')
     }
@@ -526,11 +475,30 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
   // Asset visibility effect
   useEffect(() => {
     if (meshMapRef.current.size === 0) return
-    meshMapRef.current.forEach((mesh) => {
-      mesh.visible = true
+    const visibleSet = new Set(visibleAssets)
+    meshMapRef.current.forEach((mesh, name) => {
+      if (name.toLowerCase() === 'body') {
+        mesh.visible = true // base body always visible
+      } else {
+        mesh.visible = visibleSet.has(name)
+      }
     })
-  }, [visibleAssets])
+  }, [visibleAssets, modelReady])
 
+  // Color application effect
+  useEffect(() => {
+    if (!meshColors || meshMapRef.current.size === 0) return
+    meshMapRef.current.forEach((mesh, name) => {
+      const color = meshColors[name]
+      if (!color) return
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      mats.forEach((mat) => {
+        if (mat instanceof THREE.MeshStandardMaterial && !mat.map) {
+          mat.color.setStyle(color)
+        }
+      })
+    })
+  }, [meshColors])
 
   return (
     <div className="relative w-full h-full">

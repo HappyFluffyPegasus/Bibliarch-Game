@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { useParams } from "next/navigation"
 import {
   User,
@@ -399,6 +399,20 @@ export default function CharactersPage() {
     }
   }
 
+  // Compute per-mesh color map for 3D viewer
+  const meshColors = useMemo(() => {
+    if (!selectedCharacter) return {}
+    const colors: Record<string, string> = {}
+    for (const meshName of availableMeshes) {
+      const cat = categorizeMesh(meshName)
+      if (!cat) continue
+      const sub = getSubcategory(meshName)
+      colors[meshName] = getCategoryColor(cat, sub)
+    }
+    return colors
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableMeshes, selectedCharacter?.colors, categorizeMesh, getSubcategory])
+
   return (
     <div className="h-screen flex overflow-hidden bg-background text-foreground">
       {/* Left Sidebar - Character List */}
@@ -450,6 +464,7 @@ export default function CharactersPage() {
           currentSection={currentCategory}
           visibleAssets={selectedCharacter?.visibleAssets || []}
           categoryColors={selectedCharacter?.colors}
+          meshColors={meshColors}
           transforms={selectedCharacter?.transforms}
           onMeshesLoaded={setAvailableMeshes}
           onMorphTargetsLoaded={setAvailableMorphTargets}
