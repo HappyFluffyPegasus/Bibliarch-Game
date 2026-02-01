@@ -1,0 +1,14 @@
+Drop background images here.
+
+Reference them in episodes like:
+  background: "/backgrounds/villa-day.png"
+
+Suggested backgrounds:
+- villa-day.png (pool area, daytime)
+- villa-night.png (pool area with fairy lights)
+- firepit.png (the iconic firepit for recouplings)
+- bedroom.png (villa bedroom)
+- kitchen.png (villa kitchen for morning chats)
+- beach.png (beach date location)
+- rooftop.png (rooftop terrace)
+- confessional.png (the beach hut / confessional booth)
