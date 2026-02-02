@@ -15,17 +15,36 @@ export class FirstPersonController {
     right: false,
     up: false,
     down: false,
+    sprint: false,
   }
 
   // Settings
   private _subMode: 'walk' | 'fly' = 'walk'
   private _speed = 1.0
-  private eyeHeight = 1.7
 
-  // Internals
-  private velocity = new THREE.Vector3()
+  // Character head bone height at 100% scale (from Viewer3D CAMERA_POSITIONS)
+  private eyeHeight = 1.65
+
+  // Physics
+  private velocityY = 0
+  private isGrounded = false
+  private gravity = -30      // units/s²
+  private jumpImpulse = 10   // units/s
+  private jumpRequested = false
+
+  // Double-space fly toggle
+  private lastSpaceTime = 0
+  private readonly DOUBLE_TAP_MS = 300
+
+  // Mode change callback (walk ↔ fly)
+  private _onSubModeChange: ((mode: 'walk' | 'fly') => void) | null = null
+
+  // Internals (cached to avoid per-frame allocations)
   private direction = new THREE.Vector3()
   private moveVector = new THREE.Vector3()
+  private _forward = new THREE.Vector3()
+  private _right = new THREE.Vector3()
+  private _up = new THREE.Vector3(0, 1, 0)
   private handleKeyDown: (e: KeyboardEvent) => void
   private handleKeyUp: (e: KeyboardEvent) => void
 
@@ -47,8 +66,26 @@ export class FirstPersonController {
         case 'KeyS': case 'ArrowDown': this.keys.backward = true; break
         case 'KeyA': case 'ArrowLeft': this.keys.left = true; break
         case 'KeyD': case 'ArrowRight': this.keys.right = true; break
-        case 'Space': this.keys.up = true; e.preventDefault(); break
         case 'ShiftLeft': case 'ShiftRight': this.keys.down = true; break
+        case 'ControlLeft': case 'ControlRight': this.keys.sprint = true; break
+        case 'Space': {
+          e.preventDefault()
+          this.keys.up = true
+
+          const now = performance.now()
+          // Double-tap space → toggle fly/walk
+          if (now - this.lastSpaceTime < this.DOUBLE_TAP_MS) {
+            this.toggleSubMode()
+            this.lastSpaceTime = 0
+          } else {
+            this.lastSpaceTime = now
+            // Single space in walk mode → jump
+            if (this._subMode === 'walk' && this.isGrounded) {
+              this.jumpRequested = true
+            }
+          }
+          break
+        }
       }
     }
 
@@ -60,15 +97,33 @@ export class FirstPersonController {
         case 'KeyD': case 'ArrowRight': this.keys.right = false; break
         case 'Space': this.keys.up = false; break
         case 'ShiftLeft': case 'ShiftRight': this.keys.down = false; break
+        case 'ControlLeft': case 'ControlRight': this.keys.sprint = false; break
       }
     }
   }
 
+  private toggleSubMode(): void {
+    this._subMode = this._subMode === 'walk' ? 'fly' : 'walk'
+    if (this._subMode === 'walk') {
+      // Entering walk mode: let gravity take over
+      this.velocityY = 0
+    }
+    this._onSubModeChange?.(this._subMode)
+  }
+
   get subMode() { return this._subMode }
-  set subMode(mode: 'walk' | 'fly') { this._subMode = mode }
+  set subMode(mode: 'walk' | 'fly') {
+    if (mode === this._subMode) return
+    this._subMode = mode
+    if (mode === 'walk') this.velocityY = 0
+  }
 
   get speed() { return this._speed }
   set speed(s: number) { this._speed = Math.max(0.1, Math.min(10, s)) }
+
+  set onSubModeChange(cb: ((mode: 'walk' | 'fly') => void) | null) {
+    this._onSubModeChange = cb
+  }
 
   isLocked(): boolean {
     return this.controls.isLocked
@@ -81,6 +136,8 @@ export class FirstPersonController {
   unlock(): void {
     this.controls.unlock()
     this.resetKeys()
+    this.velocityY = 0
+    this.jumpRequested = false
   }
 
   onUnlock(callback: () => void): void {
@@ -109,6 +166,7 @@ export class FirstPersonController {
     this.keys.right = false
     this.keys.up = false
     this.keys.down = false
+    this.keys.sprint = false
   }
 
   /** Get a raycaster from the center of the screen (for crosshair tool interaction) */
@@ -150,23 +208,27 @@ export class FirstPersonController {
   update(delta: number, terrain: TerrainData): void {
     if (!this.controls.isLocked) return
 
-    const baseSpeed = 20 * this._speed
-    const moveSpeed = baseSpeed * delta
+    // Clamp delta to prevent physics explosion on lag spikes
+    const dt = Math.min(delta, 0.1)
+
+    const sprintMultiplier = this.keys.sprint ? 2 : 1
+    const baseSpeed = 20 * this._speed * sprintMultiplier
+    const moveSpeed = baseSpeed * dt
 
     const worldSizeX = terrain.size * terrain.cellSize
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
 
-    // Get camera forward direction (horizontal only for WASD)
+    // Get camera forward direction (horizontal only for WASD) — reuse cached vectors
     this.camera.getWorldDirection(this.direction)
-    const forward = new THREE.Vector3(this.direction.x, 0, this.direction.z).normalize()
-    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize()
+    this._forward.set(this.direction.x, 0, this.direction.z).normalize()
+    this._right.crossVectors(this._forward, this._up).normalize()
 
+    // Horizontal movement (both modes)
     this.moveVector.set(0, 0, 0)
-
-    if (this.keys.forward) this.moveVector.add(forward)
-    if (this.keys.backward) this.moveVector.sub(forward)
-    if (this.keys.right) this.moveVector.add(right)
-    if (this.keys.left) this.moveVector.sub(right)
+    if (this.keys.forward) this.moveVector.add(this._forward)
+    if (this.keys.backward) this.moveVector.sub(this._forward)
+    if (this.keys.right) this.moveVector.add(this._right)
+    if (this.keys.left) this.moveVector.sub(this._right)
 
     if (this.moveVector.lengthSq() > 0) {
       this.moveVector.normalize().multiplyScalar(moveSpeed)
@@ -175,25 +237,45 @@ export class FirstPersonController {
     this.camera.position.x += this.moveVector.x
     this.camera.position.z += this.moveVector.z
 
-    if (this._subMode === 'fly') {
-      if (this.keys.up) this.camera.position.y += moveSpeed
-      if (this.keys.down) this.camera.position.y -= moveSpeed
-    }
-
     // Clamp to world bounds
     this.camera.position.x = Math.max(0, Math.min(worldSizeX, this.camera.position.x))
     this.camera.position.z = Math.max(0, Math.min(worldSizeZ, this.camera.position.z))
 
-    // Terrain height snapping
+    // Terrain height at current position
     const terrainY = this.getTerrainHeight(terrain, this.camera.position.x, this.camera.position.z)
-    const minY = terrainY + this.eyeHeight
+    const floorY = terrainY + this.eyeHeight
 
-    if (this._subMode === 'walk') {
-      this.camera.position.y = minY
+    if (this._subMode === 'fly') {
+      // ── Fly mode (creative mode) ──
+      if (this.keys.up) this.camera.position.y += moveSpeed
+      if (this.keys.down) this.camera.position.y -= moveSpeed
+
+      // Floor clamp
+      if (this.camera.position.y < floorY) {
+        this.camera.position.y = floorY
+      }
     } else {
-      // Fly mode: don't go below terrain
-      if (this.camera.position.y < minY) {
-        this.camera.position.y = minY
+      // ── Walk mode (gravity + jump) ──
+
+      // Jump
+      if (this.jumpRequested && this.isGrounded) {
+        this.velocityY = this.jumpImpulse
+        this.isGrounded = false
+        this.jumpRequested = false
+      }
+      this.jumpRequested = false
+
+      // Gravity
+      this.velocityY += this.gravity * dt
+      this.camera.position.y += this.velocityY * dt
+
+      // Ground collision
+      if (this.camera.position.y <= floorY) {
+        this.camera.position.y = floorY
+        this.velocityY = 0
+        this.isGrounded = true
+      } else {
+        this.isGrounded = false
       }
     }
   }

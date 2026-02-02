@@ -1129,6 +1129,7 @@ export default function WorldPage() {
               firstPersonSubMode={firstPersonSubMode}
               firstPersonSpeed={firstPersonSpeed}
               onCameraModeChange={setCameraMode}
+              onSubModeChange={setFirstPersonSubMode}
 
               onTerrainSculpt={handleTerrainSculpt}
               onTerrainPaint={handleTerrainPaint}
@@ -1555,8 +1556,10 @@ export default function WorldPage() {
               <ul className="text-[9px] text-gray-600 space-y-0.5">
                 <li>WASD — Move</li>
                 <li>Mouse — Look around</li>
-                <li>Space — Up (fly mode)</li>
+                <li>Ctrl — Sprint (2x speed)</li>
+                <li>Space — Jump (walk) / Up (fly)</li>
                 <li>Shift — Down (fly mode)</li>
+                <li>Double Space — Toggle fly/walk</li>
                 <li>Click — Use tool at crosshair</li>
                 <li>ESC / F — Exit first-person</li>
               </ul>

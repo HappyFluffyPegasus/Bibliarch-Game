@@ -26,6 +26,7 @@ export interface WorldViewport3DProps {
   firstPersonSubMode: 'walk' | 'fly'
   firstPersonSpeed: number
   onCameraModeChange: (mode: 'orbit' | 'first-person') => void
+  onSubModeChange: (mode: 'walk' | 'fly') => void
 
   onTerrainSculpt: (centerX: number, centerZ: number, brush: BrushSettings) => void
   onTerrainPaint: (centerX: number, centerZ: number, brush: MaterialBrushSettings) => void
@@ -53,6 +54,7 @@ export default function WorldViewport3D({
   firstPersonSubMode,
   firstPersonSpeed,
   onCameraModeChange,
+  onSubModeChange,
 
   onTerrainSculpt,
   onTerrainPaint,
@@ -112,10 +114,12 @@ export default function WorldViewport3D({
   const onObjectSelectRef = useRef(onObjectSelect)
   const onObjectMoveRef = useRef(onObjectMove)
   const onCameraModeChangeRef = useRef(onCameraModeChange)
+  const onSubModeChangeRef = useRef(onSubModeChange)
   onObjectPlaceRef.current = onObjectPlace
   onObjectSelectRef.current = onObjectSelect
   onObjectMoveRef.current = onObjectMove
   onCameraModeChangeRef.current = onCameraModeChange
+  onSubModeChangeRef.current = onSubModeChange
 
   // ── Initialize Three.js scene ──────────────────────────────
   useEffect(() => {
@@ -172,15 +176,17 @@ export default function WorldViewport3D({
     const sun = new THREE.DirectionalLight(0xffffff, 0.9)
     sun.position.set(worldSize * 0.5, worldSize * 0.8, worldSize * 0.3)
     sun.castShadow = true
-    sun.shadow.mapSize.width = 2048
-    sun.shadow.mapSize.height = 2048
-    const shadowRange = worldSize * 0.6
+    // Scale shadow quality with world size to prevent GPU overload on large maps
+    const shadowRes = worldSize > 1000 ? 1024 : 2048
+    sun.shadow.mapSize.width = shadowRes
+    sun.shadow.mapSize.height = shadowRes
+    const shadowRange = Math.min(worldSize * 0.6, 2000)
     sun.shadow.camera.left = -shadowRange
     sun.shadow.camera.right = shadowRange
     sun.shadow.camera.top = shadowRange
     sun.shadow.camera.bottom = -shadowRange
     sun.shadow.camera.near = 1
-    sun.shadow.camera.far = worldSize * 2
+    sun.shadow.camera.far = Math.min(worldSize * 2, 5000)
     scene.add(sun)
 
     const hemi = new THREE.HemisphereLight(0x87CEEB, 0x556B2F, 0.3)
@@ -203,6 +209,9 @@ export default function WorldViewport3D({
       onCameraModeChangeRef.current('orbit')
     }
     fpController.onUnlock(handleFpUnlock)
+    fpController.onSubModeChange = (mode) => {
+      onSubModeChangeRef.current(mode)
+    }
     fpControllerRef.current = fpController
 
     // Brush cursor
@@ -330,18 +339,28 @@ export default function WorldViewport3D({
   }, [terrain.size, terrain.sizeZ, terrain.cellSize, terrain.maxHeight])
 
   // ── Update terrain when data changes ──────────────────────
+  // Track the heights array identity to distinguish full replacements
+  // (heightmap upload, cartography generate, flatten, etc.) from
+  // in-place sculpt mutations that only need markDirty/rebuildDirty.
+  const prevHeightsRef = useRef<Float32Array | null>(null)
+
   useEffect(() => {
-    if (chunkManagerRef.current) {
-      chunkManagerRef.current.setTerrain(terrain)
-    }
+    if (!chunkManagerRef.current) return
+    // Skip rebuild if the heights array is the same object (in-place sculpt mutation).
+    // React re-renders because world.updatedAt changed, but the heights buffer is identical.
+    if (terrain.heights === prevHeightsRef.current) return
+    prevHeightsRef.current = terrain.heights
+    chunkManagerRef.current.setTerrain(terrain)
   }, [terrain])
 
   // ── Sync objects ──────────────────────────────────────────
+  // Only re-sync when the objects array or terrain heights change (not in-place sculpt)
   useEffect(() => {
     if (objectManagerRef.current) {
       objectManagerRef.current.syncObjects(objects, terrain)
     }
-  }, [objects, terrain])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objects, terrain.heights])
 
   // ── Update selection highlighting ─────────────────────────
   useEffect(() => {
@@ -399,6 +418,10 @@ export default function WorldViewport3D({
 
     if (gridHelperRef.current) {
       scene.remove(gridHelperRef.current)
+      gridHelperRef.current.geometry?.dispose()
+      if (gridHelperRef.current.material instanceof THREE.Material) {
+        gridHelperRef.current.material.dispose()
+      }
       gridHelperRef.current = null
     }
 
@@ -469,12 +492,15 @@ export default function WorldViewport3D({
     mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
   }, [])
 
+  // Cached center vector for first-person raycasting (avoid per-call allocation)
+  const centerNDCRef = useRef(new THREE.Vector2(0, 0))
+
   /** Set raycaster from either mouse position (orbit) or screen center (first-person) */
   const setupRaycaster = useCallback(() => {
     const camera = cameraRef.current
     if (!camera) return
     if (cameraModeRef.current === 'first-person') {
-      raycasterRef.current.setFromCamera(new THREE.Vector2(0, 0), camera)
+      raycasterRef.current.setFromCamera(centerNDCRef.current, camera)
     } else {
       raycasterRef.current.setFromCamera(mouseRef.current, camera)
     }
