@@ -7,6 +7,7 @@ import {
   TerrainMaterialId,
   TerrainBrushType,
   FalloffType,
+  CartographyRegionType,
 } from '@/types/world'
 
 // ============================================================
@@ -87,6 +88,15 @@ interface WorldBuilderState {
   redoStack: UndoCommand[]
   maxUndoSteps: number
 
+  // Cartography
+  cartographyBiome: CartographyRegionType
+  cartographyBrushSize: number
+
+  // Camera
+  cameraMode: 'orbit' | 'first-person'
+  firstPersonSubMode: 'walk' | 'fly'
+  firstPersonSpeed: number
+
   // Status
   cursorWorldPosition: [number, number, number] | null
   cursorGridPosition: { x: number; z: number } | null
@@ -116,12 +126,21 @@ interface WorldBuilderState {
   setGridSize: (size: number) => void
   setRotationSnap: (degrees: number) => void
 
+  // Cartography
+  setCartographyBiome: (biome: CartographyRegionType) => void
+  setCartographyBrushSize: (size: number) => void
+
   // Selection
   selectObject: (id: string) => void
   addToSelection: (id: string) => void
   removeFromSelection: (id: string) => void
   clearSelection: () => void
   setSelection: (ids: string[]) => void
+
+  // Camera
+  setCameraMode: (mode: 'orbit' | 'first-person') => void
+  setFirstPersonSubMode: (mode: 'walk' | 'fly') => void
+  setFirstPersonSpeed: (speed: number) => void
 
   // Viewport
   setShowGrid: (show: boolean) => void
@@ -172,6 +191,9 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   gridSize: 1,
   rotationSnap: 15,
 
+  cartographyBiome: 'plains' as CartographyRegionType,
+  cartographyBrushSize: 3,
+
   selectedObjectIds: [],
 
   showGrid: true,
@@ -183,6 +205,10 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   undoStack: [],
   redoStack: [],
   maxUndoSteps: 50,
+
+  cameraMode: 'orbit',
+  firstPersonSubMode: 'walk',
+  firstPersonSpeed: 1.0,
 
   cursorWorldPosition: null,
   cursorGridPosition: null,
@@ -211,6 +237,11 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   setMaterialBrushType: (type) =>
     set((s) => ({ materialBrush: { ...s.materialBrush, type } })),
 
+  // Cartography
+  setCartographyBiome: (biome) => set({ cartographyBiome: biome }),
+  setCartographyBrushSize: (size) =>
+    set({ cartographyBrushSize: Math.max(1, Math.min(16, size)) }),
+
   // Object placement
   setSelectedObjectType: (type) => set({ selectedObjectType: type }),
   setTransformMode: (mode) => set({ transformMode: mode }),
@@ -232,6 +263,11 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
     })),
   clearSelection: () => set({ selectedObjectIds: [] }),
   setSelection: (ids) => set({ selectedObjectIds: ids }),
+
+  // Camera
+  setCameraMode: (mode) => set({ cameraMode: mode }),
+  setFirstPersonSubMode: (mode) => set({ firstPersonSubMode: mode }),
+  setFirstPersonSpeed: (speed) => set({ firstPersonSpeed: Math.max(0.1, Math.min(10, speed)) }),
 
   // Viewport
   setShowGrid: (show) => set({ showGrid: show }),

@@ -3,9 +3,12 @@
 import { useEffect, useRef, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { TerrainData, EditorTool, BrushSettings, MaterialBrushSettings } from '@/types/world'
+import { TerrainData, EditorTool, BrushSettings, MaterialBrushSettings, WorldObject } from '@/types/world'
 import { ChunkManager, worldToGrid } from '@/lib/terrain/ChunkManager'
-import { GrassSystem } from '@/lib/terrain/GrassSystem'
+
+import { ObjectManager } from '@/lib/terrain/ObjectManager'
+import { getCatalogEntry } from '@/lib/terrain/objectCatalog'
+import { FirstPersonController } from '@/lib/terrain/FirstPersonController'
 
 export interface WorldViewport3DProps {
   terrain: TerrainData
@@ -14,12 +17,24 @@ export interface WorldViewport3DProps {
   materialBrush: MaterialBrushSettings
   showGrid: boolean
   showWater: boolean
-  showGrass: boolean
+
+  objects: WorldObject[]
+  selectedObjectIds: string[]
+  selectedObjectType: string | null
+
+  cameraMode: 'orbit' | 'first-person'
+  firstPersonSubMode: 'walk' | 'fly'
+  firstPersonSpeed: number
+  onCameraModeChange: (mode: 'orbit' | 'first-person') => void
+
   onTerrainSculpt: (centerX: number, centerZ: number, brush: BrushSettings) => void
   onTerrainPaint: (centerX: number, centerZ: number, brush: MaterialBrushSettings) => void
   onTerrainChanged: () => void
   onCursorMove: (worldPos: [number, number, number] | null, gridPos: { x: number; z: number } | null) => void
   onFpsUpdate: (fps: number) => void
+  onObjectPlace: (worldPos: [number, number, number]) => void
+  onObjectSelect: (objectId: string | null, additive: boolean) => void
+  onObjectMove: (objectId: string, newPos: [number, number, number]) => void
 }
 
 export default function WorldViewport3D({
@@ -29,27 +44,45 @@ export default function WorldViewport3D({
   materialBrush,
   showGrid,
   showWater,
-  showGrass,
+
+  objects,
+  selectedObjectIds,
+  selectedObjectType,
+
+  cameraMode,
+  firstPersonSubMode,
+  firstPersonSpeed,
+  onCameraModeChange,
+
   onTerrainSculpt,
   onTerrainPaint,
   onTerrainChanged,
   onCursorMove,
   onFpsUpdate,
+  onObjectPlace,
+  onObjectSelect,
+  onObjectMove,
 }: WorldViewport3DProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const controlsRef = useRef<OrbitControls | null>(null)
+  const fpControllerRef = useRef<FirstPersonController | null>(null)
   const chunkManagerRef = useRef<ChunkManager | null>(null)
-  const grassSystemRef = useRef<GrassSystem | null>(null)
+
+  const objectManagerRef = useRef<ObjectManager | null>(null)
   const gridHelperRef = useRef<THREE.GridHelper | null>(null)
   const waterMeshRef = useRef<THREE.Mesh | null>(null)
   const brushCursorRef = useRef<THREE.Mesh | null>(null)
+  const ghostMeshRef = useRef<THREE.Group | null>(null)
   const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster())
   const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2(-999, -999))
   const animFrameRef = useRef<number>(0)
   const isPaintingRef = useRef(false)
+  const isDraggingObjectRef = useRef(false)
+  const dragObjectIdRef = useRef<string | null>(null)
+  const dragPlaneRef = useRef<THREE.Plane>(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0))
   const lastPaintTimeRef = useRef(0)
   const fpsFramesRef = useRef(0)
   const fpsTimeRef = useRef(performance.now())
@@ -59,10 +92,30 @@ export default function WorldViewport3D({
   const activeToolRef = useRef(activeTool)
   const sculptBrushRef = useRef(sculptBrush)
   const materialBrushRef = useRef(materialBrush)
+  const objectsRef = useRef(objects)
+  const selectedObjectIdsRef = useRef(selectedObjectIds)
+  const selectedObjectTypeRef = useRef(selectedObjectType)
   terrainRef.current = terrain
   activeToolRef.current = activeTool
   sculptBrushRef.current = sculptBrush
   materialBrushRef.current = materialBrush
+  objectsRef.current = objects
+  selectedObjectIdsRef.current = selectedObjectIds
+  selectedObjectTypeRef.current = selectedObjectType
+
+  // Camera mode ref
+  const cameraModeRef = useRef(cameraMode)
+  cameraModeRef.current = cameraMode
+
+  // Stable callback refs
+  const onObjectPlaceRef = useRef(onObjectPlace)
+  const onObjectSelectRef = useRef(onObjectSelect)
+  const onObjectMoveRef = useRef(onObjectMove)
+  const onCameraModeChangeRef = useRef(onCameraModeChange)
+  onObjectPlaceRef.current = onObjectPlace
+  onObjectSelectRef.current = onObjectSelect
+  onObjectMoveRef.current = onObjectMove
+  onCameraModeChangeRef.current = onCameraModeChange
 
   // ── Initialize Three.js scene ──────────────────────────────
   useEffect(() => {
@@ -74,15 +127,17 @@ export default function WorldViewport3D({
 
     // Scene
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x87CEEB) // Sky blue
+    scene.background = new THREE.Color(0x87CEEB)
     scene.fog = new THREE.Fog(0x87CEEB, 200, 500)
     sceneRef.current = scene
 
-    // Camera - positioned to see the terrain
-    const worldSize = terrain.size * terrain.cellSize
+    // Camera
+    const worldSizeX = terrain.size * terrain.cellSize
+    const worldSizeZ = terrain.sizeZ * terrain.cellSize
+    const worldSize = Math.max(worldSizeX, worldSizeZ)
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.5, worldSize * 3)
-    camera.position.set(worldSize * 0.4, worldSize * 0.3, worldSize * 0.4)
-    camera.lookAt(worldSize / 2, 0, worldSize / 2)
+    camera.position.set(worldSizeX * 0.15, worldSize * 0.12, worldSizeZ * 0.15)
+    camera.lookAt(worldSizeX * 0.4, 0, worldSizeZ * 0.4)
     cameraRef.current = camera
 
     // Renderer
@@ -94,18 +149,18 @@ export default function WorldViewport3D({
     container.appendChild(renderer.domElement)
     rendererRef.current = renderer
 
-    // Controls — Blender-style: MMB orbit, Shift+MMB/RMB pan, scroll zoom
+    // Controls
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
     controls.maxPolarAngle = Math.PI / 2.05
     controls.minDistance = 5
     controls.maxDistance = worldSize * 2
-    controls.target.set(worldSize / 2, 0, worldSize / 2)
+    controls.target.set(worldSizeX * 0.4, 0, worldSizeZ * 0.4)
     controls.mouseButtons = {
-      LEFT: -1 as THREE.MOUSE,    // disabled — left click is for tools
-      MIDDLE: THREE.MOUSE.ROTATE, // MMB to orbit
-      RIGHT: THREE.MOUSE.PAN,     // RMB to pan
+      LEFT: -1 as THREE.MOUSE,
+      MIDDLE: THREE.MOUSE.ROTATE,
+      RIGHT: THREE.MOUSE.PAN,
     }
     controls.update()
     controlsRef.current = controls
@@ -128,7 +183,6 @@ export default function WorldViewport3D({
     sun.shadow.camera.far = worldSize * 2
     scene.add(sun)
 
-    // Hemisphere light for subtle sky/ground color
     const hemi = new THREE.HemisphereLight(0x87CEEB, 0x556B2F, 0.3)
     scene.add(hemi)
 
@@ -138,13 +192,20 @@ export default function WorldViewport3D({
     chunkManager.setTerrain(terrain)
     chunkManagerRef.current = chunkManager
 
-    // Grass system
-    const grassSystem = new GrassSystem()
-    scene.add(grassSystem.getGroup())
-    grassSystem.setTerrain(terrain)
-    grassSystemRef.current = grassSystem
+    // Object manager
+    const objectManager = new ObjectManager()
+    scene.add(objectManager.getGroup())
+    objectManagerRef.current = objectManager
 
-    // Brush cursor (transparent disc on terrain)
+    // First-person controller
+    const fpController = new FirstPersonController(camera, renderer.domElement)
+    const handleFpUnlock = () => {
+      onCameraModeChangeRef.current('orbit')
+    }
+    fpController.onUnlock(handleFpUnlock)
+    fpControllerRef.current = fpController
+
+    // Brush cursor
     const cursorGeo = new THREE.RingGeometry(0.8, 1, 32)
     cursorGeo.rotateX(-Math.PI / 2)
     const cursorMat = new THREE.MeshBasicMaterial({
@@ -164,12 +225,12 @@ export default function WorldViewport3D({
     const clock = new THREE.Clock()
     function animate() {
       animFrameRef.current = requestAnimationFrame(animate)
-      controls.update()
+      const delta = clock.getDelta()
 
-      // Update grass system (wind + camera-based rebuild)
-      const elapsed = clock.getElapsedTime()
-      if (grassSystemRef.current) {
-        grassSystemRef.current.update(camera.position, elapsed)
+      if (cameraModeRef.current === 'first-person' && fpController.isLocked()) {
+        fpController.update(delta, terrainRef.current)
+      } else {
+        controls.update()
       }
 
       // FPS counter
@@ -200,8 +261,10 @@ export default function WorldViewport3D({
     return () => {
       window.removeEventListener('resize', handleResize)
       cancelAnimationFrame(animFrameRef.current)
+      fpController.offUnlock(handleFpUnlock)
+      fpController.dispose()
       chunkManager.dispose()
-      grassSystem.dispose()
+      objectManager.dispose()
       controls.dispose()
       renderer.dispose()
       if (renderer.domElement.parentNode) {
@@ -219,53 +282,145 @@ export default function WorldViewport3D({
       })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // Mount once
+  }, [])
+
+  // ── Camera mode switching ─────────────────────────────────
+  useEffect(() => {
+    const controls = controlsRef.current
+    const fpController = fpControllerRef.current
+    if (!controls || !fpController) return
+
+    if (cameraMode === 'first-person') {
+      controls.enabled = false
+      fpController.bindEvents()
+      fpController.lock()
+    } else {
+      if (fpController.isLocked()) {
+        fpController.unlock()
+      }
+      fpController.unbindEvents()
+      controls.enabled = true
+    }
+  }, [cameraMode])
+
+  // ── Sync FP controller settings ──────────────────────────
+  useEffect(() => {
+    const fpController = fpControllerRef.current
+    if (!fpController) return
+    fpController.subMode = firstPersonSubMode
+    fpController.speed = firstPersonSpeed
+  }, [firstPersonSubMode, firstPersonSpeed])
+
+  // ── Reactive fog, camera far plane, and orbit distance ────
+  useEffect(() => {
+    const scene = sceneRef.current
+    const camera = cameraRef.current
+    const controls = controlsRef.current
+    if (!scene || !camera || !controls) return
+
+    const worldSize = Math.max(terrain.size, terrain.sizeZ) * terrain.cellSize
+    const fogNear = worldSize * 0.4
+    const fogFar = worldSize * 1.2
+    scene.fog = new THREE.Fog(0x87CEEB, fogNear, fogFar)
+
+    camera.far = Math.max(worldSize * 3, terrain.maxHeight * 6)
+    camera.updateProjectionMatrix()
+
+    controls.maxDistance = worldSize * 2
+  }, [terrain.size, terrain.sizeZ, terrain.cellSize, terrain.maxHeight])
 
   // ── Update terrain when data changes ──────────────────────
   useEffect(() => {
     if (chunkManagerRef.current) {
       chunkManagerRef.current.setTerrain(terrain)
     }
-    if (grassSystemRef.current) {
-      grassSystemRef.current.setTerrain(terrain)
-    }
   }, [terrain])
 
-  // ── Toggle grass visibility ────────────────────────────────
+  // ── Sync objects ──────────────────────────────────────────
   useEffect(() => {
-    if (grassSystemRef.current) {
-      grassSystemRef.current.setEnabled(showGrass)
+    if (objectManagerRef.current) {
+      objectManagerRef.current.syncObjects(objects, terrain)
     }
-  }, [showGrass])
+  }, [objects, terrain])
+
+  // ── Update selection highlighting ─────────────────────────
+  useEffect(() => {
+    if (objectManagerRef.current) {
+      objectManagerRef.current.setSelectedIds(selectedObjectIds)
+    }
+  }, [selectedObjectIds])
+
+  // ── Ghost preview for object placement ────────────────────
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!scene) return
+
+    // Remove old ghost
+    if (ghostMeshRef.current) {
+      scene.remove(ghostMeshRef.current)
+      ghostMeshRef.current.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry?.dispose()
+          if (Array.isArray(child.material)) {
+            child.material.forEach((m) => m.dispose())
+          } else {
+            child.material?.dispose()
+          }
+        }
+      })
+      ghostMeshRef.current = null
+    }
+
+    // Create new ghost if placing objects
+    if (activeTool === 'place-object' && selectedObjectType) {
+      const entry = getCatalogEntry(selectedObjectType)
+      if (entry) {
+        const ghost = entry.createMesh(entry.defaultColor)
+        ghost.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const mat = child.material as THREE.MeshStandardMaterial
+            mat.transparent = true
+            mat.opacity = 0.5
+            mat.depthWrite = false
+          }
+        })
+        ghost.visible = false
+        ghost.renderOrder = 998
+        scene.add(ghost)
+        ghostMeshRef.current = ghost
+      }
+    }
+  }, [activeTool, selectedObjectType])
 
   // ── Update grid helper ─────────────────────────────────────
   useEffect(() => {
     const scene = sceneRef.current
     if (!scene) return
 
-    // Remove old grid
     if (gridHelperRef.current) {
       scene.remove(gridHelperRef.current)
       gridHelperRef.current = null
     }
 
     if (showGrid) {
-      const worldSize = terrain.size * terrain.cellSize
-      const grid = new THREE.GridHelper(worldSize, terrain.size, 0x444444, 0x333333)
-      grid.position.set(worldSize / 2, 0.05, worldSize / 2)
+      const worldSizeX = terrain.size * terrain.cellSize
+      const worldSizeZ = terrain.sizeZ * terrain.cellSize
+      const maxWorldSize = Math.max(worldSizeX, worldSizeZ)
+      const maxCells = Math.max(terrain.size, terrain.sizeZ)
+      const grid = new THREE.GridHelper(maxWorldSize, maxCells, 0x444444, 0x333333)
+      grid.position.set(worldSizeX / 2, 0.05, worldSizeZ / 2)
       grid.material.opacity = 0.15
       grid.material.transparent = true
       scene.add(grid)
       gridHelperRef.current = grid
     }
-  }, [showGrid, terrain.size, terrain.cellSize])
+  }, [showGrid, terrain.size, terrain.sizeZ, terrain.cellSize])
 
   // ── Update water plane ─────────────────────────────────────
   useEffect(() => {
     const scene = sceneRef.current
     if (!scene) return
 
-    // Remove old water
     if (waterMeshRef.current) {
       waterMeshRef.current.geometry.dispose()
       ;(waterMeshRef.current.material as THREE.Material).dispose()
@@ -274,8 +429,9 @@ export default function WorldViewport3D({
     }
 
     if (showWater && terrain.seaLevel > 0) {
-      const worldSize = terrain.size * terrain.cellSize
-      const waterGeo = new THREE.PlaneGeometry(worldSize * 1.2, worldSize * 1.2)
+      const worldSizeX = terrain.size * terrain.cellSize
+      const worldSizeZ = terrain.sizeZ * terrain.cellSize
+      const waterGeo = new THREE.PlaneGeometry(worldSizeX * 1.2, worldSizeZ * 1.2)
       waterGeo.rotateX(-Math.PI / 2)
       const waterMat = new THREE.MeshStandardMaterial({
         color: 0x2980b9,
@@ -286,13 +442,13 @@ export default function WorldViewport3D({
         side: THREE.DoubleSide,
       })
       const waterMesh = new THREE.Mesh(waterGeo, waterMat)
-      waterMesh.position.set(worldSize / 2, terrain.seaLevel * terrain.maxHeight, worldSize / 2)
+      waterMesh.position.set(worldSizeX / 2, terrain.seaLevel * terrain.maxHeight, worldSizeZ / 2)
       waterMesh.receiveShadow = true
       waterMesh.userData.isWater = true
       scene.add(waterMesh)
       waterMeshRef.current = waterMesh
     }
-  }, [showWater, terrain.seaLevel, terrain.maxHeight, terrain.size, terrain.cellSize])
+  }, [showWater, terrain.seaLevel, terrain.maxHeight, terrain.size, terrain.sizeZ, terrain.cellSize])
 
   // ── Update brush cursor size ───────────────────────────────
   useEffect(() => {
@@ -313,18 +469,44 @@ export default function WorldViewport3D({
     mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
   }, [])
 
+  /** Set raycaster from either mouse position (orbit) or screen center (first-person) */
+  const setupRaycaster = useCallback(() => {
+    const camera = cameraRef.current
+    if (!camera) return
+    if (cameraModeRef.current === 'first-person') {
+      raycasterRef.current.setFromCamera(new THREE.Vector2(0, 0), camera)
+    } else {
+      raycasterRef.current.setFromCamera(mouseRef.current, camera)
+    }
+  }, [])
+
   const raycastTerrain = useCallback((): THREE.Vector3 | null => {
     const camera = cameraRef.current
     const chunkMgr = chunkManagerRef.current
     if (!camera || !chunkMgr) return null
 
-    raycasterRef.current.setFromCamera(mouseRef.current, camera)
+    setupRaycaster()
     const hits = raycasterRef.current.intersectObjects(chunkMgr.getChunkMeshes(), false)
     if (hits.length > 0) {
       return hits[0].point
     }
     return null
-  }, [])
+  }, [setupRaycaster])
+
+  const raycastObjects = useCallback((): { objectId: string; point: THREE.Vector3 } | null => {
+    const camera = cameraRef.current
+    const objMgr = objectManagerRef.current
+    if (!camera || !objMgr) return null
+
+    setupRaycaster()
+    const pickables = objMgr.getPickableMeshes()
+    const hits = raycasterRef.current.intersectObjects(pickables, false)
+    if (hits.length > 0) {
+      const id = objMgr.findObjectIdFromIntersection(hits[0])
+      if (id) return { objectId: id, point: hits[0].point }
+    }
+    return null
+  }, [setupRaycaster])
 
   const handleBrushStroke = useCallback(() => {
     const point = raycastTerrain()
@@ -338,7 +520,6 @@ export default function WorldViewport3D({
     if (tool === 'sculpt') {
       const brush = sculptBrushRef.current
       onTerrainSculpt(grid.x, grid.z, brush)
-      // Immediately rebuild affected terrain chunks
       if (chunkManagerRef.current) {
         chunkManagerRef.current.markDirty(grid.x, grid.z, brush.size)
         chunkManagerRef.current.rebuildDirty()
@@ -351,10 +532,6 @@ export default function WorldViewport3D({
         chunkManagerRef.current.rebuildDirty()
       }
     }
-    // Rebuild grass to reflect terrain changes
-    if (grassSystemRef.current && cameraRef.current) {
-      grassSystemRef.current.rebuild(cameraRef.current.position)
-    }
   }, [raycastTerrain, onTerrainSculpt, onTerrainPaint])
 
   // Mouse event handlers
@@ -363,20 +540,75 @@ export default function WorldViewport3D({
     if (!container) return
 
     const handleMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return // Left click only
+      if (e.button !== 0) return
       const tool = activeToolRef.current
+
       if (tool === 'sculpt' || tool === 'paint-material') {
         updateMouseNDC(e)
         isPaintingRef.current = true
         lastPaintTimeRef.current = 0
         handleBrushStroke()
+        return
+      }
+
+      if (tool === 'place-object') {
+        updateMouseNDC(e)
+        const point = raycastTerrain()
+        if (point) {
+          onObjectPlaceRef.current([point.x, point.y, point.z])
+        }
+        return
+      }
+
+      if (tool === 'select') {
+        updateMouseNDC(e)
+        const objHit = raycastObjects()
+        if (objHit) {
+          onObjectSelectRef.current(objHit.objectId, e.shiftKey)
+          // Start drag
+          isDraggingObjectRef.current = true
+          dragObjectIdRef.current = objHit.objectId
+          dragPlaneRef.current.setFromNormalAndCoplanarPoint(
+            new THREE.Vector3(0, 1, 0),
+            objHit.point
+          )
+        } else {
+          onObjectSelectRef.current(null, false)
+        }
+        return
+      }
+
+      if (tool === 'delete') {
+        updateMouseNDC(e)
+        const objHit = raycastObjects()
+        if (objHit) {
+          onObjectSelectRef.current(objHit.objectId, false)
+        }
+        return
       }
     }
 
     const handleMouseMove = (e: MouseEvent) => {
       updateMouseNDC(e)
+      const tool = activeToolRef.current
 
-      // Update brush cursor
+      // Object dragging
+      if (isDraggingObjectRef.current && dragObjectIdRef.current && tool === 'select') {
+        const camera = cameraRef.current
+        if (camera) {
+          raycasterRef.current.setFromCamera(mouseRef.current, camera)
+          const intersectPoint = new THREE.Vector3()
+          if (raycasterRef.current.ray.intersectPlane(dragPlaneRef.current, intersectPoint)) {
+            // Also raycast terrain to snap Y
+            const terrainPoint = raycastTerrain()
+            const y = terrainPoint ? terrainPoint.y : intersectPoint.y
+            onObjectMoveRef.current(dragObjectIdRef.current, [intersectPoint.x, y, intersectPoint.z])
+          }
+        }
+        return
+      }
+
+      // Update brush cursor / ghost
       const point = raycastTerrain()
       if (point) {
         const t = terrainRef.current
@@ -388,22 +620,29 @@ export default function WorldViewport3D({
 
         const cursor = brushCursorRef.current
         if (cursor) {
-          const tool = activeToolRef.current
           const showCursor = tool === 'sculpt' || tool === 'paint-material'
           cursor.visible = showCursor
           if (showCursor) {
             cursor.position.set(point.x, point.y + 0.2, point.z)
           }
         }
+
+        // Ghost preview for object placement
+        const ghost = ghostMeshRef.current
+        if (ghost && tool === 'place-object') {
+          ghost.visible = true
+          ghost.position.set(point.x, point.y, point.z)
+        }
       } else {
         onCursorMove(null, null)
         if (brushCursorRef.current) brushCursorRef.current.visible = false
+        if (ghostMeshRef.current) ghostMeshRef.current.visible = false
       }
 
       // Continuous painting
       if (isPaintingRef.current) {
         const now = performance.now()
-        if (now - lastPaintTimeRef.current > 50) { // 20 strokes/sec max
+        if (now - lastPaintTimeRef.current > 50) {
           lastPaintTimeRef.current = now
           handleBrushStroke()
         }
@@ -415,15 +654,20 @@ export default function WorldViewport3D({
         isPaintingRef.current = false
         onTerrainChanged()
       }
+      isDraggingObjectRef.current = false
+      dragObjectIdRef.current = null
     }
 
     const handleMouseLeave = () => {
       if (brushCursorRef.current) brushCursorRef.current.visible = false
+      if (ghostMeshRef.current) ghostMeshRef.current.visible = false
       onCursorMove(null, null)
       if (isPaintingRef.current) {
         isPaintingRef.current = false
         onTerrainChanged()
       }
+      isDraggingObjectRef.current = false
+      dragObjectIdRef.current = null
     }
 
     container.addEventListener('mousedown', handleMouseDown)
@@ -437,13 +681,40 @@ export default function WorldViewport3D({
       container.removeEventListener('mouseup', handleMouseUp)
       container.removeEventListener('mouseleave', handleMouseLeave)
     }
-  }, [updateMouseNDC, raycastTerrain, handleBrushStroke, onTerrainChanged, onCursorMove])
+  }, [updateMouseNDC, raycastTerrain, raycastObjects, handleBrushStroke, onTerrainChanged, onCursorMove])
+
+  const cursorStyle = (() => {
+    switch (activeTool) {
+      case 'sculpt':
+      case 'paint-material':
+        return 'crosshair'
+      case 'place-object':
+        return 'copy'
+      case 'delete':
+        return 'not-allowed'
+      case 'select':
+        return 'pointer'
+      default:
+        return 'default'
+    }
+  })()
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-full"
-      style={{ cursor: (activeTool === 'sculpt' || activeTool === 'paint-material') ? 'crosshair' : 'default' }}
-    />
+    <div className="w-full h-full relative">
+      <div
+        ref={containerRef}
+        className="w-full h-full"
+        style={{ cursor: cameraMode === 'first-person' ? 'none' : cursorStyle }}
+      />
+      {/* Crosshair overlay for first-person mode */}
+      {cameraMode === 'first-person' && (
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+          <div className="relative w-6 h-6">
+            <div className="absolute top-1/2 left-0 right-0 h-px bg-white/70" />
+            <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/70" />
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

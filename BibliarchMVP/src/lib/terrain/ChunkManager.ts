@@ -19,6 +19,8 @@ export class ChunkManager {
   private group: THREE.Group
   private chunkSize: number
   private terrain: TerrainData | null = null
+  private currentSize: number = 0
+  private currentSizeZ: number = 0
 
   constructor() {
     this.group = new THREE.Group()
@@ -36,14 +38,29 @@ export class ChunkManager {
     return Array.from(this.chunks.values())
   }
 
-  /** Full rebuild for new/resized terrain */
+  /** Update terrain — reuses existing mesh/material objects when grid layout is unchanged */
   setTerrain(terrain: TerrainData): void {
+    const oldSize = this.currentSize
+    const oldSizeZ = this.currentSizeZ
     this.terrain = terrain
-    // Dispose old chunks
-    this.dispose()
-    // Create all chunks
+
     const numChunksX = Math.ceil(terrain.size / this.chunkSize)
-    const numChunksZ = Math.ceil(terrain.size / this.chunkSize)
+    const numChunksZ = Math.ceil(terrain.sizeZ / this.chunkSize)
+    const expectedChunks = numChunksX * numChunksZ
+
+    // Same grid layout with all chunks present: reuse objects, just rebuild geometry
+    if (oldSize === terrain.size && oldSizeZ === terrain.sizeZ && this.chunks.size === expectedChunks) {
+      for (const [key, mesh] of this.chunks) {
+        const [cx, cz] = key.split('_').map(Number)
+        this.updateChunkGeometry(mesh, cx, cz, terrain)
+      }
+      return
+    }
+
+    // Different size or missing chunks: full rebuild
+    this.dispose()
+    this.currentSize = terrain.size
+    this.currentSizeZ = terrain.sizeZ
 
     for (let cz = 0; cz < numChunksZ; cz++) {
       for (let cx = 0; cx < numChunksX; cx++) {
@@ -61,7 +78,7 @@ export class ChunkManager {
     const minCx = Math.floor(Math.max(0, cellX - radius) / cs)
     const maxCx = Math.floor(Math.min((this.terrain?.size ?? 0) - 1, cellX + radius) / cs)
     const minCz = Math.floor(Math.max(0, cellZ - radius) / cs)
-    const maxCz = Math.floor(Math.min((this.terrain?.size ?? 0) - 1, cellZ + radius) / cs)
+    const maxCz = Math.floor(Math.min((this.terrain?.sizeZ ?? 0) - 1, cellZ + radius) / cs)
 
     for (let cz = minCz; cz <= maxCz; cz++) {
       for (let cx = minCx; cx <= maxCx; cx++) {
@@ -94,6 +111,8 @@ export class ChunkManager {
     }
     this.chunks.clear()
     this.dirtyChunks.clear()
+    this.currentSize = 0
+    this.currentSizeZ = 0
   }
 
   // ── Private ────────────────────────────────────────────────
@@ -103,7 +122,7 @@ export class ChunkManager {
     const startX = cx * cs
     const startZ = cz * cs
     const cellsX = Math.min(cs, terrain.size - startX)
-    const cellsZ = Math.min(cs, terrain.size - startZ)
+    const cellsZ = Math.min(cs, terrain.sizeZ - startZ)
 
     const geometry = this.buildChunkGeometry(startX, startZ, cellsX, cellsZ, terrain)
 
@@ -129,7 +148,7 @@ export class ChunkManager {
     const startX = cx * cs
     const startZ = cz * cs
     const cellsX = Math.min(cs, terrain.size - startX)
-    const cellsZ = Math.min(cs, terrain.size - startZ)
+    const cellsZ = Math.min(cs, terrain.sizeZ - startZ)
 
     // Dispose old geometry
     mesh.geometry.dispose()
@@ -165,7 +184,7 @@ export class ChunkManager {
 
         // Grid coordinates (clamped to terrain bounds)
         const gx = Math.min(startX + vx, terrain.size - 1)
-        const gz = Math.min(startZ + vz, terrain.size - 1)
+        const gz = Math.min(startZ + vz, terrain.sizeZ - 1)
 
         // World position
         const wx = gx * cellSize
@@ -180,9 +199,20 @@ export class ChunkManager {
         // Vertex color from material
         const matId = terrain.materials[terrainIndex(gx, gz, terrain.size)] as TerrainMaterialId
         const rgb = getMaterialColor(matId)
-        colors[vi * 3] = rgb[0]
-        colors[vi * 3 + 1] = rgb[1]
-        colors[vi * 3 + 2] = rgb[2]
+        let r = rgb[0], g = rgb[1], b = rgb[2]
+
+        if (height < terrain.seaLevel) {
+          // How far below sea level (0 = at sea level, 1 = at 0 height)
+          const depth = Math.min((terrain.seaLevel - height) / terrain.seaLevel, 1)
+          const tint = 1 - depth * 0.45   // darken up to 45%
+          r = r * tint * 0.7               // reduce red
+          g = g * tint * 0.85              // slightly reduce green
+          b = Math.min(1, b * tint + depth * 0.15)  // push toward blue
+        }
+
+        colors[vi * 3] = r
+        colors[vi * 3 + 1] = g
+        colors[vi * 3 + 2] = b
       }
     }
 
@@ -287,6 +317,6 @@ export function worldToGrid(
 ): { x: number; z: number } | null {
   const gx = Math.round(point.x / terrain.cellSize)
   const gz = Math.round(point.z / terrain.cellSize)
-  if (!isInBounds(gx, gz, terrain.size)) return null
+  if (!isInBounds(gx, gz, terrain.size, terrain.sizeZ)) return null
   return { x: gx, z: gz }
 }

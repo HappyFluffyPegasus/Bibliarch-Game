@@ -47,30 +47,25 @@ export interface TerrainMaterial {
 // TERRAIN DATA
 // ============================================================
 
-/** Valid terrain grid sizes */
-export type TerrainSize = 128 | 256 | 512 | 1024
-
-/** Preset labels for world sizes */
-export interface TerrainSizePreset {
-  size: TerrainSize
-  label: string
-  description: string
-}
+/** Terrain grid size — any positive integer (no preset restrictions) */
+export type TerrainSize = number
 
 /**
  * Core terrain data stored as flat arrays for performance.
- * heights: Float32Array of size*size (values 0-1 normalized)
- * materials: Uint8Array of size*size (TerrainMaterialId values)
+ * heights: Float32Array of size*sizeZ (values 0-1 normalized)
+ * materials: Uint8Array of size*sizeZ (TerrainMaterialId values)
+ * size = grid width (X), sizeZ = grid depth (Z).
  *
  * For localStorage serialization, these convert to regular number arrays.
  */
 export interface TerrainData {
-  size: TerrainSize
-  cellSize: number // World units per cell (default 1)
-  heights: Float32Array // size*size, values 0-1
-  materials: Uint8Array // size*size, TerrainMaterialId values
-  seaLevel: number // 0-1 normalized height
-  maxHeight: number // World-space max height (default 50)
+  size: number      // Grid width (X cells)
+  sizeZ: number     // Grid depth (Z cells)
+  cellSize: number  // World units per cell (default 1)
+  heights: Float32Array  // size*sizeZ, values 0-1
+  materials: Uint8Array  // size*sizeZ, TerrainMaterialId values
+  seaLevel: number  // 0-1 normalized height
+  maxHeight: number // World-space max height (default 200)
 }
 
 /**
@@ -78,10 +73,11 @@ export interface TerrainData {
  * Typed arrays converted to regular number arrays.
  */
 export interface SerializedTerrainData {
-  size: TerrainSize
+  size: number
+  sizeZ?: number    // Optional for backward compat with old saves (defaults to size)
   cellSize: number
-  heights: number[] // Regular array
-  materials: number[] // Regular array
+  heights: number[]
+  materials: number[]
   seaLevel: number
   maxHeight: number
 }
@@ -150,7 +146,8 @@ export interface CartographyGenerationSettings {
 }
 
 export interface CartographyData {
-  gridSize: number // Resolution of the 2D map grid
+  gridSizeX: number // Width of the 2D map grid
+  gridSizeZ: number // Depth of the 2D map grid
   regions: CartographyRegion[]
   paths: CartographyPath[]
   settings: CartographyGenerationSettings
@@ -234,6 +231,7 @@ export type TransformMode = 'translate' | 'rotate' | 'scale'
 export function serializeTerrainData(terrain: TerrainData): SerializedTerrainData {
   return {
     size: terrain.size,
+    sizeZ: terrain.sizeZ,
     cellSize: terrain.cellSize,
     heights: Array.from(terrain.heights),
     materials: Array.from(terrain.materials),
@@ -245,8 +243,9 @@ export function serializeTerrainData(terrain: TerrainData): SerializedTerrainDat
 /** Restore TerrainData from serialized form (handles missing/old data) */
 export function deserializeTerrainData(data: SerializedTerrainData): TerrainData {
   // Validate required fields exist and are correct types
-  const size = (typeof data.size === 'number' && data.size > 0 ? data.size : 256) as TerrainSize
-  const totalCells = size * size
+  const size = typeof data.size === 'number' && data.size > 0 ? data.size : 256
+  const sizeZ = typeof data.sizeZ === 'number' && data.sizeZ > 0 ? data.sizeZ : size
+  const totalCells = size * sizeZ
 
   let heights: Float32Array
   if (data.heights && Array.isArray(data.heights) && data.heights.length === totalCells) {
@@ -272,6 +271,7 @@ export function deserializeTerrainData(data: SerializedTerrainData): TerrainData
 
   return {
     size,
+    sizeZ,
     cellSize: typeof data.cellSize === 'number' && data.cellSize > 0 ? data.cellSize : 1,
     heights,
     materials,
@@ -300,7 +300,7 @@ export function deserializeWorld(data: SerializedWorld): World {
     id: data.id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     storyId: data.storyId || '',
     name: data.name || 'My World',
-    terrain: data.terrain ? deserializeTerrainData(data.terrain) : createTerrain(256),
+    terrain: data.terrain ? deserializeTerrainData(data.terrain) : createTerrain(256, 256),
     objects: Array.isArray(data.objects) ? data.objects : [],
     cartographyData: data.cartographyData,
     createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
@@ -313,15 +313,16 @@ export function deserializeWorld(data: SerializedWorld): World {
 // ============================================================
 
 /** Create a blank terrain with default values */
-export function createTerrain(size: TerrainSize = 256): TerrainData {
-  const totalCells = size * size
+export function createTerrain(sizeX: number = 256, sizeZ: number = 256): TerrainData {
+  const totalCells = sizeX * sizeZ
   const heights = new Float32Array(totalCells) // All zeros
   const materials = new Uint8Array(totalCells)
   // Default material: Grass
   materials.fill(TerrainMaterialId.Grass)
 
   return {
-    size,
+    size: sizeX,
+    sizeZ,
     cellSize: 1,
     heights,
     materials,
@@ -331,25 +332,17 @@ export function createTerrain(size: TerrainSize = 256): TerrainData {
 }
 
 /** Create a new empty World */
-export function createWorld(storyId: string, name: string, terrainSize: TerrainSize = 256): World {
+export function createWorld(storyId: string, name: string, sizeX: number = 256, sizeZ: number = 256): World {
   return {
     id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     storyId,
     name,
-    terrain: createTerrain(terrainSize),
+    terrain: createTerrain(sizeX, sizeZ),
     objects: [],
     createdAt: new Date(),
     updatedAt: new Date(),
   }
 }
-
-/** Terrain size presets */
-export const TERRAIN_SIZE_PRESETS: TerrainSizePreset[] = [
-  { size: 128, label: 'Small', description: 'Single location, island' },
-  { size: 256, label: 'Medium', description: 'Town, small region' },
-  { size: 512, label: 'Large', description: 'City, large region' },
-  { size: 1024, label: 'Huge', description: 'Full continent' },
-]
 
 // ============================================================
 // UTILITY: Terrain coordinate helpers
@@ -369,19 +362,19 @@ export function terrainCoords(index: number, size: number): { x: number; z: numb
 }
 
 /** Check if grid coordinates are within bounds */
-export function isInBounds(x: number, z: number, size: number): boolean {
-  return x >= 0 && x < size && z >= 0 && z < size
+export function isInBounds(x: number, z: number, sizeX: number, sizeZ: number): boolean {
+  return x >= 0 && x < sizeX && z >= 0 && z < sizeZ
 }
 
 /** Get height at grid coordinates */
 export function getHeight(terrain: TerrainData, x: number, z: number): number {
-  if (!isInBounds(x, z, terrain.size)) return 0
+  if (!isInBounds(x, z, terrain.size, terrain.sizeZ)) return 0
   return terrain.heights[terrainIndex(x, z, terrain.size)]
 }
 
 /** Get material at grid coordinates */
 export function getMaterial(terrain: TerrainData, x: number, z: number): TerrainMaterialId {
-  if (!isInBounds(x, z, terrain.size)) return TerrainMaterialId.Grass
+  if (!isInBounds(x, z, terrain.size, terrain.sizeZ)) return TerrainMaterialId.Grass
   return terrain.materials[terrainIndex(x, z, terrain.size)]
 }
 
