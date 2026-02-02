@@ -13,7 +13,7 @@ export const CHARACTERS: Character[] = [
       surprised: "Ellie Surprised L.png",
       talking: "Ellie Talking L.png",
     },
-    bio: "Anti-social genius detective who says 'erm actually' unironically. Secretly lonely under that big ego.",
+    bio: "Nonchalant genius detective who doesn't care about most things. Shows she cares through actions, not words. Always has the answers but won't make a big deal about it.",
     color: "#a78bfa",
   },
   {
@@ -27,7 +27,7 @@ export const CHARACTERS: Character[] = [
       suspicious: "Luke Suspicious L.png",
       talking: "Luke Talking L.png",
     },
-    bio: "Former wannabe gang member with anger issues and a killer cooking game. Thinks he's a burden but he's the sweetest guy in the villa.",
+    bio: "Former wannabe gang member with a killer cooking game. Obvious yearner who's been into Ellie for a while. Gets red-faced and denies everything when called out, but is impossibly clingy in private.",
     color: "#60a5fa",
   },
   {
@@ -70,7 +70,7 @@ export const CHARACTERS: Character[] = [
     name: "Erena",
     sourceStory: "LAPSE",
     sprite: "Erena Base L.png",
-    bio: "Religious trauma survivor who used to tell everyone they were going to hell as a kid. Shed the religion, kept the desperation. Will beg you to be her friend with zero chill. Celestine is the only friend she's ever had and she will NOT let that go quietly.",
+    bio: "Religious trauma survivor who used to tell everyone they were going to hell as a kid. Shed the religion, kept the warmth. Just wants to be Celestine's friend again — no drama, no begging, just showing up. Celestine is the only friend she's ever had.",
     color: "#fb923c",
   },
   {
@@ -80,30 +80,6 @@ export const CHARACTERS: Character[] = [
     sprite: "Liana Base R.png",
     bio: "Literally a goddess. The kindest person you'll ever meet. Motherly energy so strong it transcends death.",
     color: "#fde68a",
-  },
-  {
-    id: "solaria",
-    name: "Solaria",
-    sourceStory: "LAPSE",
-    sprite: "Solaria Base R.png",
-    bio: "Stern queen with a massive inferiority complex. Spent centuries comparing herself to her dead sister. Intimidating but actually chill once you get past the wall.",
-    color: "#fbbf24",
-  },
-  {
-    id: "autumna",
-    name: "Autumna",
-    sourceStory: "LAPSE",
-    sprite: "Autumna Base R.png",
-    bio: "History-obsessed genius who hyperfixates on mysteries. 300 years of knowledge in a 16-year-old body. Will info-dump on you and call it a date.",
-    color: "#f97316",
-  },
-  {
-    id: "verna",
-    name: "Verna",
-    sourceStory: "LAPSE",
-    sprite: "Verna Base R.png",
-    bio: "Self-obsessed queen of moving on. Best ruler of any country but the loneliest immortal alive. Sassy and sharp-tongued.",
-    color: "#4ade80",
   },
   {
     id: "ezriel",
@@ -123,22 +99,6 @@ export const CHARACTERS: Character[] = [
   },
 
   // ========== EZ ==========
-  {
-    id: "e",
-    name: "E",
-    sourceStory: "EZ",
-    sprite: "E Base L.png",
-    bio: "Literally a psychopath. Masks emotions so well you'd think she actually cares. Upbeat and bubbly on the surface, cold underneath.",
-    color: "#e879f9",
-  },
-  {
-    id: "z",
-    name: "Z",
-    sourceStory: "EZ",
-    sprite: "Z Base R.png",
-    bio: "An AI with zero empathy for anyone except E. Simulates emotions but feels nothing. Loyal to a fault but only to one person.",
-    color: "#22d3ee",
-  },
   {
     id: "aaron",
     name: "Aaron",
@@ -162,14 +122,6 @@ export const CHARACTERS: Character[] = [
     sprite: "Tristan Base R.png",
     bio: "Quiet hacker from poverty who sees through everyone's act. Would rather crack a system than crack a smile.",
     color: "#14b8a6",
-  },
-  {
-    id: "chrissie",
-    name: "Chrissie",
-    sourceStory: "EZ",
-    sprite: "Chrissie Base L.png",
-    bio: "Smart kid on a permanent quest for education. Bookish and determined in a world that keeps failing her.",
-    color: "#a3e635",
   },
 
   // ========== WRITTEN BY A MAN ==========

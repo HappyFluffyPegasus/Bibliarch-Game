@@ -28,15 +28,21 @@ export const episode1: Episode = {
     },
     {
       type: "narration",
-      text: "The first person through the gate is reading a book. A thick one. She doesn't look up.",
+      text: "The first person through the gate is reading a book. Not performatively. She just... hasn't looked up yet. Like she genuinely forgot where she was going.",
       style: "action",
       focusCharacter: "ellie",
     },
     {
       type: "dialogue",
       characterId: "ellie",
-      text: "Erm, actually, the architectural style of this villa is inconsistent with tropical building codes. The load distribution on that cantilevered balcony is—",
-      spriteVariant: "talking",
+      text: "Hm.",
+      expression: "*glancing up at the villa for exactly one second before returning to her book*",
+      onScreen: ["ellie"],
+    },
+    {
+      type: "narration",
+      text: "That's it. That's her entire reaction to a multi-million dollar villa. 'Hm.'",
+      style: "thought",
       onScreen: ["ellie"],
     },
     {
@@ -55,13 +61,19 @@ export const episode1: Episode = {
     {
       type: "dialogue",
       characterId: "ellie",
-      text: "...And that's Nana. She used to be a cat. I wish I were joking.",
-      expression: "*pinching the bridge of her nose*",
+      text: "...That's Nana. She used to be a cat.",
+      expression: "*doesn't look up from her book*",
       onScreen: ["ellie", "nana"],
     },
     {
       type: "narration",
-      text: "A boy trails in behind them. He's got his hands in his pockets and a look on his face like he's already regretting every decision that led here.",
+      text: "She says it like she's commenting on the weather. No elaboration. No 'I wish I were joking.' Just a fact.",
+      style: "action",
+      onScreen: ["ellie", "nana"],
+    },
+    {
+      type: "narration",
+      text: "A boy trails in behind them. He's got his hands in his pockets — but the second he steps through the gate, his eyes find Ellie. He stops walking for half a second. Then shoves his hands deeper into his pockets and stares at the ground.",
       style: "action",
       onScreen: ["ellie", "nana", "luke"],
     },
@@ -73,18 +85,25 @@ export const episode1: Episode = {
       onScreen: ["ellie", "nana", "luke"],
     },
     {
+      type: "narration",
+      text: "He says it to no one in particular. But he's standing three feet from Ellie. He could have stood anywhere.",
+      style: "thought",
+      onScreen: ["ellie", "nana", "luke"],
+    },
+    {
       type: "dialogue",
       characterId: "nana",
       text: "LUKE! Get in the pool!",
       spriteVariant: "happy",
       onScreen: ["ellie", "nana", "luke"],
-      onScreenVariants: { luke: "suspicious" },
+      onScreenVariants: { luke: "flustered" },
     },
     {
       type: "dialogue",
       characterId: "luke",
       text: "I literally just got here.",
-      expression: "*already looking exhausted*",
+      spriteVariant: "flustered",
+      expression: "*ears going red as he realizes he's standing right next to Ellie*",
       onScreen: ["ellie", "nana", "luke"],
     },
     {
@@ -103,8 +122,14 @@ export const episode1: Episode = {
     {
       type: "dialogue",
       characterId: "ellie",
-      text: "That's my sister. I apologize in advance.",
-      expression: "*burying her face deeper into her book*",
+      text: "My sister.",
+      expression: "*turning a page*",
+      onScreen: ["ellie", "amaya"],
+    },
+    {
+      type: "narration",
+      text: "No apology. No elaboration. Two words. Amaya blows her a kiss anyway.",
+      style: "action",
       onScreen: ["ellie", "amaya"],
     },
     {
@@ -149,8 +174,8 @@ export const episode1: Episode = {
     {
       type: "dialogue",
       characterId: "erena",
-      text: "CELESTINE!! OH MY GOD!! DO YOU WANNA HANG OUT?! WE COULD BE LIKE— WE COULD BE FRIENDS AGAIN!!",
-      expression: "*sprinting across the villa at full speed, arms wide open*",
+      text: "Oh, hey Celestine. What's up?",
+      expression: "*walking over with a casual wave*",
       onScreen: ["erena"],
     },
     {
@@ -163,8 +188,8 @@ export const episode1: Episode = {
     {
       type: "dialogue",
       characterId: "erena",
-      text: "OKAY BUT WHAT IF WE JUST— WHAT IF WE JUST SAT NEXT TO EACH OTHER? THAT'S NOT EVEN FRIENDSHIP THAT'S JUST PROXIMITY!",
-      expression: "*following her like a puppy that got kicked and came back anyway*",
+      text: "Okay, no worries. Want to just sit together? We don't even have to talk.",
+      expression: "*hands in pockets, shrugging easily*",
       onScreen: ["celestine", "erena"],
     },
     {
@@ -176,35 +201,8 @@ export const episode1: Episode = {
     },
     {
       type: "narration",
-      text: "Celestine looks like she's about to commit a crime. Erena looks like she's about to cry but is smiling through it. This dynamic will persist for the entire season.",
+      text: "Erena could not have been more normal about it. Celestine is reacting like she was just asked to defuse a bomb. This dynamic will persist for the entire season.",
       style: "action",
-    },
-    {
-      type: "narration",
-      text: "Two women arrive together, already arguing. A third wanders in and makes a beeline for the bookshelf without greeting a single person.",
-      style: "action",
-      onScreen: [],
-    },
-    {
-      type: "dialogue",
-      characterId: "solaria",
-      text: "This room is mine. That one's yours. Don't argue.",
-      expression: "*pointing at rooms with the authority of someone who ruled a country*",
-      onScreen: ["solaria", "verna"],
-    },
-    {
-      type: "dialogue",
-      characterId: "verna",
-      text: "Excuse me? I've been governing nations longer than you've been emotionally stable.",
-      expression: "*flipping her hair with lethal sass*",
-      onScreen: ["solaria", "verna"],
-    },
-    {
-      type: "dialogue",
-      characterId: "autumna",
-      text: "The bookshelf has three volumes on marine biology and nothing on historical cartography. Unacceptable.",
-      expression: "*already reorganizing the villa bookshelf*",
-      onScreen: ["solaria", "verna", "autumna"],
     },
     {
       type: "narration",
@@ -220,18 +218,17 @@ export const episode1: Episode = {
       onScreen: ["liana"],
     },
     {
-      type: "dialogue",
-      characterId: "verna",
-      text: "You're DEAD. You don't get to show up to a dating show.",
-      expression: "*pointing accusingly, voice cracking*",
-      onScreen: ["verna", "liana"],
+      type: "narration",
+      text: "The LAPSE cast goes dead silent. Half of them look like they've seen a ghost — because they have. Ellie's hand tightens on her book. Nana stops mid-splash. Even Luke, who doesn't react to anything, takes a step back.",
+      style: "emotion",
+      onScreen: ["liana"],
     },
     {
       type: "dialogue",
       characterId: "liana",
-      text: "I'm a goddess, dear. I show up wherever I like.",
+      text: "I'm a goddess, dears. I show up wherever I like.",
       expression: "*smiling gently, as if death is a minor scheduling conflict*",
-      onScreen: ["verna", "liana"],
+      onScreen: ["liana"],
     },
     {
       type: "narration",
@@ -302,43 +299,11 @@ export const episode1: Episode = {
       onScreen: ["kylie", "tristan"],
     },
     {
-      type: "narration",
-      text: "A small girl bounces in. She's smiling at everyone. It doesn't reach her eyes.",
-      style: "action",
-      focusCharacter: "e",
-    },
-    {
-      type: "dialogue",
-      characterId: "e",
-      text: "Hi everyone! I'm E! This is SO cute! I love it here already!",
-      expression: "*smiling with surgical precision — every muscle calculated*",
-      onScreen: ["e"],
-    },
-    {
-      type: "narration",
-      text: "E's smile doesn't reach her eyes. It never reaches her eyes.",
-      style: "thought",
-    },
-    {
-      type: "dialogue",
-      characterId: "z",
-      text: "I am here because E is here.",
-      expression: "*standing perfectly still, face completely neutral*",
-      onScreen: ["e", "z"],
-    },
-    {
       type: "dialogue",
       characterId: "aaron",
       text: "I don't want to be here.",
       expression: "*shrugging with his entire body*",
       onScreen: ["aaron"],
-    },
-    {
-      type: "dialogue",
-      characterId: "chrissie",
-      text: "Is there a library? Or at least a study room? ...No? This is going to be a long summer.",
-      expression: "*adjusting her glasses with academic disappointment*",
-      onScreen: ["aaron", "chrissie"],
     },
 
     // ===== WAVE 3: PITCH BLACK CREW =====
@@ -383,7 +348,7 @@ export const episode1: Episode = {
     },
     {
       type: "narration",
-      text: "Everyone is staring. Nana whispers 'I like her.' Ellie is already taking notes.",
+      text: "Everyone is staring. Nana whispers 'I like her.' Ellie glances up for a second, then goes back to her book.",
       style: "action",
       onScreen: ["serenity"],
     },
@@ -417,7 +382,7 @@ export const episode1: Episode = {
     },
     {
       type: "narration",
-      text: "The sun dips below the horizon. Fairy lights flicker on. Everyone gathers at the firepit. Twenty-two islanders. It's time to couple up.",
+      text: "The sun dips below the horizon. Fairy lights flicker on. Everyone gathers at the firepit. Sixteen islanders. It's time to couple up.",
       style: "action",
       onScreen: [],
     },
@@ -468,7 +433,7 @@ export const episode1: Episode = {
     },
     {
       type: "narration",
-      text: "The Host looks at Ellie. She's still holding her book. She hasn't made eye contact with anyone in ten minutes.",
+      text: "The Host looks at Ellie. She's reading. She hasn't made eye contact with anyone in ten minutes. Luke, three people away in the lineup, is staring at the ground so hard he might bore a hole through it.",
       style: "action",
       focusCharacter: "ellie",
     },
@@ -481,12 +446,14 @@ export const episode1: Episode = {
         {
           text: "\"Ellie, your turn. Maybe pick someone you already know?\"",
           relationshipChanges: { ellie: 2, luke: 3 },
-          reaction: "Ellie glares at you. Then looks at Luke. Then looks at the ground. Then, quietly: '...Luke.' Nana screams.",
+          reaction:
+            "Ellie looks up. Scans the lineup like she's reading a menu she doesn't care about. Her eyes pass over Luke. He goes completely rigid. '...Luke.' She says it like she's ordering coffee. Luke's voice cracks: 'Cool. Yeah. Cool.' It is not cool. He is bright red. Nana screams.",
         },
         {
           text: "\"Ellie, the book can wait. Who's it gonna be?\"",
           relationshipChanges: { ellie: 3, luke: 2 },
-          reaction: "Ellie closes her book with excruciating slowness. Scans the lineup. Her eyes land on Luke for exactly 0.3 seconds too long. 'Luke. For logistical reasons.' Nobody is fooled.",
+          reaction:
+            "Ellie closes her book. Takes her time. Looks at the lineup with zero urgency. 'Luke.' One word. No explanation. Luke opens his mouth, closes it, opens it again. 'I— yeah. Okay. Whatever.' His ears are crimson. His hands are shaking. Nana is already composing a victory screech.",
         },
       ],
     },
@@ -494,34 +461,47 @@ export const episode1: Episode = {
     {
       type: "dialogue",
       characterId: "ellie",
-      text: "This is purely a strategic decision based on pre-existing familiarity and logistical convenience.",
-      spriteVariant: "flustered",
+      text: "Don't make it weird.",
+      spriteVariant: "talking",
       onScreen: ["ellie", "luke"],
       onScreenVariants: { luke: "flustered" },
     },
     {
       type: "dialogue",
       characterId: "luke",
-      text: "...Sure. Logistical.",
-      spriteVariant: "happy",
+      text: "I'm NOT making it— I didn't even SAY anything!",
+      spriteVariant: "flustered",
       onScreen: ["ellie", "luke"],
-      onScreenVariants: { ellie: "flustered" },
     },
     {
       type: "dialogue",
       characterId: "nana",
-      text: "LOGISTICAL! SHE SAID LOGISTICAL! I'M SCREAMING!",
+      text: "SHE PICKED HIM!! SHE PICKED LUKE!! I KNEW IT!! I'VE BEEN SAYING THIS SINCE BEFORE THE SHOW!!",
       spriteVariant: "happy",
       onScreen: ["ellie", "nana", "luke"],
-      onScreenVariants: { ellie: "flustered", luke: "flustered" },
+      onScreenVariants: { ellie: "talking", luke: "flustered" },
+    },
+    {
+      type: "dialogue",
+      characterId: "luke",
+      text: "Nana, SHUT UP! It's not— she just— it's PROXIMITY, okay?! We know each other! That's IT!",
+      spriteVariant: "flustered",
+      onScreen: ["ellie", "nana", "luke"],
+      onScreenVariants: { nana: "happy" },
     },
     {
       type: "dialogue",
       characterId: "ellie",
-      text: "Nana, I swear to—",
+      text: "...Yeah. What he said.",
       spriteVariant: "flustered",
       onScreen: ["ellie", "nana", "luke"],
-      onScreenVariants: { nana: "happy", luke: "happy" },
+      onScreenVariants: { nana: "happy", luke: "flustered" },
+    },
+    {
+      type: "narration",
+      text: "Luke's face is the color of a fire truck. Ellie's expression hasn't changed, but she's gripping her book hard enough to dent the cover. Nana is vibrating.",
+      style: "action",
+      onScreen: ["ellie", "nana", "luke"],
     },
 
     {
@@ -573,8 +553,8 @@ export const episode1: Episode = {
     {
       type: "dialogue",
       characterId: "erena",
-      text: "CELESTINE! IT'S OKAY! I'LL WAIT FOR YOU! WE CAN BE PARTNERS NEXT TIME!! OR JUST FRIENDS! FRIENDS IS FINE! PLEASE!",
-      expression: "*waving frantically across the firepit, voice cracking*",
+      text: "Hey, Celestine — it's cool. Maybe next time.",
+      expression: "*giving a calm wave and a small shrug from across the firepit*",
       onScreen: ["erena", "celestine"],
     },
     {
@@ -593,85 +573,139 @@ export const episode1: Episode = {
     },
     {
       type: "narration",
-      text: "The villa is quieting down. Most islanders have turned in. But on the balcony, two people are sitting in silence — the comfortable kind.",
+      text: "The villa is quieting down. Most islanders have turned in. But on the balcony, Ellie is reading. And Luke is sitting next to her. He could be anywhere else. He's here.",
       style: "action",
+      onScreen: ["luke", "ellie"],
+    },
+    {
+      type: "narration",
+      text: "He keeps glancing at her. Then looking away. Then glancing again. He's been doing this for ten minutes.",
+      style: "emotion",
       onScreen: ["luke", "ellie"],
     },
     {
       type: "dialogue",
       characterId: "luke",
       text: "Hey, Ellie?",
-      spriteVariant: "talking",
+      spriteVariant: "flustered",
       onScreen: ["luke", "ellie"],
     },
     {
       type: "dialogue",
       characterId: "ellie",
-      text: "Hm?",
+      text: "Mm.",
       onScreen: ["luke", "ellie"],
-      onScreenVariants: { luke: "talking" },
+      onScreenVariants: { luke: "flustered" },
     },
     {
       type: "dialogue",
       characterId: "luke",
-      text: "Thanks for picking me. Even if it was... logistical.",
+      text: "You picked me.",
       spriteVariant: "flustered",
       onScreen: ["luke", "ellie"],
     },
     {
       type: "narration",
-      text: "Ellie doesn't respond. But she moves her book slightly to the left, closing the gap between them by about three inches. For Ellie, that's basically a love confession.",
+      text: "His voice cracks on 'me.' He clears his throat immediately.",
+      style: "action",
+      onScreen: ["luke", "ellie"],
+    },
+    {
+      type: "dialogue",
+      characterId: "luke",
+      text: "I mean— whatever. It's fine. I don't care. I'm just saying. You could've picked anyone.",
+      spriteVariant: "flustered",
+      onScreen: ["luke", "ellie"],
+    },
+    {
+      type: "narration",
+      text: "He cares. He cares so much his hands are shaking.",
+      style: "thought",
+      onScreen: ["luke", "ellie"],
+    },
+    {
+      type: "narration",
+      text: "Ellie doesn't respond. She turns a page. But she shifts slightly — closing the gap between them by a few inches. She doesn't acknowledge it.",
       style: "emotion",
       onScreen: ["luke", "ellie"],
     },
     {
       type: "dialogue",
-      characterId: "ellie",
-      text: "...Don't read into it.",
+      characterId: "luke",
+      text: "...You're doing it again.",
       spriteVariant: "flustered",
       onScreen: ["luke", "ellie"],
-      onScreenVariants: { luke: "happy" },
+    },
+    {
+      type: "dialogue",
+      characterId: "ellie",
+      text: "Doing what.",
+      onScreen: ["luke", "ellie"],
+      onScreenVariants: { luke: "flustered" },
+    },
+    {
+      type: "dialogue",
+      characterId: "luke",
+      text: "Nothing. Forget it.",
+      spriteVariant: "flustered",
+      expression: "*turning away so she can't see his face*",
+      onScreen: ["luke", "ellie"],
+    },
+    {
+      type: "narration",
+      text: "He's smiling. He doesn't want her to see. She sees anyway. She doesn't mention it.",
+      style: "emotion",
+      onScreen: ["luke", "ellie"],
     },
 
-    // ===== END OF EPISODE =====
+    // ===== END-OF-DAY CHOICE =====
     {
       type: "choice",
       prompt: "Before the night ends — who do you check in on?",
       repeatable: true,
       finishText: "I'm finished for the day.",
-      onScreen: ["celestine", "e", "amaya", "nana"],
+      onScreen: ["celestine", "amaya", "nana", "luke"],
       choices: [
         {
           text: "Celestine — she looks like she's about to snap.",
           characterId: "celestine",
           relationshipChanges: { celestine: 3 },
-          reaction: "Celestine sits on the daybed, parasol across her lap like a shield. 'She followed me to the bathroom. The BATHROOM. She asked if I wanted to braid each other's hair.' She looks like she's considering faking her own death.",
-        },
-        {
-          text: "E — that smile is hiding something.",
-          characterId: "e",
-          relationshipChanges: { e: 3 },
-          reaction: "E sits across from you, bubbly as ever. You ask a real question. For half a second, the mask flickers. Then it's back. 'I'm great!' she says. You don't believe her. She knows you don't.",
+          reaction:
+            "You find Celestine on the daybed, parasol across her lap like a shield. She doesn't look up when you sit down. You wait. Finally: 'She followed me to the bathroom. The BATHROOM. She asked if I wanted to braid each other's hair.' A long pause. 'I told her I'd rather braid a noose.' Another pause. 'She asked if that was a friendship activity.' Celestine stares at the horizon. 'I am going to lose my mind in this villa.' You sit with her in silence. After a while she says, very quietly: 'The parasol is load-bearing. If I put it down, I'll have to talk to people.' You nod. You understand. She looks at you like you're the first person who has.",
         },
         {
           text: "Amaya — she's already running the villa.",
           characterId: "amaya",
           relationshipChanges: { amaya: 3 },
-          reaction: "Amaya kicks her feet up. 'Forty-seven jobs, and somehow managing a villa full of people from different dimensions is the easiest one.' She's joking. But she's also not.",
+          reaction:
+            "Amaya kicks her feet up on a lounger and pats the seat next to her. 'Forty-seven jobs, and somehow managing a villa full of people from different dimensions is the easiest one.' She laughs. Then stops. 'You wanna know the real reason I'm here?' She looks at the stars. 'Ellie doesn't let people in. You've seen it. Book up, world out. I figured... maybe if she saw me putting myself out there, she'd try.' She grins. 'Don't tell her I said that. She'd just look at me. Wouldn't say a word. And somehow that would be worse than if she argued.' Amaya sighs fondly. 'That's my sister for you.'",
         },
         {
           text: "Nana — she's been suspiciously quiet for five minutes.",
           characterId: "nana",
           relationshipChanges: { nana: 3 },
-          reaction: "You find Nana sitting in a cardboard box by the kitchen. 'It's cozy,' she says. You remember she used to be a cat. Some habits die hard.",
+          reaction:
+            "You find Nana sitting in a cardboard box by the kitchen. 'It's cozy,' she says, like this is a perfectly normal place to be. You sit on the floor next to her. 'Do you think Luke knows he's in love with Ellie?' she asks, out of nowhere. You blink. 'Because he definitely doesn't know. But it's SO obvious. He does this thing where he like—' she does an impression of someone trying very hard not to look at someone '—every three seconds. I counted.' She pulls a blanket over the box. 'I used to be a cat, so I notice things like that. Hunting instincts. Except instead of mice it's feelings.' She yawns. 'Anyway. I give it three days before he cracks.'",
+        },
+        {
+          text: "Luke — he's still on the balcony, staring at nothing.",
+          characterId: "luke",
+          relationshipChanges: { luke: 3 },
+          reaction:
+            "You find Luke exactly where Ellie left him. He hasn't moved. He's staring at the spot where she was sitting. When he notices you, he startles — actually jumps. 'I wasn't— I was just— the VIEW. I was looking at the view.' The view is a wall. You sit down. Silence. Then: 'I knew her before this, you know. Before the show.' His voice goes quiet. 'She probably doesn't even— she doesn't think about stuff like that. She just reads and exists and doesn't care about anything and it's—' He stops. His face is red even in the dark. 'It's ANNOYING. That's what it is. Annoying.' He rubs the back of his neck. 'Don't tell her I said any of that. Especially the view thing.'",
         },
       ],
     },
 
     {
       type: "narration",
-      text: "Day 1 is done. Four couples with potential. One goddess. One psychopath. One girl begging another to be friends again while getting shut down at every turn. A girl who'd rather fight the narrator than date anyone. And somewhere on the balcony, Ellie moved her book three inches closer to Luke and is pretending it didn't mean anything.",
+      text: "Day 1 is done. Couples formed — some by choice, some by chaos. One goddess. One pair of brothers who can barely look at each other. One girl trying to be friends with another girl who won't give her the time of day. A girl who'd rather fight the narrator than date anyone.",
       style: "action",
+    },
+    {
+      type: "narration",
+      text: "And somewhere on the balcony, Luke is still sitting where Ellie left him, pretending he's looking at a wall because the view is nice. Ellie is in bed, reading. She is not thinking about the fact that he stayed. She is absolutely not thinking about that.",
+      style: "whisper",
     },
     {
       type: "narration",
