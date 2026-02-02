@@ -22,6 +22,7 @@ import {
   User,
   Link,
   Unlink,
+  Droplets,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -489,6 +490,107 @@ export default function WorldPage() {
     setHasUnsavedChanges(true)
   }, [world])
 
+  // Smooth coastlines: blend land/water boundary into a gradual slope
+  const handleSmoothCoastlines = useCallback(() => {
+    if (!world) return
+    const { heights, seaLevel, size, sizeZ } = world.terrain
+    const total = size * sizeZ
+    const newHeights = new Float32Array(heights)
+
+    const COAST_RADIUS = 10
+    const PASSES = 6
+
+    // Step 1: identify coastline cells (adjacent to opposite side of sea level)
+    const isCoastline = new Uint8Array(total)
+    const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]]
+    for (let z = 0; z < sizeZ; z++) {
+      for (let x = 0; x < size; x++) {
+        const idx = z * size + x
+        const above = heights[idx] >= seaLevel
+        for (const [dx, dz] of dirs) {
+          const nx = x + dx, nz = z + dz
+          if (nx >= 0 && nx < size && nz >= 0 && nz < sizeZ) {
+            const nAbove = heights[nz * size + nx] >= seaLevel
+            if (above !== nAbove) {
+              isCoastline[idx] = 1
+              break
+            }
+          }
+        }
+      }
+    }
+
+    // Step 2: BFS distance from coastline
+    const dist = new Float32Array(total)
+    dist.fill(COAST_RADIUS + 1)
+    const queue: number[] = []
+    for (let i = 0; i < total; i++) {
+      if (isCoastline[i]) {
+        dist[i] = 0
+        queue.push(i)
+      }
+    }
+    let head = 0
+    while (head < queue.length) {
+      const idx = queue[head++]
+      const x = idx % size
+      const z = Math.floor(idx / size)
+      const d = dist[idx]
+      if (d >= COAST_RADIUS) continue
+      for (const [dx, dz] of dirs) {
+        const nx = x + dx, nz = z + dz
+        if (nx >= 0 && nx < size && nz >= 0 && nz < sizeZ) {
+          const nIdx = nz * size + nx
+          if (dist[nIdx] > d + 1) {
+            dist[nIdx] = d + 1
+            queue.push(nIdx)
+          }
+        }
+      }
+    }
+
+    // Step 3: smoothing passes on cells within the coastal band
+    for (let pass = 0; pass < PASSES; pass++) {
+      const temp = new Float32Array(newHeights)
+      for (let z = 0; z < sizeZ; z++) {
+        for (let x = 0; x < size; x++) {
+          const idx = z * size + x
+          if (dist[idx] > COAST_RADIUS) continue
+
+          // Stronger smoothing closer to the coastline
+          const weight = 1 - dist[idx] / (COAST_RADIUS + 1)
+
+          let sum = 0, count = 0
+          for (let dz = -2; dz <= 2; dz++) {
+            for (let dx = -2; dx <= 2; dx++) {
+              const nx = x + dx, nz = z + dz
+              if (nx >= 0 && nx < size && nz >= 0 && nz < sizeZ) {
+                sum += temp[nz * size + nx]
+                count++
+              }
+            }
+          }
+          let smoothed = temp[idx] + (sum / count - temp[idx]) * weight
+
+          // Cells that were originally above water can't erode below sea level
+          if (heights[idx] >= seaLevel) {
+            smoothed = Math.max(smoothed, seaLevel + 0.001)
+          }
+
+          newHeights[idx] = smoothed
+        }
+      }
+    }
+
+    const newTerrain: TerrainData = {
+      ...world.terrain,
+      heights: newHeights,
+      materials: new Uint8Array(world.terrain.materials),
+    }
+    setWorld({ ...world, terrain: newTerrain, updatedAt: new Date() })
+    setHasUnsavedChanges(true)
+  }, [world])
+
   // Scale map
   const handleScaleMap = useCallback(() => {
     if (!world) return
@@ -933,6 +1035,9 @@ export default function WorldPage() {
           </Button>
           <Button variant="outline" size="sm" onClick={handleFlattenToGround} className="text-xs h-7 border-gray-700">
             <Minus className="w-3 h-3 mr-1" /> Level Ground
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleSmoothCoastlines} className="text-xs h-7 border-gray-700">
+            <Droplets className="w-3 h-3 mr-1" /> Smooth Coasts
           </Button>
           <Button variant="outline" size="sm" onClick={() => { setShowScaleDialog(true); setScaleVertical(1.0); setScaleHorizontal(1.0); }} className="text-xs h-7 border-gray-700">
             <Scaling className="w-3 h-3 mr-1" /> Scale
