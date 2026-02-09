@@ -6,6 +6,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { createToonMaterial, setToonMaterialColor, createColoredShadowMaterial } from '@/lib/shaders/toonMaterial'
+import { getUndertoneTexturePath, getUndertone } from '@/lib/hairTextures'
 
 type Section = 'BODY' | 'HAIR' | 'TOPS' | 'DRESSES' | 'PANTS' | 'SHOES' | 'ACCESSORIES' | 'EXPRESSIONS' | 'POSES' | null
 
@@ -17,6 +18,7 @@ export interface Transform {
 
 export interface CategoryColors {
   hair: string
+  hairUndertone?: string  // ID from HAIR_UNDERTONES
   tops: {
     primary: string
     secondary?: string
@@ -84,10 +86,14 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
   const modelBonesRef = useRef<string[]>([])
   const heightScaleRef = useRef<number>(1.0)
   const visibleAssetsRef = useRef<string[]>(visibleAssets)
+  const hairTextureRef = useRef<THREE.Texture | null>(null)
+  const currentHairColorRef = useRef<string | null>(null)
+  const textureLoaderRef = useRef<THREE.TextureLoader | null>(null)
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [modelReady, setModelReady] = useState(false)
+  const [currentHairTexture, setCurrentHairTexture] = useState<string | null>(null)
 
   // Keep ref in sync with prop
   visibleAssetsRef.current = visibleAssets
@@ -152,14 +158,24 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
 
     const loader = new FBXLoader()
     const textureLoader = new THREE.TextureLoader()
+    textureLoaderRef.current = textureLoader
 
-    // Load hair texture
+    // Load hair texture based on undertone selection
+    const initialHairColor = categoryColors?.hair || '#4a3728' // Default brown
+    const initialUndertone = categoryColors?.hairUndertone || 'warm'
+    const texturePath = getUndertoneTexturePath(initialUndertone)
+    const undertone = getUndertone(initialUndertone)
+    currentHairColorRef.current = initialHairColor
+    setCurrentHairTexture(undertone?.name || 'Warm')
+    console.log('Hair undertone:', initialUndertone, '->', texturePath)
+
     const hairTexture = textureLoader.load(
-      '/Textures/Hair%20Textures%20by%20Gell3D/Hair13.png',
+      texturePath,
       (tex) => {
         console.log('Hair texture loaded successfully', tex)
         tex.colorSpace = THREE.SRGBColorSpace
         tex.needsUpdate = true
+        hairTextureRef.current = tex
       },
       undefined,
       (err) => {
@@ -270,12 +286,17 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
                                      lowerName.includes('ahoge')
 
                   if (isHairMesh) {
-                    console.log('Found hair mesh:', meshName, 'applying hair texture')
+                    console.log('Found hair mesh:', meshName, 'applying hair texture with tint')
                   }
 
                   // Use toon material - warm ambient light tints shadow areas
+                  // For hair, use the tint color to adjust texture to desired color
+                  const hairTintColor = isHairMesh
+                    ? new THREE.Color(initialHairColor)  // Tint texture to target color
+                    : new THREE.Color(baseColor)
+
                   toonMat = createColoredShadowMaterial({
-                    color: isHairMesh ? 0xffffff : baseColor,  // White for hair so texture shows fully
+                    color: isHairMesh ? hairTintColor : baseColor,
                     map: isHairMesh ? hairTexture : map,
                   })
 
@@ -592,8 +613,67 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     }
   }, [currentSection])
 
-  // Extract skinTone for dependency tracking
+  // Extract values for dependency tracking
   const skinTone = categoryColors?.body?.skinTone
+  const hairColor = categoryColors?.hair
+  const hairUndertone = categoryColors?.hairUndertone || 'warm'
+
+  // Hair undertone change effect - loads new texture
+  const currentUndertoneRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!modelReady || !textureLoaderRef.current) return
+    if (hairUndertone === currentUndertoneRef.current) return
+
+    const texturePath = getUndertoneTexturePath(hairUndertone)
+    const undertone = getUndertone(hairUndertone)
+    console.log('Hair undertone changed:', hairUndertone, '->', texturePath)
+    currentUndertoneRef.current = hairUndertone
+    setCurrentHairTexture(undertone?.name || 'Warm')
+
+    // Load the new texture
+    textureLoaderRef.current.load(
+      texturePath,
+      (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace
+        tex.needsUpdate = true
+        hairTextureRef.current = tex
+
+        // Update all hair materials with new texture
+        meshMapRef.current.forEach((mesh) => {
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+          mats.forEach((mat) => {
+            if ((mat as any)._isHairMesh && mat instanceof THREE.MeshToonMaterial) {
+              mat.map = tex
+              mat.needsUpdate = true
+            }
+          })
+        })
+
+        console.log('Hair texture updated to', undertone?.name)
+      },
+      undefined,
+      (err) => console.error('Failed to load hair texture:', err)
+    )
+  }, [hairUndertone, modelReady])
+
+  // Hair color change effect - updates tint
+  useEffect(() => {
+    if (!modelReady || !hairColor) return
+    if (hairColor === currentHairColorRef.current) return
+
+    currentHairColorRef.current = hairColor
+
+    // Update all hair materials with new tint color
+    meshMapRef.current.forEach((mesh) => {
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      mats.forEach((mat) => {
+        if ((mat as any)._isHairMesh && mat instanceof THREE.MeshToonMaterial) {
+          mat.color.set(hairColor)
+          mat.needsUpdate = true
+        }
+      })
+    })
+  }, [hairColor, modelReady])
 
   // Color application effect
   useEffect(() => {
@@ -647,6 +727,12 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
               Retry
             </button>
           </div>
+        </div>
+      )}
+
+      {currentHairTexture && currentSection === 'HAIR' && (
+        <div className="absolute bottom-3 left-3 px-2 py-1 bg-black/50 rounded text-xs text-white/70">
+          Undertone: {currentHairTexture}
         </div>
       )}
     </div>
