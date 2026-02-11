@@ -154,6 +154,28 @@ export interface CartographyData {
 }
 
 // ============================================================
+// WORLD LOCATIONS (camera bookmarks for scene backdrops)
+// ============================================================
+
+export interface WorldLocation {
+  id: string
+  name: string
+  cameraPosition: [number, number, number]
+  cameraRotation: [number, number, number]  // Euler XYZ in radians
+  thumbnail?: string  // Base64 encoded image data
+  createdAt: Date
+}
+
+export interface SerializedWorldLocation {
+  id: string
+  name: string
+  cameraPosition: [number, number, number]
+  cameraRotation: [number, number, number]
+  thumbnail?: string
+  createdAt: string
+}
+
+// ============================================================
 // WORLD (top-level container)
 // ============================================================
 
@@ -164,6 +186,7 @@ export interface World {
   terrain: TerrainData
   objects: WorldObject[]
   cartographyData?: CartographyData
+  locations: WorldLocation[]  // Camera bookmarks for scene backdrops
   createdAt: Date
   updatedAt: Date
 }
@@ -178,6 +201,7 @@ export interface SerializedWorld {
   terrain: SerializedTerrainData
   objects: WorldObject[]
   cartographyData?: CartographyData
+  locations?: SerializedWorldLocation[]  // Camera bookmarks for scene backdrops
   createdAt: string
   updatedAt: string
 }
@@ -280,6 +304,30 @@ export function deserializeTerrainData(data: SerializedTerrainData): TerrainData
   }
 }
 
+/** Serialize a WorldLocation to JSON form */
+export function serializeWorldLocation(loc: WorldLocation): SerializedWorldLocation {
+  return {
+    id: loc.id,
+    name: loc.name,
+    cameraPosition: loc.cameraPosition,
+    cameraRotation: loc.cameraRotation,
+    thumbnail: loc.thumbnail,
+    createdAt: loc.createdAt instanceof Date ? loc.createdAt.toISOString() : new Date().toISOString(),
+  }
+}
+
+/** Deserialize a WorldLocation from JSON form */
+export function deserializeWorldLocation(data: SerializedWorldLocation): WorldLocation {
+  return {
+    id: data.id,
+    name: data.name,
+    cameraPosition: data.cameraPosition,
+    cameraRotation: data.cameraRotation,
+    thumbnail: data.thumbnail,
+    createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+  }
+}
+
 /** Convert World to serializable form */
 export function serializeWorld(world: World): SerializedWorld {
   return {
@@ -289,6 +337,7 @@ export function serializeWorld(world: World): SerializedWorld {
     terrain: serializeTerrainData(world.terrain),
     objects: world.objects,
     cartographyData: world.cartographyData,
+    locations: world.locations?.map(serializeWorldLocation),
     createdAt: world.createdAt instanceof Date ? world.createdAt.toISOString() : new Date().toISOString(),
     updatedAt: world.updatedAt instanceof Date ? world.updatedAt.toISOString() : new Date().toISOString(),
   }
@@ -303,6 +352,7 @@ export function deserializeWorld(data: SerializedWorld): World {
     terrain: data.terrain ? deserializeTerrainData(data.terrain) : createTerrain(256, 256),
     objects: Array.isArray(data.objects) ? data.objects : [],
     cartographyData: data.cartographyData,
+    locations: Array.isArray(data.locations) ? data.locations.map(deserializeWorldLocation) : [],
     createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
     updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
   }
@@ -339,8 +389,26 @@ export function createWorld(storyId: string, name: string, sizeX: number = 256, 
     name,
     terrain: createTerrain(sizeX, sizeZ),
     objects: [],
+    locations: [],
     createdAt: new Date(),
     updatedAt: new Date(),
+  }
+}
+
+/** Create a new WorldLocation */
+export function createWorldLocation(
+  name: string,
+  cameraPosition: [number, number, number],
+  cameraRotation: [number, number, number],
+  thumbnail?: string
+): WorldLocation {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name,
+    cameraPosition,
+    cameraRotation,
+    thumbnail,
+    createdAt: new Date(),
   }
 }
 
