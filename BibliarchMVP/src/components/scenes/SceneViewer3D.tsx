@@ -5,6 +5,8 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 // Using standard materials instead of custom toon shader for stability
 import { SceneCharacterManager } from '@/lib/scenes/SceneCharacterManager'
+// CHARACTER_BASE_ROTATION_Y is applied to the FBX inside the wrapper group
+// User rotation is applied to the wrapper group directly
 import type { SceneCharacter, DialogueLine, CharacterData, TransformGizmoMode } from '@/types/scenes'
 
 // Re-export types for backward compatibility

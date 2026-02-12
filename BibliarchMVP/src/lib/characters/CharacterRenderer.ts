@@ -5,6 +5,7 @@
 
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { createColoredShadowMaterial } from '@/lib/shaders/toonMaterial'
 import { SpringBoneSystem } from '@/lib/SpringBoneSystem'
 import { getUndertoneTexturePath } from '@/lib/hairTextures'
@@ -23,17 +24,19 @@ const loadingPromises: Map<string, Promise<THREE.Group>> = new Map()
 
 /**
  * Load the FBX model with caching
+ * Uses SkeletonUtils.clone() for proper skinned mesh cloning
  */
 async function loadFBXModel(): Promise<THREE.Group> {
   // Check cache first
   if (fbxCache.has(MODEL_PATH)) {
-    return fbxCache.get(MODEL_PATH)!.clone()
+    // Use SkeletonUtils.clone for proper skinned mesh cloning
+    return SkeletonUtils.clone(fbxCache.get(MODEL_PATH)!) as THREE.Group
   }
 
   // Check if already loading
   if (loadingPromises.has(MODEL_PATH)) {
     const cached = await loadingPromises.get(MODEL_PATH)!
-    return cached.clone()
+    return SkeletonUtils.clone(cached) as THREE.Group
   }
 
   // Load the model
@@ -43,7 +46,8 @@ async function loadFBXModel(): Promise<THREE.Group> {
       MODEL_PATH,
       (fbx) => {
         fbxCache.set(MODEL_PATH, fbx)
-        resolve(fbx.clone())
+        // Use SkeletonUtils.clone for proper skinned mesh cloning
+        resolve(SkeletonUtils.clone(fbx) as THREE.Group)
       },
       undefined,
       reject
@@ -54,18 +58,20 @@ async function loadFBXModel(): Promise<THREE.Group> {
   return loadPromise
 }
 
+// Base rotation offset for the FBX model (facing direction)
+export const CHARACTER_BASE_ROTATION_Y = -Math.PI / 2
+
 export class CharacterRenderer {
-  private group: THREE.Group  // This will BE the FBX model after loading
+  private group: THREE.Group  // Wrapper group that contains the FBX
+  private fbxModel: THREE.Group | null = null
   private meshMap: Map<string, THREE.SkinnedMesh> = new Map()
   private springBones: SpringBoneSystem | null = null
   private hairTexture: THREE.Texture | null = null
   private textureLoader: THREE.TextureLoader
   private loaded: boolean = false
   private disposed: boolean = false
-  private baseRotationY: number = -Math.PI / 2  // Store base rotation offset
 
   constructor() {
-    // Create a temporary placeholder group until FBX loads
     this.group = new THREE.Group()
     this.group.name = 'CharacterRenderer'
     this.textureLoader = new THREE.TextureLoader()
@@ -90,8 +96,7 @@ export class CharacterRenderer {
     }
 
     fbx.scale.setScalar(0.01)
-    fbx.rotation.y = this.baseRotationY
-    fbx.name = 'CharacterRenderer'
+    fbx.rotation.y = CHARACTER_BASE_ROTATION_Y
 
     // Force matrix world update and rebind skinned meshes
     fbx.updateMatrixWorld(true)
@@ -110,26 +115,8 @@ export class CharacterRenderer {
       }
     })
 
-    // Replace the placeholder group with the actual FBX
-    // Transfer any existing parent relationship
-    const parent = this.group.parent
-    const oldPosition = this.group.position.clone()
-    const oldRotationY = this.group.rotation.y
-
-    if (parent) {
-      parent.remove(this.group)
-      parent.add(fbx)
-    }
-
-    // Transfer position and add rotation offset
-    fbx.position.copy(oldPosition)
-    fbx.rotation.y = this.baseRotationY + oldRotationY
-
-    // Copy userData
-    fbx.userData = { ...this.group.userData }
-
-    // Now use the FBX as our main group
-    this.group = fbx
+    this.fbxModel = fbx
+    this.group.add(fbx)
 
     // Initialize spring bones for hair physics
     this.springBones = new SpringBoneSystem()
@@ -142,7 +129,7 @@ export class CharacterRenderer {
    * Apply appearance data to the character
    */
   applyAppearance(data: CharacterData): void {
-    if (!this.loaded || !this.group) return
+    if (!this.loaded || !this.fbxModel) return
 
     const { visibleAssets, colors, heightScale = 1.0 } = data
 
@@ -159,7 +146,7 @@ export class CharacterRenderer {
 
     // Apply visibility to ALL meshes (not just skinned meshes in the map)
     const visibleSet = new Set(visibleAssets)
-    this.group.traverse((node) => {
+    this.fbxModel.traverse((node) => {
       if (node instanceof THREE.Mesh) {
         const name = node.name
         const lowerName = name.toLowerCase()
@@ -169,9 +156,9 @@ export class CharacterRenderer {
       }
     })
 
-    // Apply height scale
-    if (this.group) {
-      this.group.scale.setScalar(0.01 * heightScale)
+    // Apply height scale to the FBX model (not the wrapper group)
+    if (this.fbxModel) {
+      this.fbxModel.scale.setScalar(0.01 * heightScale)
 
       // Counter-scale hair to keep consistent size
       const counterScale = 1 / heightScale
@@ -205,9 +192,9 @@ export class CharacterRenderer {
    * Apply materials with colors
    */
   private applyMaterials(colors: CategoryColors): void {
-    if (!this.group) return
+    if (!this.fbxModel) return
 
-    this.group.traverse((node) => {
+    this.fbxModel.traverse((node) => {
       if (!(node instanceof THREE.Mesh)) return
 
       const meshName = node.name
@@ -251,8 +238,11 @@ export class CharacterRenderer {
    */
   setWorldTransform(position: [number, number, number], rotation: number): void {
     this.group.position.set(position[0], position[1], position[2])
-    // Add base rotation offset to the user rotation
-    this.group.rotation.y = this.baseRotationY + rotation
+    // User rotation is applied to the wrapper group
+    // The FBX's base rotation is handled internally
+    this.group.rotation.y = rotation
+    // Force update matrices to ensure skinned meshes move correctly
+    this.group.updateMatrixWorld(true)
   }
 
   /**
@@ -262,8 +252,9 @@ export class CharacterRenderer {
     if (!this.springBones || this.springBones.count === 0) return
 
     this.springBones.update(delta)
-    // The group IS the FBX model now
-    this.springBones.applyGravity(this.group, 0.015, delta)
+    if (this.fbxModel) {
+      this.springBones.applyGravity(this.fbxModel, 0.015, delta)
+    }
   }
 
   /**
@@ -296,7 +287,7 @@ export class CharacterRenderer {
       this.hairTexture = null
     }
 
-    this.group?.traverse((node) => {
+    this.fbxModel?.traverse((node) => {
       if (node instanceof THREE.Mesh) {
         node.geometry?.dispose()
         const mats = Array.isArray(node.material) ? node.material : [node.material]
@@ -306,5 +297,6 @@ export class CharacterRenderer {
 
     this.group.clear()
     this.meshMap.clear()
+    this.fbxModel = null
   }
 }
