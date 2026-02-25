@@ -27,237 +27,171 @@
 
 ---
 
-## Phase 2: Notes Tab (Copy Bibliarch Canvas) 🔄 NEXT
+## Phase 2: Notes Tab (Copy Bibliarch Canvas) ✅ COMPLETED
 
 ### Goal
 Integrate the full Bibliarch canvas system from the storycanvas project.
 
-### Tasks
-1. Copy HTMLCanvas.tsx (10K lines) and all dependencies
-2. Copy UI components (button, card, dialog, popover, select, slider, tabs, etc.)
-3. Copy providers (color-provider, theme-provider)
-4. Copy utilities (color-palette, templates, performance-utils)
-5. **Remove timeline node type** from canvas/templates (timeline is separate tab)
-6. Update all import paths for new project
-7. Create Notes tab page that renders canvas
-8. Add master doc upload (.md, .txt, .docx parsing)
-9. Implement localStorage persistence for canvas data
-10. Test all node types work correctly
-
-### Files to Copy from storycanvas/src/
-- `components/canvas/HTMLCanvas.tsx`
-- `components/canvas/NodeContextMenu.tsx`
-- `components/canvas/ConnectionContextMenu.tsx`
-- `components/canvas/SafeStoryCanvas.tsx` (if needed)
-- `components/ui/*` (all shadcn components)
-- `components/providers/color-provider.tsx`
-- `components/providers/theme-provider.tsx`
-- `lib/color-palette.ts`
-- `lib/performance-utils.ts`
-- `lib/templates.ts` (modify to remove timeline)
-- `lib/utils.ts`
-
-### Success Criteria
-- Canvas renders with all node types (except timeline)
-- Can create, edit, delete, move nodes
-- Connections work
-- Copy/paste works
-- Undo/redo works
-- Data persists to localStorage
-- Master doc upload parses files correctly
+### Completed
+- ✅ HTMLCanvas.tsx ported with all dependencies
+- ✅ UI components (button, card, dialog, popover, select, slider, tabs, etc.)
+- ✅ Providers (color-provider, theme-provider)
+- ✅ Utilities (color-palette, templates, performance-utils)
+- ✅ All import paths updated
+- ✅ Notes tab page renders canvas
+- ✅ localStorage persistence for canvas data
 
 ---
 
-## Phase 3: Characters Tab (Copy Character Creator)
+## Phase 3: Characters Tab (Copy Character Creator) ✅ COMPLETED
 
 ### Goal
 Integrate the 3D character creator from the Character Creator project.
 
-### Tasks
-1. Copy Viewer3D.tsx and related components
-2. Copy utilities (thumbnailGenerator)
-3. Copy model file (Neighbor Base V16.glb) to public/models/
-4. Adapt for Next.js (dynamic imports for Three.js)
-5. Create Characters tab page with full customization UI
-6. Set up character store with localStorage persistence
-7. Implement character list management (create, delete, rename)
-8. Connect character data to story context
-
-### Files to Copy from Character Creator/character-creator/
-- `src/components/Viewer3D.tsx`
-- `src/components/ColorWheel.tsx`
-- `src/components/TransformControls.tsx`
-- `src/components/ItemThumbnail.tsx`
-- `src/utils/thumbnailGenerator.ts`
-- `public/models/Neighbor Base V16.glb`
-- Relevant styles from `src/index.css`
-
-### Success Criteria
-- 3D character model renders
-- Category tabs work (HAIR, TOPS, etc.)
-- Color customization works
-- Character list shows all characters for story
-- Can create and switch between characters
-- Data persists to localStorage
+### Completed
+- ✅ Viewer3D.tsx with full 3D character rendering
+- ✅ ColorWheel for hair/skin color customization
+- ✅ TransformControls for position/rotation/scale editing
+- ✅ ItemThumbnail for character item display
+- ✅ thumbnailGenerator utility
+- ✅ Character list management (create, delete, rename)
+- ✅ Data persists to localStorage
+- ✅ Hair undertone system with texture picker
+- ✅ Cel-shading rendering (toon material)
+- ✅ SpringBoneSystem for hair physics
+- ✅ SkeletonUtils.clone() for skinned mesh handling
 
 ---
 
-## Phase 4: Timeline Tab (NEW)
+## Phase 4: Timeline Tab ✅ COMPLETED
 
 ### Goal
 Create a dedicated timeline editor separate from the canvas.
 
-### Tasks
-1. Create TimelineEditor component
-2. Implement horizontal track layout
-3. Create draggable timeline events
-4. Implement character state snapshots at each event
-5. Add relationship state tracking at each event
-6. Add zoom controls
-7. Implement scene linking UI (dropdown to link scenes)
-8. Support multiple parallel tracks
-9. Set up timeline store with localStorage persistence
-
-### Key Components to Create
-- `TimelineEditor.tsx` - Main container
-- `TimelineTrack.tsx` - Horizontal track with events
-- `TimelineEvent.tsx` - Individual event node
-- `CharacterStateEditor.tsx` - Edit character state at event
-- `RelationshipStateEditor.tsx` - Edit relationships at event
-
-### Success Criteria
-- Can create/edit/delete timeline events
-- Events can be dragged to reorder
-- Multiple tracks for parallel events
-- Can edit character states at each event
-- Can edit relationship states at each event
-- Can link scenes to events
-- Zoom in/out works
-- Data persists to localStorage
+### Completed
+- ✅ TimelineCanvas — main rendering surface
+- ✅ TimelineTrack — horizontal tracks with events
+- ✅ TimelineEventBlock — individual event blocks
+- ✅ Draggable timeline events
+- ✅ Multiple parallel tracks
+- ✅ Scene linking
+- ✅ Data persists to localStorage
 
 ---
 
-## Phase 5: World Tab (NEW - 3D)
+## Phase 5: World Tab (3D World Builder) ✅ COMPLETED — MAJOR FEATURE
 
 ### Goal
-Create a 3D world/neighborhood builder with terraforming and building placement.
+Create a 3D world/neighborhood builder with terraforming, building placement, and hierarchical regions.
 
-### Tasks
-1. Create WorldViewer3D with Three.js scene
-2. Implement terrain as a plane (flat to start, vertex displacement later)
-3. Create primitive building blocks (cubes, planes as placeholders)
-4. Implement placement tools (click to place)
-5. Add terrain brush for raising/lowering terrain
-6. Create top-down mini-map
-7. Implement free camera navigation (orbit controls)
-8. Set up world store with localStorage persistence
+### Completed — Core
+- ✅ WorldViewport3D — full 3D terrain rendering with Three.js
+- ✅ Sculpt brush (raise, lower, flatten, smooth) with configurable size/strength/falloff
+- ✅ Material paint system with terrain material catalog
+- ✅ Object placement and selection (buildings, decorations, props, vegetation)
+- ✅ Select tool with transform gizmos (translate, rotate, scale)
+- ✅ MiniMap with real-time overview
+- ✅ Orbit camera + First-person camera (Minecraft creative mode: WASD, sprint, fly/walk toggle)
+- ✅ Grid snapping and rotation snapping
+- ✅ Undo/redo system for sculpt, paint, objects, borders, walls
+- ✅ IndexedDB persistence with save/load
 
-### Key Components to Create
-- `WorldViewer3D.tsx` - Main 3D scene
-- `WorldEditor.tsx` - Container with tools
-- `TerrainEditor.tsx` - Terrain manipulation
-- `BuildingPlacer.tsx` - Place/move buildings
-- `Primitives.tsx` - Primitive shape definitions
+### Completed — Hierarchical World System
+- ✅ World → Country → City → Building drill-down hierarchy
+- ✅ LevelBreadcrumb navigation
+- ✅ Polygon border drawing to define regions
+- ✅ Child terrain initialization from parent
+- ✅ Terrain blending between parent and child nodes
 
-### Building Types (Primitives for MVP)
-- `primitive-cube` - Basic cube building
-- `primitive-plane` - Flat surface
-- `preset-house` - Simple house shape (multiple cubes)
-- `preset-shop` - Simple shop shape
+### Completed — Cartography
+- ✅ CartographyEditor — 2D biome painting (ocean, plains, mountains, forest, desert, etc.)
+- ✅ CartographyPanel — biome brush controls
+- ✅ Generate 3D terrain from cartography map
+- ✅ Heightmap import from PNG/JPEG
 
-### Decoration Types (Primitives for MVP)
-- Tree (cone + cylinder)
-- Rock (sphere)
-- Bush (small sphere)
-- Lamp (cylinder + sphere)
+### Completed — City Systems
+- ✅ Lot drawing with zoning types (residential, commercial, industrial, park, special)
+- ✅ Road drawing with waypoints and road types (highway, main, street, alley, footpath)
+- ✅ Road intersections auto-detection
 
-### Success Criteria
-- 3D terrain renders
-- Can place/move/delete buildings
-- Can place decorations
-- Terrain brush works (raise/lower)
-- Mini-map shows overview
-- Camera navigation is smooth
-- Data persists to localStorage
+### Completed — Building Interior
+- ✅ Wall placement with materials (drywall, brick, stone, glass, wood, concrete)
+- ✅ Door/window openings on walls
+- ✅ Floor painting with materials (wood, tile, carpet, marble, concrete, stone)
+- ✅ Furniture placement from catalog with categories
+- ✅ Room detection from wall layout
+- ✅ Multi-floor support
+
+### Completed — Rendering
+- ✅ GrassSystem with custom shaders
+- ✅ Water rendering with sea level
+- ✅ Wireframe toggle
+- ✅ Terrain chunking for performance (ChunkManager)
+- ✅ Custom object catalog with mesh factories
+
+### Completed — UI/UX (February 2025)
+- ✅ Roblox Studio-style ribbon tab bar (Home, Terrain, Build, Environment, View)
+- ✅ Dockable panels with resize handles (DockPanel, DockColumn, DockResizeHandle)
+- ✅ **ExplorerTree** — Roblox-style collapsible scene tree showing all placed objects in folders (Regions, Borders, Objects with category sub-folders), with click-to-select, shift-multi-select, double-click-to-enter-region, and delete buttons
+- ✅ **Properties panel restructured** — selected object properties (Name, Position, Rotation, Scale, Color, Lock, Visibility, Duplicate, Delete) always visible at top regardless of active tool; tool-specific settings below; camera settings merged in
+- ✅ Camera panel merged into Properties (walk/fly toggle + speed slider shown in first-person mode)
+- ✅ Explorer always visible (no auto-hide at building level)
+- ✅ Playtesting mode (play/stop)
+- ✅ Weather system UI (clear, rain, snow, fog)
 
 ---
 
-## Phase 6: Story/Scene Tab (NEW - 3D)
+## Phase 6: Story/Scene Tab (3D) ✅ COMPLETED — MAJOR FEATURE
 
 ### Goal
 Create a scene editor where characters can be placed in 3D space and scenes can play back.
 
-### Tasks
-1. Create SceneEditor component
-2. Implement 3D scene viewer (Three.js)
-3. Add character placement in 3D space
-4. Implement character movement (drag to move, keyframes for playback)
-5. Create free orbit camera controls
-6. Add subtitle overlay system
-7. Implement scene playback mode (play/pause)
-8. Link scenes to timeline events
-9. Set up scene store with localStorage persistence
-
-### Key Components to Create
-- `SceneEditor.tsx` - Container with tools
-- `SceneViewer.tsx` - 3D scene rendering
-- `SceneTimeline.tsx` - Scene-specific timeline for keyframes
-- `SubtitleOverlay.tsx` - Display dialogue
-- `CameraControls.tsx` - Camera manipulation
-- `CharacterPlacer.tsx` - Place characters in scene
-
-### Scene Features
-- Character positioning (x, y, z)
-- Character rotation
-- Keyframe-based movement during playback
-- Dialogue lines with timing
-- Camera keyframes (optional for MVP)
-- Background selection (from world or generic)
-
-### Success Criteria
-- Can create/edit/delete scenes
-- Can place characters in 3D space
-- Can move characters by dragging
-- Subtitles display during playback
-- Play/pause controls work
-- Can link scenes to timeline events
-- Data persists to localStorage
+### Completed
+- ✅ SceneViewer3D — 3D scene rendering with character models
+- ✅ Character placement in 3D space with transform gizmos
+- ✅ CharacterActionPanel — character positioning and animation controls
+- ✅ AnimationPicker — animation selection UI
+- ✅ AnimationManager — animation loading and playback
+- ✅ CameraActionPanel — camera keyframing and control
+- ✅ KeyframePropertiesPanel — animation keyframe editing
+- ✅ SubtitleOverlay — dialogue subtitle display
+- ✅ Track-based scene timeline (Ruler, Playhead, Tracks)
+- ✅ SceneCharacterManager for character lifecycle in scenes
+- ✅ World locations as scene backdrops (linked from World tab)
+- ✅ Scene playback mode
 
 ---
 
-## Phase 7: Final Integration & Polish
+## Phase 6.5: Items Tab ✅ COMPLETED
+
+### Goal
+Object/item editor for story assets.
+
+### Completed
+- ✅ ItemEditor3D — 3D object editor
+- ✅ Item selection and transform hooks (useItemSelection, useItemTransform, useItemHistory)
+- ✅ Item codec for serialization (itemCodec)
+- ✅ Item mesh utilities (itemMeshUtils)
+
+---
+
+## Phase 7: Final Integration & Polish 🔄 IN PROGRESS
 
 ### Goal
 Ensure all systems work together seamlessly.
 
-### Tasks
-1. Ensure all tabs share state properly via Zustand
-2. Add AI placeholder buttons with "Not implemented" modals
-3. Final UI consistency pass across all tabs
-4. Add loading states and error handling
-5. Test complete workflow end-to-end
-6. Performance optimization if needed
-7. Bug fixes from testing
+### Completed
+- ✅ All 6 tabs functional with shared Zustand state
+- ✅ Sidebar navigation between tabs
+- ✅ End-to-end workflow: Dashboard → Notes → Characters → Timeline → World → Scenes
+- ✅ IndexedDB + localStorage persistence across all tabs
+- ✅ Cel-shading renderer shared between Characters and Scenes
 
-### AI Placeholder Locations
-- Notes tab: "Generate from Master Doc" button
-- Timeline tab: "AI Fill Gaps" button
-- Scenes tab: "Generate with AI" button
-- Characters tab: "AI Suggest Personality" button
-
-### Success Criteria
-- Can complete full workflow:
-  1. Create story from dashboard
-  2. Add notes in canvas
-  3. Create characters
-  4. Build timeline
-  5. Create world
-  6. Make scenes
-  7. Link scenes to timeline
-  8. Play back scenes
-- All data persists correctly
-- UI is polished and consistent
-- No crashes or major bugs
+### Remaining
+- [ ] AI integration (placeholder buttons exist; training spec written in `AI Training/`)
+- [ ] Final UI consistency pass
+- [ ] Performance optimization pass
+- [ ] Bug fixes from testing
 
 ---
 
@@ -266,9 +200,10 @@ Ensure all systems work together seamlessly.
 **Note**: No specific time estimates - work at your own pace.
 
 **Order of Implementation**:
-1. Notes → 2. Characters → 3. Timeline → 4. World → 5. Scenes → 6. Polish
+1. ~~Notes~~ → 2. ~~Characters~~ → 3. ~~Timeline~~ → 4. ~~World~~ → 5. ~~Scenes~~ → 6. Polish
 
 ---
 
 *Document created: December 2024*
+*Last updated: February 2025*
 *For: Bibliarch MVP Development*

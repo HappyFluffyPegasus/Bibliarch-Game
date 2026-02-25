@@ -8,6 +8,10 @@ import {
   TerrainBrushType,
   FalloffType,
   CartographyRegionType,
+  WorldLevel,
+  LotZoning,
+  RoadType,
+  RoadWaypoint,
 } from '@/types/world'
 
 // ============================================================
@@ -45,12 +49,73 @@ interface ObjectTransformCommand {
   newScale: [number, number, number]
 }
 
+interface BorderCreateCommand {
+  type: 'border-create'
+  borderId: string
+}
+
+interface BorderDeleteCommand {
+  type: 'border-delete'
+  borderSnapshot: string
+}
+
+interface WallPlaceCommand {
+  type: 'wall-place'
+  wallId: string
+  floorLevel: number
+}
+
+interface WallDeleteCommand {
+  type: 'wall-delete'
+  wallSnapshot: string
+  floorLevel: number
+}
+
+interface OpeningPlaceCommand {
+  type: 'opening-place'
+  openingId: string
+  floorLevel: number
+}
+
+interface FurniturePlaceCommand {
+  type: 'furniture-place'
+  furnitureId: string
+}
+
 type UndoCommand =
   | TerrainSculptCommand
   | TerrainPaintCommand
   | ObjectPlaceCommand
   | ObjectDeleteCommand
   | ObjectTransformCommand
+  | BorderCreateCommand
+  | BorderDeleteCommand
+  | WallPlaceCommand
+  | WallDeleteCommand
+  | OpeningPlaceCommand
+  | FurniturePlaceCommand
+
+// ============================================================
+// DOCK PANEL TYPES
+// ============================================================
+
+export type DockPanelId = 'explorer' | 'toolbox' | 'properties' | 'locations'
+
+export type DockSide = 'left' | 'right'
+
+export interface DockPanelState {
+  side: DockSide
+  visible: boolean
+  collapsed: boolean
+  order: number
+}
+
+const DEFAULT_PANELS: Record<DockPanelId, DockPanelState> = {
+  toolbox:    { side: 'left',  visible: false, collapsed: false, order: 0 },
+  locations:  { side: 'left',  visible: false, collapsed: false, order: 1 },
+  explorer:   { side: 'right', visible: true,  collapsed: false, order: 0 },
+  properties: { side: 'right', visible: true,  collapsed: false, order: 1 },
+}
 
 // ============================================================
 // STORE STATE
@@ -96,6 +161,46 @@ interface WorldBuilderState {
   cameraMode: 'orbit' | 'first-person'
   firstPersonSubMode: 'walk' | 'fly'
   firstPersonSpeed: number
+
+  // Hierarchy navigation
+  activeNodeId: string | null
+  navigationStack: string[]  // breadcrumb history of node IDs
+  currentLevel: WorldLevel
+
+  // Border drawing (world/country)
+  borderDrawMode: 'idle' | 'drawing'
+  borderVertices: { x: number; z: number }[]
+  borderStyle: 'solid' | 'dashed' | 'dotted'
+  borderColor: string
+  showBorders: boolean
+
+  // Lot system (city)
+  lotZoning: LotZoning
+  lotCorner1: { x: number; z: number } | null
+  showLots: boolean
+
+  // Road system (city)
+  roadType: RoadType
+  roadDrawMode: 'idle' | 'drawing'
+  roadWaypoints: RoadWaypoint[]
+  showRoads: boolean
+
+  // Building system
+  wallDrawMode: 'idle' | 'drawing'
+  wallStartPoint: { x: number; z: number } | null
+  wallHeight: number
+  wallMaterial: string
+  activeFloor: number
+  selectedFurnitureType: string | null
+  floorMaterial: string
+  showWalls: boolean
+  showRoomLabels: boolean
+
+  // Dock panels
+  panels: Record<DockPanelId, DockPanelState>
+  leftDockWidth: number
+  rightDockWidth: number
+  isPlaytesting: boolean
 
   // Status
   cursorWorldPosition: [number, number, number] | null
@@ -155,6 +260,51 @@ interface WorldBuilderState {
   redo: () => UndoCommand | null
   clearHistory: () => void
 
+  // Hierarchy navigation
+  setActiveNodeId: (id: string | null) => void
+  enterNode: (nodeId: string, level: WorldLevel) => void
+  exitToParent: () => void
+  resetNavigation: (rootNodeId: string) => void
+
+  // Border drawing
+  setBorderDrawMode: (mode: 'idle' | 'drawing') => void
+  addBorderVertex: (v: { x: number; z: number }) => void
+  clearBorderVertices: () => void
+  setBorderStyle: (style: 'solid' | 'dashed' | 'dotted') => void
+  setBorderColor: (color: string) => void
+  setShowBorders: (show: boolean) => void
+
+  // Lot system
+  setLotZoning: (zoning: LotZoning) => void
+  setLotCorner1: (corner: { x: number; z: number } | null) => void
+  setShowLots: (show: boolean) => void
+
+  // Road system
+  setRoadType: (type: RoadType) => void
+  setRoadDrawMode: (mode: 'idle' | 'drawing') => void
+  addRoadWaypoint: (w: RoadWaypoint) => void
+  clearRoadWaypoints: () => void
+  setShowRoads: (show: boolean) => void
+
+  // Building system
+  setWallDrawMode: (mode: 'idle' | 'drawing') => void
+  setWallStartPoint: (point: { x: number; z: number } | null) => void
+  setWallHeight: (height: number) => void
+  setWallMaterial: (material: string) => void
+  setActiveFloor: (floor: number) => void
+  setSelectedFurnitureType: (type: string | null) => void
+  setFloorMaterial: (material: string) => void
+  setShowWalls: (show: boolean) => void
+  setShowRoomLabels: (show: boolean) => void
+
+  // Dock panels
+  setPanelVisible: (id: DockPanelId, visible: boolean) => void
+  setPanelCollapsed: (id: DockPanelId, collapsed: boolean) => void
+  setLeftDockWidth: (w: number) => void
+  setRightDockWidth: (w: number) => void
+  setPlaytesting: (playing: boolean) => void
+  resetPanelLayout: () => void
+
   // Status
   setCursorWorldPosition: (pos: [number, number, number] | null) => void
   setCursorGridPosition: (pos: { x: number; z: number } | null) => void
@@ -209,6 +359,44 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   cameraMode: 'orbit',
   firstPersonSubMode: 'walk',
   firstPersonSpeed: 1.0,
+
+  activeNodeId: null,
+  navigationStack: [],
+  currentLevel: 'world',
+
+  // Border drawing
+  borderDrawMode: 'idle',
+  borderVertices: [],
+  borderStyle: 'solid',
+  borderColor: '#ff6b35',
+  showBorders: true,
+
+  // Lot system
+  lotZoning: 'residential',
+  lotCorner1: null,
+  showLots: true,
+
+  // Road system
+  roadType: 'street',
+  roadDrawMode: 'idle',
+  roadWaypoints: [],
+  showRoads: true,
+
+  // Building system
+  wallDrawMode: 'idle',
+  wallStartPoint: null,
+  wallHeight: 3,
+  wallMaterial: 'drywall',
+  activeFloor: 0,
+  selectedFurnitureType: null,
+  floorMaterial: 'wood',
+  showWalls: true,
+  showRoomLabels: true,
+
+  panels: structuredClone(DEFAULT_PANELS),
+  leftDockWidth: 260,
+  rightDockWidth: 260,
+  isPlaytesting: false,
 
   cursorWorldPosition: null,
   cursorGridPosition: null,
@@ -309,6 +497,83 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   },
 
   clearHistory: () => set({ undoStack: [], redoStack: [] }),
+
+  // Hierarchy navigation
+  setActiveNodeId: (id) => set({ activeNodeId: id }),
+
+  enterNode: (nodeId, level) =>
+    set((s) => ({
+      activeNodeId: nodeId,
+      currentLevel: level,
+      navigationStack: s.activeNodeId
+        ? [...s.navigationStack, s.activeNodeId]
+        : s.navigationStack,
+      selectedObjectIds: [],
+    })),
+
+  exitToParent: () =>
+    set((s) => {
+      if (s.navigationStack.length === 0) return {}
+      const parentId = s.navigationStack[s.navigationStack.length - 1]
+      const levelOrder: WorldLevel[] = ['world', 'country', 'city', 'building']
+      const currentIdx = levelOrder.indexOf(s.currentLevel)
+      const parentLevel = currentIdx > 0 ? levelOrder[currentIdx - 1] : 'world'
+      return {
+        activeNodeId: parentId,
+        currentLevel: parentLevel,
+        navigationStack: s.navigationStack.slice(0, -1),
+        selectedObjectIds: [],
+      }
+    }),
+
+  resetNavigation: (rootNodeId) =>
+    set({
+      activeNodeId: rootNodeId,
+      navigationStack: [],
+      currentLevel: 'world',
+      selectedObjectIds: [],
+    }),
+
+  // Border drawing
+  setBorderDrawMode: (mode) => set({ borderDrawMode: mode }),
+  addBorderVertex: (v) => set((s) => ({ borderVertices: [...s.borderVertices, v] })),
+  clearBorderVertices: () => set({ borderVertices: [], borderDrawMode: 'idle' }),
+  setBorderStyle: (style) => set({ borderStyle: style }),
+  setBorderColor: (color) => set({ borderColor: color }),
+  setShowBorders: (show) => set({ showBorders: show }),
+
+  // Lot system
+  setLotZoning: (zoning) => set({ lotZoning: zoning }),
+  setLotCorner1: (corner) => set({ lotCorner1: corner }),
+  setShowLots: (show) => set({ showLots: show }),
+
+  // Road system
+  setRoadType: (type) => set({ roadType: type }),
+  setRoadDrawMode: (mode) => set({ roadDrawMode: mode }),
+  addRoadWaypoint: (w) => set((s) => ({ roadWaypoints: [...s.roadWaypoints, w] })),
+  clearRoadWaypoints: () => set({ roadWaypoints: [], roadDrawMode: 'idle' }),
+  setShowRoads: (show) => set({ showRoads: show }),
+
+  // Building system
+  setWallDrawMode: (mode) => set({ wallDrawMode: mode }),
+  setWallStartPoint: (point) => set({ wallStartPoint: point }),
+  setWallHeight: (height) => set({ wallHeight: Math.max(2, Math.min(5, height)) }),
+  setWallMaterial: (material) => set({ wallMaterial: material }),
+  setActiveFloor: (floor) => set({ activeFloor: floor }),
+  setSelectedFurnitureType: (type) => set({ selectedFurnitureType: type }),
+  setFloorMaterial: (material) => set({ floorMaterial: material }),
+  setShowWalls: (show) => set({ showWalls: show }),
+  setShowRoomLabels: (show) => set({ showRoomLabels: show }),
+
+  // Dock panels
+  setPanelVisible: (id, visible) =>
+    set((s) => ({ panels: { ...s.panels, [id]: { ...s.panels[id], visible } } })),
+  setPanelCollapsed: (id, collapsed) =>
+    set((s) => ({ panels: { ...s.panels, [id]: { ...s.panels[id], collapsed } } })),
+  setLeftDockWidth: (w) => set({ leftDockWidth: Math.max(200, Math.min(500, w)) }),
+  setRightDockWidth: (w) => set({ rightDockWidth: Math.max(200, Math.min(500, w)) }),
+  setPlaytesting: (playing) => set({ isPlaytesting: playing }),
+  resetPanelLayout: () => set({ panels: structuredClone(DEFAULT_PANELS), leftDockWidth: 260, rightDockWidth: 260 }),
 
   // Status
   setCursorWorldPosition: (pos) => set({ cursorWorldPosition: pos }),
