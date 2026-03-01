@@ -19,6 +19,7 @@ import {
   GizmoManager,
   UtilityLayerRenderer,
 } from '@babylonjs/core'
+import '@babylonjs/core/Culling/ray'
 import { SceneCharacterManager } from '@/lib/scenes/SceneCharacterManager'
 import type { SceneCharacter, DialogueLine, CharacterData, TransformGizmoMode, CameraKeyframe, MovementKeyframe, AnimationKeyframe, CharacterAnimationState, SceneProp } from '@/types/scenes'
 

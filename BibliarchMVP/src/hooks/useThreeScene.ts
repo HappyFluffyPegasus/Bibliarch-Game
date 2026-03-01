@@ -13,6 +13,7 @@ import {
   ShadowGenerator,
   type Nullable,
 } from '@babylonjs/core'
+import '@babylonjs/core/Culling/ray'
 
 export interface ThreeSceneConfig {
   backgroundColor?: number | string

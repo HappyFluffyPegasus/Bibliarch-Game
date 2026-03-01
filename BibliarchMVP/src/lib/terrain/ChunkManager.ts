@@ -346,9 +346,11 @@ export class ChunkManager {
       const abx = bx - ax, aby = by - ay, abz = bz - az
       const acx = cx2 - ax, acy = cy - ay, acz = cz - az
 
-      const nx = aby * acz - abz * acy
-      const ny = abz * acx - abx * acz
-      const nz = abx * acy - aby * acx
+      // Negate cross product: CW winding in Babylon.js LH system
+      // produces downward normals with AB×AC, so flip to get upward
+      const nx = -(aby * acz - abz * acy)
+      const ny = -(abz * acx - abx * acz)
+      const nz = -(abx * acy - aby * acx)
 
       normals[a * 3] += nx; normals[a * 3 + 1] += ny; normals[a * 3 + 2] += nz
       normals[b * 3] += nx; normals[b * 3 + 1] += ny; normals[b * 3 + 2] += nz

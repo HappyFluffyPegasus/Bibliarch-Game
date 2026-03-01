@@ -24,6 +24,7 @@ import {
   VertexBuffer,
   VertexData,
 } from '@babylonjs/core'
+import '@babylonjs/core/Culling/ray'
 import { ItemVertex, ItemFace, CustomItem } from '@/types/items'
 import { computeFaceNormal, extrudeFace } from '@/utils/itemMeshUtils'
 import { insetFace, bevelEdges, loopCut, subdivide, recalculateNormals } from '@/lib/items/meshOperations'

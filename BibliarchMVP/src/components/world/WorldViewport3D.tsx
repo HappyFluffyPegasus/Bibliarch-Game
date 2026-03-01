@@ -24,6 +24,8 @@ import {
   type AbstractMesh,
   Viewport,
 } from '@babylonjs/core'
+// Direct picking imports — bypasses Scene.prototype patching issues
+import { Pick as pickScene, CreatePickingRay } from '@babylonjs/core/Culling/ray'
 import { TerrainData, EditorTool, BrushSettings, MaterialBrushSettings, WorldObject, LevelBounds, PolygonBorder, CityLot, RoadNetwork, BuildingData, RoadWaypoint, WorldLevel, isPointInPolygon } from '@/types/world'
 import { ChunkManager, worldToGrid } from '@/lib/terrain/ChunkManager'
 
@@ -306,7 +308,7 @@ export default function WorldViewport3D({
     canvas.style.outline = 'none'
     container.appendChild(canvas)
 
-    // Engine — enable device pixel ratio scaling for crisp rendering
+    // Engine — antialias + DPR scaling for crisp rendering
     const engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: false }, true)
     engine.setHardwareScalingLevel(1 / window.devicePixelRatio)
     engineRef.current = engine
@@ -1390,28 +1392,31 @@ export default function WorldViewport3D({
     let pickY: number
 
     if (cameraModeRef.current === 'first-person' && fpControllerRef.current?.isLocked()) {
-      // FP + pointer locked: raycast from crosshair (center)
+      // FP + pointer locked: raycast from crosshair (center of canvas in CSS pixels)
       const canvas = engine.getRenderingCanvas()
       if (!canvas) return null
-      pickX = canvas.width / 2
-      pickY = canvas.height / 2
+      pickX = canvas.clientWidth / 2
+      pickY = canvas.clientHeight / 2
     } else {
       pickX = mouseScreenRef.current.x
       pickY = mouseScreenRef.current.y
     }
 
-    const pickResult = scene.pick(pickX, pickY, (mesh) => chunkSet.has(mesh))
+    // Use direct Pick function (not scene.pick) to avoid prototype-patching issues
+    const pickResult = pickScene(scene, pickX, pickY, (mesh) => chunkSet.has(mesh))
 
     if (pickResult && pickResult.hit && pickResult.pickedPoint) {
       return pickResult.pickedPoint
     }
 
     // Fallback: intersect ground plane at y=0 so clicks always register
-    const ray = scene.createPickingRay(pickX, pickY, Matrix.Identity(), scene.activeCamera)
-    const groundPlane = new Plane(0, 1, 0, 0)
-    const dist = ray.intersectsPlane(groundPlane)
-    if (dist !== null && dist >= 0) {
-      return ray.origin.add(ray.direction.scale(dist))
+    const ray = CreatePickingRay(scene, pickX, pickY, Matrix.Identity(), scene.activeCamera)
+    if (ray) {
+      const groundPlane = new Plane(0, 1, 0, 0)
+      const dist = ray.intersectsPlane(groundPlane)
+      if (dist !== null && dist >= 0) {
+        return ray.origin.add(ray.direction.scale(dist))
+      }
     }
     return null
   }, [])
@@ -1431,14 +1436,14 @@ export default function WorldViewport3D({
     if (cameraModeRef.current === 'first-person' && fpControllerRef.current?.isLocked()) {
       const canvas = engine.getRenderingCanvas()
       if (!canvas) return null
-      pickX = canvas.width / 2
-      pickY = canvas.height / 2
+      pickX = canvas.clientWidth / 2
+      pickY = canvas.clientHeight / 2
     } else {
       pickX = mouseScreenRef.current.x
       pickY = mouseScreenRef.current.y
     }
 
-    const pickResult = scene.pick(pickX, pickY, (mesh) => pickableSet.has(mesh))
+    const pickResult = pickScene(scene, pickX, pickY, (mesh) => pickableSet.has(mesh))
 
     if (pickResult && pickResult.hit && pickResult.pickedPoint) {
       const id = objMgr.findObjectIdFromPick(pickResult)
@@ -1669,7 +1674,7 @@ export default function WorldViewport3D({
         const scene = sceneRef.current
         const engine = engineRef.current
         if (scene && engine) {
-          const ray = scene.createPickingRay(
+          const ray = CreatePickingRay(scene,
             mouseScreenRef.current.x,
             mouseScreenRef.current.y,
             Matrix.Identity(),
