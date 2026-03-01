@@ -1,167 +1,51 @@
-import * as THREE from 'three'
+import {
+  ShaderMaterial,
+  Effect,
+  Color3,
+  Color4,
+  Vector3,
+  Scene,
+  Mesh,
+  StandardMaterial,
+  PBRMaterial,
+  Texture,
+  RawTexture,
+  Constants,
+  type AbstractMesh,
+} from '@babylonjs/core'
 
 /**
- * Custom toon/cell shading material.
- * Uses a stepped gradient for diffuse lighting (cel-shading effect).
- *
- * For skinned meshes, uses Three.js MeshToonMaterial which handles
- * skeletal animation properly.
+ * Custom toon/cell shading material for Babylon.js.
+ * Ports the Three.js toon shader system with identical visual results.
  */
 
-// Create a 3-tone gradient texture for cel shading
-// MeshToonMaterial samples this texture based on light intensity
-let threeStepGradient: THREE.DataTexture | null = null
+// ── Register custom shader code with Babylon.js Effect store ──
 
-export function getThreeStepGradient(): THREE.DataTexture {
-  if (threeStepGradient) return threeStepGradient
-
-  // 2-tone gradient for basic toon shading
-  const colors = new Uint8Array([
-    180,  // shadow
-    255,  // lit
-  ])
-
-  threeStepGradient = new THREE.DataTexture(colors, 2, 1, THREE.RedFormat)
-  threeStepGradient.needsUpdate = true
-  threeStepGradient.minFilter = THREE.NearestFilter
-  threeStepGradient.magFilter = THREE.NearestFilter
-  threeStepGradient.wrapS = THREE.ClampToEdgeWrapping
-  threeStepGradient.wrapT = THREE.ClampToEdgeWrapping
-
-  return threeStepGradient
-}
-
-// ────────────────────────────────────────────────────────────────
-// Outline material for cel-shading (inverted hull technique)
-// ────────────────────────────────────────────────────────────────
-
-export interface OutlineMaterialOptions {
-  color?: THREE.Color | string | number
-  thickness?: number  // outline thickness, default 0.02
-}
-
-export function createOutlineMaterial(options: OutlineMaterialOptions = {}): THREE.ShaderMaterial {
-  const color = options.color instanceof THREE.Color
-    ? options.color
-    : new THREE.Color(options.color ?? 0x000000)
-
-  const thickness = options.thickness ?? 0.02
-
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      outlineColor: { value: color },
-      outlineThickness: { value: thickness },
-    },
-    vertexShader: `
-      uniform float outlineThickness;
-
-      void main() {
-        vec3 pos = position + normal * outlineThickness;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform vec3 outlineColor;
-
-      void main() {
-        gl_FragColor = vec4(outlineColor, 1.0);
-      }
-    `,
-    side: THREE.BackSide,  // Render back faces only
-    depthWrite: true,
-  })
-}
-
-// Outline material for skinned meshes - modifies MeshBasicMaterial
-export function createSkinnedOutlineMaterial(options: OutlineMaterialOptions = {}): THREE.MeshBasicMaterial {
-  const color = options.color instanceof THREE.Color
-    ? options.color
-    : new THREE.Color(options.color ?? 0x000000)
-
-  const thickness = options.thickness ?? 0.012
-
-  const material = new THREE.MeshBasicMaterial({
-    color,
-    side: THREE.BackSide,
-  })
-
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.outlineThickness = { value: thickness }
-
-    // Add uniform declaration
-    shader.vertexShader = shader.vertexShader.replace(
-      'void main() {',
-      `uniform float outlineThickness;
-void main() {`
-    )
-
-    // Displace in clip space - natural perspective makes it thinner when far
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <project_vertex>',
-      `#include <project_vertex>
-      // Push vertices out along normal for outline
-      vec3 viewNormal = normalize(normalMatrix * objectNormal);
-      vec4 clipPos = gl_Position;
-      vec3 clipNormal = (projectionMatrix * vec4(viewNormal, 0.0)).xyz;
-      // Fixed clip-space offset - perspective division naturally scales with distance
-      clipPos.xy += normalize(clipNormal.xy) * outlineThickness;
-      gl_Position = clipPos;`
-    )
-  }
-
-  return material
-}
-
-// ────────────────────────────────────────────────────────────────
-// Colored shadow toon material for skinned meshes
-// Uses MeshToonMaterial with onBeforeCompile to add hue shift
-// ────────────────────────────────────────────────────────────────
-
-export interface ColoredShadowMaterialOptions {
-  color: THREE.Color | string | number
-  map?: THREE.Texture | null
-}
-
-export function createColoredShadowMaterial(options: ColoredShadowMaterialOptions): THREE.MeshToonMaterial {
-  const color = options.color instanceof THREE.Color
-    ? options.color
-    : new THREE.Color(options.color)
-
-  // Create gradient for 2-tone cel shading (higher shadow value lets ambient color show through)
-  const gradientColors = new Uint8Array([180, 255])
-  const gradientMap = new THREE.DataTexture(gradientColors, 2, 1, THREE.RedFormat)
-  gradientMap.needsUpdate = true
-  gradientMap.minFilter = THREE.NearestFilter
-  gradientMap.magFilter = THREE.NearestFilter
-
-  const material = new THREE.MeshToonMaterial({
-    color,
-    map: options.map ?? undefined,
-    gradientMap,
-    side: THREE.FrontSide,
-  })
-
-  ;(material as any)._toonColor = color.clone()
-  ;(material as any)._isToonMaterial = true
-
-  return material
-}
-
-const TOON_VERTEX_SHADER = `
+// Toon character shader (non-skinned meshes)
+Effect.ShadersStore['toonVertexShader'] = `
 precision highp float;
+
+// Babylon.js built-in attributes
+attribute vec3 position;
+attribute vec3 normal;
+
+// Babylon.js built-in uniforms
+uniform mat4 worldViewProjection;
+uniform mat4 worldView;
+uniform mat4 world;
 
 varying vec3 vNormal;
 varying vec3 vViewPosition;
 
 void main() {
-  vNormal = normalize(normalMatrix * normal);
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vNormal = normalize(mat3(world) * normal);
+  vec4 mvPosition = worldView * vec4(position, 1.0);
   vViewPosition = -mvPosition.xyz;
-  gl_Position = projectionMatrix * mvPosition;
+  gl_Position = worldViewProjection * vec4(position, 1.0);
 }
 `
 
-const TOON_FRAGMENT_SHADER = `
+Effect.ShadersStore['toonFragmentShader'] = `
 precision highp float;
 
 uniform vec3 uColor;
@@ -196,134 +80,29 @@ void main() {
 }
 `
 
-export interface ToonMaterialOptions {
-  color?: THREE.Color | string | number
-  lightDirection?: THREE.Vector3
-  steps?: number // Number of shading steps (default 4)
-  ambient?: number // Minimum brightness (default 0.2)
-  rimColor?: THREE.Color | string | number
-  rimPower?: number
-  skinning?: boolean
-}
-
-export function createToonMaterial(options: ToonMaterialOptions = {}): THREE.Material {
-  const color = options.color instanceof THREE.Color
-    ? options.color
-    : new THREE.Color(options.color ?? 0xffffff)
-
-  // For skinned meshes, use MeshToonMaterial with 3-step gradient
-  if (options.skinning) {
-    const gradientMap = getThreeStepGradient()
-
-    const material = new THREE.MeshToonMaterial({
-      color,
-      gradientMap,
-      side: THREE.FrontSide,
-    })
-
-    // Store metadata for color updates
-    ;(material as any)._toonColor = color.clone()
-    ;(material as any)._isToonMaterial = true
-
-    return material
-  }
-
-  // For non-skinned meshes, use custom shader for more control
-  const rimColor = options.rimColor instanceof THREE.Color
-    ? options.rimColor
-    : new THREE.Color(options.rimColor ?? 0xffffff)
-
-  const material = new THREE.ShaderMaterial({
-    uniforms: {
-      uColor: { value: color },
-      uLightDirection: { value: options.lightDirection ?? new THREE.Vector3(1, 1, 1).normalize() },
-      uSteps: { value: options.steps ?? 4 },
-      uAmbient: { value: options.ambient ?? 0.25 },
-      uRimColor: { value: rimColor },
-      uRimPower: { value: options.rimPower ?? 3.0 },
-    },
-    vertexShader: TOON_VERTEX_SHADER,
-    fragmentShader: TOON_FRAGMENT_SHADER,
-    side: THREE.FrontSide,
-  })
-
-  // Store original color for easy updates
-  ;(material as any)._toonColor = color
-  ;(material as any)._isToonMaterial = true
-
-  return material
-}
-
-/**
- * Update the color of a toon material
- */
-export function setToonMaterialColor(material: THREE.Material, color: THREE.Color | string | number): void {
-  const c = color instanceof THREE.Color ? color : new THREE.Color(color)
-
-  if (material instanceof THREE.MeshToonMaterial) {
-    material.color = c
-  } else if (material instanceof THREE.ShaderMaterial && material.uniforms.uColor) {
-    material.uniforms.uColor.value = c
-  }
-
-  ;(material as any)._toonColor = c
-}
-
-/**
- * Get the current color of a toon material
- */
-export function getToonMaterialColor(material: THREE.Material): THREE.Color {
-  if ((material as any)._toonColor) {
-    return (material as any)._toonColor
-  }
-  if (material instanceof THREE.MeshToonMaterial) {
-    return material.color
-  }
-  if (material instanceof THREE.ShaderMaterial && material.uniforms.uColor) {
-    return material.uniforms.uColor.value
-  }
-  return new THREE.Color(0xffffff)
-}
-
-/**
- * Convert a MeshStandardMaterial or MeshPhongMaterial to toon shading.
- * Preserves the base color.
- */
-export function convertToToonMaterial(
-  originalMaterial: THREE.Material,
-  skinning: boolean = false
-): THREE.Material {
-  let color = new THREE.Color(0xcccccc)
-
-  if (originalMaterial instanceof THREE.MeshStandardMaterial ||
-      originalMaterial instanceof THREE.MeshPhongMaterial ||
-      originalMaterial instanceof THREE.MeshBasicMaterial ||
-      originalMaterial instanceof THREE.MeshLambertMaterial) {
-    color = originalMaterial.color.clone()
-  }
-
-  return createToonMaterial({ color, skinning })
-}
-
-// ────────────────────────────────────────────────────────────────
-// Toon terrain material with vertex colors
-// ────────────────────────────────────────────────────────────────
-
-const TOON_TERRAIN_VERTEX_SHADER = `
+// Toon terrain shader (vertex colors)
+Effect.ShadersStore['toonTerrainVertexShader'] = `
 precision highp float;
 
-attribute vec3 color;
+attribute vec3 position;
+attribute vec3 normal;
+attribute vec4 color;
+
+uniform mat4 worldViewProjection;
+uniform mat4 world;
+
 varying vec3 vColor;
 varying vec3 vNormal;
 
 void main() {
-  vColor = color;
-  vNormal = normalize(normalMatrix * normal);
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vColor = color.rgb;
+  // Transform normal to world space using the world matrix (mat3 portion)
+  vNormal = normalize(mat3(world) * normal);
+  gl_Position = worldViewProjection * vec4(position, 1.0);
 }
 `
 
-const TOON_TERRAIN_FRAGMENT_SHADER = `
+Effect.ShadersStore['toonTerrainFragmentShader'] = `
 precision highp float;
 
 uniform vec3 uLightDirection;
@@ -346,21 +125,328 @@ void main() {
 }
 `
 
+// Outline shader (inverted hull technique)
+Effect.ShadersStore['outlineVertexShader'] = `
+precision highp float;
+
+attribute vec3 position;
+attribute vec3 normal;
+
+uniform mat4 worldViewProjection;
+uniform float outlineThickness;
+
+void main() {
+  vec3 pos = position + normal * outlineThickness;
+  gl_Position = worldViewProjection * vec4(pos, 1.0);
+}
+`
+
+Effect.ShadersStore['outlineFragmentShader'] = `
+precision highp float;
+
+uniform vec3 outlineColor;
+
+void main() {
+  gl_FragColor = vec4(outlineColor, 1.0);
+}
+`
+
+// Skinned outline shader
+Effect.ShadersStore['skinnedOutlineVertexShader'] = `
+precision highp float;
+
+attribute vec3 position;
+attribute vec3 normal;
+
+uniform mat4 worldViewProjection;
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat4 world;
+uniform float outlineThickness;
+
+#include<bonesDeclaration>
+
+void main() {
+  mat4 finalWorld = world;
+
+  #include<bonesVertex>
+
+  vec4 worldPos = finalWorld * vec4(position, 1.0);
+  vec3 worldNormal = normalize(mat3(finalWorld) * normal);
+
+  // Push vertices out along normal in view space for perspective-correct outline
+  vec4 viewPos = view * worldPos;
+  vec3 viewNormal = normalize(mat3(view) * worldNormal);
+  viewPos.xy += normalize(viewNormal.xy) * outlineThickness;
+
+  gl_Position = projection * viewPos;
+}
+`
+
+Effect.ShadersStore['skinnedOutlineFragmentShader'] = `
+precision highp float;
+
+uniform vec3 outlineColor;
+
+void main() {
+  gl_FragColor = vec4(outlineColor, 1.0);
+}
+`
+
+// Colored shadow toon shader (for skinned meshes - uses MeshToonMaterial equivalent)
+// This implements 2-tone cel shading with proper bone animation support
+Effect.ShadersStore['coloredShadowVertexShader'] = `
+precision highp float;
+
+attribute vec3 position;
+attribute vec3 normal;
+attribute vec2 uv;
+
+uniform mat4 worldViewProjection;
+uniform mat4 world;
+uniform mat4 view;
+uniform mat4 projection;
+
+#include<bonesDeclaration>
+
+varying vec3 vNormal;
+varying vec2 vUv;
+
+void main() {
+  mat4 finalWorld = world;
+
+  #include<bonesVertex>
+
+  vec4 worldPos = finalWorld * vec4(position, 1.0);
+  vNormal = normalize(mat3(finalWorld) * normal);
+  vUv = uv;
+  gl_Position = projection * view * worldPos;
+}
+`
+
+Effect.ShadersStore['coloredShadowFragmentShader'] = `
+precision highp float;
+
+uniform vec3 uColor;
+uniform sampler2D uMap;
+uniform float uHasMap;
+uniform vec3 uLightDirection;
+
+varying vec3 vNormal;
+varying vec2 vUv;
+
+void main() {
+  vec3 normal = normalize(vNormal);
+  vec3 lightDir = normalize(uLightDirection);
+
+  // 2-step cel shading (shadow/lit boundary)
+  float NdotL = dot(normal, lightDir);
+  float intensity = (NdotL * 0.5 + 0.5);
+  // Sharp 2-tone: shadow = 0.706 (180/255), lit = 1.0
+  float stepped = intensity > 0.5 ? 1.0 : 0.706;
+
+  vec3 baseColor = uColor;
+  if (uHasMap > 0.5) {
+    vec4 texColor = texture2D(uMap, vUv);
+    baseColor = baseColor * texColor.rgb;
+  }
+
+  gl_FragColor = vec4(baseColor * stepped, 1.0);
+}
+`
+
+// ── Material Factories ──────────────────────────────────────
+
+export interface OutlineMaterialOptions {
+  color?: Color3 | string | number
+  thickness?: number
+}
+
+function parseColor(c: Color3 | string | number | undefined, fallback: Color3 = Color3.Black()): Color3 {
+  if (!c) return fallback
+  if (c instanceof Color3) return c
+  if (typeof c === 'string') return Color3.FromHexString(c.startsWith('#') ? c : `#${c}`)
+  // number → hex string
+  const hex = '#' + c.toString(16).padStart(6, '0')
+  return Color3.FromHexString(hex)
+}
+
+export function createOutlineMaterial(scene: Scene, options: OutlineMaterialOptions = {}): ShaderMaterial {
+  const color = parseColor(options.color, Color3.Black())
+  const thickness = options.thickness ?? 0.02
+
+  const material = new ShaderMaterial('outlineMaterial', scene, {
+    vertex: 'outline',
+    fragment: 'outline',
+  }, {
+    attributes: ['position', 'normal'],
+    uniforms: ['worldViewProjection', 'outlineColor', 'outlineThickness'],
+  })
+
+  material.setColor3('outlineColor', color)
+  material.setFloat('outlineThickness', thickness)
+  material.sideOrientation = Mesh.BACKSIDE
+  material.depthFunction = Constants.LEQUAL
+
+  return material
+}
+
+export function createSkinnedOutlineMaterial(scene: Scene, options: OutlineMaterialOptions = {}): ShaderMaterial {
+  const color = parseColor(options.color, Color3.Black())
+  const thickness = options.thickness ?? 0.012
+
+  const material = new ShaderMaterial('skinnedOutlineMaterial', scene, {
+    vertex: 'skinnedOutline',
+    fragment: 'skinnedOutline',
+  }, {
+    attributes: ['position', 'normal'],
+    uniforms: ['worldViewProjection', 'view', 'projection', 'world', 'outlineColor', 'outlineThickness'],
+    needAlphaBlending: false,
+  })
+
+  material.setColor3('outlineColor', color)
+  material.setFloat('outlineThickness', thickness)
+  material.sideOrientation = Mesh.BACKSIDE
+
+  return material
+}
+
+// ── Colored Shadow Material (skinned mesh toon material) ──
+
+export interface ColoredShadowMaterialOptions {
+  color: Color3 | string | number
+  map?: Texture | null
+}
+
+export function createColoredShadowMaterial(scene: Scene, options: ColoredShadowMaterialOptions): ShaderMaterial {
+  const color = parseColor(options.color)
+
+  const material = new ShaderMaterial('coloredShadowMaterial', scene, {
+    vertex: 'coloredShadow',
+    fragment: 'coloredShadow',
+  }, {
+    attributes: ['position', 'normal', 'uv'],
+    uniforms: ['worldViewProjection', 'world', 'view', 'projection', 'uColor', 'uMap', 'uHasMap', 'uLightDirection'],
+    needAlphaBlending: false,
+  })
+
+  material.backFaceCulling = false
+  material.setColor3('uColor', color)
+  material.setFloat('uHasMap', options.map ? 1.0 : 0.0)
+  if (options.map) {
+    material.setTexture('uMap', options.map)
+  }
+  material.setVector3('uLightDirection', new Vector3(1, 1, 1).normalize())
+
+  // Store metadata
+  ;(material as any)._toonColor = color.clone()
+  ;(material as any)._isToonMaterial = true
+
+  return material
+}
+
+// ── Toon Material (non-skinned) ──
+
+export interface ToonMaterialOptions {
+  color?: Color3 | string | number
+  lightDirection?: Vector3
+  steps?: number
+  ambient?: number
+  rimColor?: Color3 | string | number
+  rimPower?: number
+  skinning?: boolean
+}
+
+export function createToonMaterial(scene: Scene, options: ToonMaterialOptions = {}): ShaderMaterial {
+  const color = parseColor(options.color, Color3.White())
+  const rimColor = parseColor(options.rimColor, Color3.White())
+
+  if (options.skinning) {
+    // For skinned meshes, use the colored shadow material
+    return createColoredShadowMaterial(scene, { color })
+  }
+
+  const material = new ShaderMaterial('toonMaterial', scene, {
+    vertex: 'toon',
+    fragment: 'toon',
+  }, {
+    attributes: ['position', 'normal'],
+    uniforms: ['worldViewProjection', 'worldView', 'world', 'uColor', 'uLightDirection', 'uSteps', 'uAmbient', 'uRimColor', 'uRimPower'],
+  })
+
+  material.backFaceCulling = false
+  material.setColor3('uColor', color)
+  material.setVector3('uLightDirection', options.lightDirection ?? new Vector3(1, 1, 1).normalize())
+  material.setFloat('uSteps', options.steps ?? 4)
+  material.setFloat('uAmbient', options.ambient ?? 0.25)
+  material.setColor3('uRimColor', rimColor)
+  material.setFloat('uRimPower', options.rimPower ?? 3.0)
+
+  // Store metadata
+  ;(material as any)._toonColor = color.clone()
+  ;(material as any)._isToonMaterial = true
+
+  return material
+}
+
+export function setToonMaterialColor(material: ShaderMaterial, color: Color3 | string | number): void {
+  const c = parseColor(color)
+
+  if ((material as any).uColor !== undefined || material.getEffect()?.getUniform('uColor')) {
+    material.setColor3('uColor', c)
+  }
+
+  ;(material as any)._toonColor = c
+}
+
+export function getToonMaterialColor(material: ShaderMaterial): Color3 {
+  if ((material as any)._toonColor) {
+    return (material as any)._toonColor
+  }
+  return Color3.White()
+}
+
+/**
+ * Convert a standard material to toon shading. Preserves the base color.
+ */
+export function convertToToonMaterial(
+  scene: Scene,
+  originalMaterial: any,
+  skinning: boolean = false
+): ShaderMaterial {
+  let color = new Color3(0.8, 0.8, 0.8)
+
+  if (originalMaterial instanceof StandardMaterial || originalMaterial instanceof PBRMaterial) {
+    const diffuse = (originalMaterial as StandardMaterial).diffuseColor ||
+                    (originalMaterial as PBRMaterial).albedoColor
+    if (diffuse) {
+      color = diffuse.clone()
+    }
+  }
+
+  return createToonMaterial(scene, { color, skinning })
+}
+
+// ── Toon Terrain Material ──
+
 export interface ToonTerrainMaterialOptions {
-  lightDirection?: THREE.Vector3
+  lightDirection?: Vector3
   steps?: number
   ambient?: number
 }
 
-export function createToonTerrainMaterial(options: ToonTerrainMaterialOptions = {}): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      uLightDirection: { value: options.lightDirection ?? new THREE.Vector3(1, 1, 1).normalize() },
-      uSteps: { value: options.steps ?? 4 },
-      uAmbient: { value: options.ambient ?? 0.35 },
-    },
-    vertexShader: TOON_TERRAIN_VERTEX_SHADER,
-    fragmentShader: TOON_TERRAIN_FRAGMENT_SHADER,
-    side: THREE.FrontSide,
+export function createToonTerrainMaterial(scene: Scene, options: ToonTerrainMaterialOptions = {}): ShaderMaterial {
+  const material = new ShaderMaterial('toonTerrainMaterial', scene, {
+    vertex: 'toonTerrain',
+    fragment: 'toonTerrain',
+  }, {
+    attributes: ['position', 'normal', 'color'],
+    uniforms: ['worldViewProjection', 'world', 'uLightDirection', 'uSteps', 'uAmbient'],
   })
+
+  material.setVector3('uLightDirection', options.lightDirection ?? new Vector3(1, 1, 1).normalize())
+  material.setFloat('uSteps', options.steps ?? 4)
+  material.setFloat('uAmbient', options.ambient ?? 0.35)
+
+  return material
 }

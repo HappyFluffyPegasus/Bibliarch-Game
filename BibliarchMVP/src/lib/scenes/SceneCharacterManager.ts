@@ -1,9 +1,18 @@
 /**
  * SceneCharacterManager - Manages multiple character instances in a scene.
- * Handles loading, positioning, and updating of characters with real 3D models.
+ * Babylon.js port: uses TransformNode hierarchy and MeshBuilder for hitboxes.
  */
 
-import * as THREE from 'three'
+import {
+  TransformNode,
+  Mesh,
+  MeshBuilder,
+  StandardMaterial,
+  Vector3,
+  BoundingInfo,
+  Scene,
+  type AbstractMesh,
+} from '@babylonjs/core'
 import { CharacterRenderer } from '@/lib/characters/CharacterRenderer'
 import { AnimationManager } from '@/lib/scenes/AnimationManager'
 import type { CharacterData, SceneCharacter, CharacterAnimationState } from '@/types/scenes'
@@ -13,26 +22,24 @@ interface ManagedCharacter {
   characterId: string
   renderer: CharacterRenderer
   animationManager: AnimationManager
-  hitbox: THREE.Mesh | null
+  hitbox: Mesh | null
   loaded: boolean
 }
 
 export class SceneCharacterManager {
   private characters: Map<string, ManagedCharacter> = new Map()
-  private parentGroup: THREE.Group
+  private parentNode: TransformNode
   private characterDataMap: Map<string, CharacterData> = new Map()
+  private scene: Scene
 
-  constructor(parent: THREE.Group) {
-    this.parentGroup = parent
+  constructor(parent: TransformNode, scene: Scene) {
+    this.parentNode = parent
+    this.scene = scene
   }
 
-  /**
-   * Set the character data map (full appearance data)
-   */
   setCharacterDataMap(dataMap: Map<string, CharacterData>): void {
     this.characterDataMap = dataMap
 
-    // Re-apply appearance to existing characters if their data changed
     this.characters.forEach((managed) => {
       const charData = this.characterDataMap.get(managed.characterId)
       if (charData && managed.loaded) {
@@ -41,17 +48,13 @@ export class SceneCharacterManager {
     })
   }
 
-  /**
-   * Add a character to the scene
-   */
   async addCharacter(sceneChar: SceneCharacter): Promise<void> {
     if (this.characters.has(sceneChar.id)) {
-      // Already exists, just update position
       this.updateTransform(sceneChar.id, sceneChar.position, sceneChar.rotation)
       return
     }
 
-    const renderer = new CharacterRenderer()
+    const renderer = new CharacterRenderer(this.scene)
     const animationManager = new AnimationManager()
     const managed: ManagedCharacter = {
       sceneCharacterId: sceneChar.id,
@@ -63,88 +66,87 @@ export class SceneCharacterManager {
     }
 
     this.characters.set(sceneChar.id, managed)
-    this.parentGroup.add(renderer.getGroup())
+    renderer.getGroup().parent = this.parentNode
 
-    // Load the model
     await renderer.load()
     managed.loaded = true
 
-    // Initialize animation manager with the loaded model
-    animationManager.initialize(renderer.getGroup())
+    // Initialize animation manager
+    animationManager.initialize(renderer.getGroup(), this.scene)
 
-    // Apply appearance from character data
+    // Apply appearance
     const charData = this.characterDataMap.get(sceneChar.characterId)
     if (charData) {
       renderer.applyAppearance(charData)
     }
 
-    // Create invisible hitbox proxy for reliable raycasting
-    // (SkinnedMesh raycasts against bind-pose, not current pose)
+    // Create invisible hitbox for raycasting
     const group = renderer.getGroup()
-    const box = new THREE.Box3().setFromObject(group)
-    const size = box.getSize(new THREE.Vector3())
-    const center = box.getCenter(new THREE.Vector3())
+    group.computeWorldMatrix(true)
 
-    // Use a capsule-like cylinder that covers the character
+    let minVec = new Vector3(Infinity, Infinity, Infinity)
+    let maxVec = new Vector3(-Infinity, -Infinity, -Infinity)
+    group.getChildMeshes(true).forEach(child => {
+      child.computeWorldMatrix(true)
+      const bb = child.getBoundingInfo().boundingBox
+      minVec = Vector3.Minimize(minVec, bb.minimumWorld)
+      maxVec = Vector3.Maximize(maxVec, bb.maximumWorld)
+    })
+    const size = maxVec.subtract(minVec)
+    const center = Vector3.Center(minVec, maxVec)
+
     const hitboxHeight = Math.max(size.y, 1.6)
     const hitboxRadius = Math.max(size.x, size.z, 0.4) * 0.5
-    const hitboxGeometry = new THREE.CylinderGeometry(hitboxRadius, hitboxRadius, hitboxHeight, 8)
-    const hitboxMaterial = new THREE.MeshBasicMaterial({ visible: false })
-    const hitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial)
-    // Position hitbox at center of character (relative to group)
-    hitbox.position.set(
+
+    const hitbox = MeshBuilder.CreateCylinder(`hitbox-${sceneChar.id}`, {
+      height: hitboxHeight,
+      diameter: hitboxRadius * 2,
+      tessellation: 8,
+    }, this.scene)
+
+    hitbox.position = new Vector3(
       center.x - group.position.x,
       center.y - group.position.y,
       center.z - group.position.z
     )
-    hitbox.userData.sceneCharacterId = sceneChar.id
-    hitbox.userData.isHitbox = true
-    group.add(hitbox)
+    hitbox.visibility = 0 // Invisible
+    hitbox.isPickable = true
+    hitbox.metadata = {
+      sceneCharacterId: sceneChar.id,
+      isHitbox: true,
+    }
+    hitbox.parent = group
     managed.hitbox = hitbox
 
     // Set initial position
     renderer.setWorldTransform(sceneChar.position, sceneChar.rotation)
 
-    // Store reference for raycasting
-    group.userData.sceneCharacterId = sceneChar.id
+    // Store reference
+    group.metadata = { sceneCharacterId: sceneChar.id }
   }
 
-  /**
-   * Remove a character from the scene
-   */
   removeCharacter(sceneCharacterId: string): void {
     const managed = this.characters.get(sceneCharacterId)
     if (!managed) return
 
-    // Dispose hitbox
     if (managed.hitbox) {
-      managed.hitbox.geometry.dispose()
-      ;(managed.hitbox.material as THREE.Material).dispose()
+      managed.hitbox.dispose()
     }
 
     managed.animationManager.dispose()
-    this.parentGroup.remove(managed.renderer.getGroup())
     managed.renderer.dispose()
     this.characters.delete(sceneCharacterId)
   }
 
-  /**
-   * Update character transform
-   */
   updateTransform(sceneCharacterId: string, position: [number, number, number], rotation: number): void {
     const managed = this.characters.get(sceneCharacterId)
     if (!managed) return
-
     managed.renderer.setWorldTransform(position, rotation)
   }
 
-  /**
-   * Sync with scene character list - adds/removes as needed
-   */
   async syncCharacters(sceneCharacters: SceneCharacter[]): Promise<void> {
     const sceneCharIds = new Set(sceneCharacters.map(c => c.id))
 
-    // Remove characters no longer in scene
     const toRemove: string[] = []
     this.characters.forEach((_, id) => {
       if (!sceneCharIds.has(id)) {
@@ -153,24 +155,17 @@ export class SceneCharacterManager {
     })
     toRemove.forEach(id => this.removeCharacter(id))
 
-    // Add or update characters in scene
     for (const sceneChar of sceneCharacters) {
       await this.addCharacter(sceneChar)
     }
   }
 
-  /**
-   * Apply animation state to a character
-   */
   async applyAnimationState(sceneCharacterId: string, state: CharacterAnimationState): Promise<void> {
     const managed = this.characters.get(sceneCharacterId)
     if (!managed || !managed.loaded) return
     await managed.animationManager.applyState(state)
   }
 
-  /**
-   * Update all characters (call each frame)
-   */
   update(delta: number): void {
     this.characters.forEach((managed) => {
       if (managed.loaded) {
@@ -180,19 +175,13 @@ export class SceneCharacterManager {
     })
   }
 
-  /**
-   * Get the Three.js group for a character (for selection/gizmo attachment)
-   */
-  getCharacterGroup(sceneCharacterId: string): THREE.Group | null {
+  getCharacterGroup(sceneCharacterId: string): TransformNode | null {
     const managed = this.characters.get(sceneCharacterId)
     return managed?.renderer.getGroup() ?? null
   }
 
-  /**
-   * Get all character groups for raycasting
-   */
-  getAllCharacterGroups(): THREE.Group[] {
-    const groups: THREE.Group[] = []
+  getAllCharacterGroups(): TransformNode[] {
+    const groups: TransformNode[] = []
     this.characters.forEach((managed) => {
       if (managed.loaded) {
         groups.push(managed.renderer.getGroup())
@@ -201,12 +190,8 @@ export class SceneCharacterManager {
     return groups
   }
 
-  /**
-   * Get all hitbox meshes for reliable raycasting
-   * (Use these instead of character meshes - SkinnedMesh raycasting is unreliable)
-   */
-  getAllHitboxes(): THREE.Mesh[] {
-    const hitboxes: THREE.Mesh[] = []
+  getAllHitboxes(): Mesh[] {
+    const hitboxes: Mesh[] = []
     this.characters.forEach((managed) => {
       if (managed.loaded && managed.hitbox) {
         hitboxes.push(managed.hitbox)
@@ -215,38 +200,27 @@ export class SceneCharacterManager {
     return hitboxes
   }
 
-  /**
-   * Find character by raycasting intersection
-   */
-  findCharacterByIntersection(intersectedObject: THREE.Object3D): string | null {
-    let obj: THREE.Object3D | null = intersectedObject
-    while (obj) {
-      if (obj.userData.sceneCharacterId) {
-        return obj.userData.sceneCharacterId as string
+  findCharacterByMesh(mesh: AbstractMesh): string | null {
+    let current: any = mesh
+    while (current) {
+      if (current.metadata?.sceneCharacterId) {
+        return current.metadata.sceneCharacterId as string
       }
-      obj = obj.parent
+      current = current.parent
     }
     return null
   }
 
-  /**
-   * Get character count
-   */
   get count(): number {
     return this.characters.size
   }
 
-  /**
-   * Dispose all characters
-   */
   dispose(): void {
     this.characters.forEach((managed) => {
       if (managed.hitbox) {
-        managed.hitbox.geometry.dispose()
-        ;(managed.hitbox.material as THREE.Material).dispose()
+        managed.hitbox.dispose()
       }
       managed.animationManager.dispose()
-      this.parentGroup.remove(managed.renderer.getGroup())
       managed.renderer.dispose()
     })
     this.characters.clear()

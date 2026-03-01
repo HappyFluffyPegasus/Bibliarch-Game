@@ -514,6 +514,16 @@ export function WorldPage() {
   const [regionName, setRegionName] = useState("")
   const [regionCorner1, setRegionCorner1] = useState<{ x: number; z: number } | null>(null)
 
+  // World overview state
+  const [showWorldOverview, setShowWorldOverview] = useState(false)
+
+  // New location dialog state
+  const [showNewLocationDialog, setShowNewLocationDialog] = useState(false)
+  const [newLocName, setNewLocName] = useState("")
+  const [newLocLevel, setNewLocLevel] = useState<WorldLevel>('country')
+  const [newLocParentId, setNewLocParentId] = useState<string | null>(null)
+  const [attachParentDialogNodeId, setAttachParentDialogNodeId] = useState<string | null>(null)
+
   // Auto-switch ribbon tab when active tool changes
   useEffect(() => {
     const terrainTools: EditorTool[] = ['sculpt', 'paint-material', 'cartography']
@@ -522,6 +532,15 @@ export function WorldPage() {
     else if (buildTools.includes(activeTool)) setRibbonTab('build')
     // select/delete stay on current tab
   }, [activeTool])
+
+  // Reset active tool to a valid tool when navigating between levels
+  useEffect(() => {
+    if (!activeNodeId) return
+    const allowed = LEVEL_TOOLS[currentLevel]
+    if (allowed && !allowed.includes(activeTool)) {
+      setActiveTool(allowed[0])
+    }
+  }, [currentLevel])
 
   // Load world on mount
   useEffect(() => {
@@ -558,6 +577,12 @@ export function WorldPage() {
       const hw = existingHW || migrateLegacyWorld(w)
       setHierarchicalWorld(hw)
       resetNavigation(hw.rootNodeId)
+
+      // Show overview if there are child locations in the world
+      const rootNode = hw.nodes[hw.rootNodeId]
+      if (hasExistingTerrain && rootNode && Object.keys(hw.nodes).length > 1) {
+        setShowWorldOverview(true)
+      }
     }
 
     const loadFromParsed = (parsed: SerializedWorld) => {
@@ -774,6 +799,14 @@ export function WorldPage() {
           node.parentBoundsSnapshot = currentSnapshot
         }
       }
+    } else if (!node.parentBoundsSnapshot && node.boundsInParent && node.parentId) {
+      // First-time enter or missing snapshot — initialize child terrain from parent
+      const parentNode = hw.nodes[node.parentId]
+      if (parentNode) {
+        const childTerrain = initChildTerrainFromParent(parentNode.terrain, node.boundsInParent, node.terrain.size, node.terrain.sizeZ)
+        node.terrain = childTerrain
+        node.parentBoundsSnapshot = extractBoundsSnapshot(parentNode.terrain, node.boundsInParent)
+      }
     }
 
     // Create flat World view of this node
@@ -834,13 +867,9 @@ export function WorldPage() {
     }
 
     const parentId = navigationStack[navigationStack.length - 1]
-    // Check cache first, then IDB
-    const cached = nodeCacheRef.current.get(parentId)
-    const parentData = cached || await loadNodeData(storyId, parentId)
-    if (parentData) {
-      const parentNode = deserializeWorldNode(parentData)
-      hw.nodes[parentId] = parentNode
-    }
+    // Parent terrain was already blended in-memory above — cache the blended version
+    // instead of reloading stale data from cache/IDB which would overwrite the blend.
+    nodeCacheRef.current.set(parentId, serializeWorldNode(hw.nodes[parentId]))
 
     const parentNode = hw.nodes[parentId]
     if (!parentNode) return
@@ -2552,6 +2581,270 @@ export function WorldPage() {
     onStopPlaytest: handleStopPlaytest,
   }
 
+  // Helper for overview rendering
+  const levelIcons: Record<WorldLevel, React.ElementType> = { world: Globe, country: Flag, city: Building2, building: Home }
+  const levelColors: Record<WorldLevel, string> = { world: 'text-sky-400', country: 'text-emerald-400', city: 'text-amber-400', building: 'text-pink-400' }
+  const levelBgColors: Record<WorldLevel, string> = { world: 'bg-sky-500/20', country: 'bg-emerald-500/20', city: 'bg-amber-500/20', building: 'bg-pink-500/20' }
+
+  if (showWorldOverview && hierarchicalWorld) {
+    const renderNode = (nodeId: string, depth: number): React.ReactNode => {
+      const node = hierarchicalWorld.nodes[nodeId]
+      if (!node) return null
+      const LevelIcon = levelIcons[node.level]
+      const parentNode = node.parentId ? hierarchicalWorld.nodes[node.parentId] : null
+
+      return (
+        <div key={nodeId}>
+          <div
+            style={{ marginLeft: depth * 24 }}
+            onClick={() => {
+              handleEnterNode(nodeId)
+              setShowWorldOverview(false)
+            }}
+            className="bg-slate-800/80 border border-slate-700/50 rounded-xl p-4 hover:border-sky-500/50 hover:shadow-lg hover:shadow-sky-500/10 transition-all cursor-pointer group mb-3"
+          >
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-lg ${levelBgColors[node.level]} flex items-center justify-center shrink-0`}>
+                <LevelIcon className={`w-5 h-5 ${levelColors[node.level]}`} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-sm font-medium text-slate-200 truncate group-hover:text-sky-300 transition-colors">
+                  {node.name}
+                </h3>
+                <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-500">
+                  <span className={`px-1.5 py-0.5 rounded-full ${levelBgColors[node.level]} ${levelColors[node.level]} font-medium capitalize`}>
+                    {node.level}
+                  </span>
+                  {parentNode && (
+                    <span className="flex items-center gap-1">
+                      <Link className="w-3 h-3" />
+                      {parentNode.name}
+                    </span>
+                  )}
+                  {!node.parentId && node.level !== 'world' && (
+                    <span className="flex items-center gap-1 text-amber-400">
+                      <Unlink className="w-3 h-3" />
+                      Standalone
+                    </span>
+                  )}
+                  <span>{node.childIds.length} child{node.childIds.length !== 1 ? 'ren' : ''}</span>
+                  <span>{node.objects.length} obj{node.objects.length !== 1 ? 's' : ''}</span>
+                </div>
+              </div>
+              {!node.parentId && node.level !== 'world' && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setAttachParentDialogNodeId(nodeId)
+                  }}
+                  className="px-2 py-1 text-[10px] rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors"
+                >
+                  Attach to Parent
+                </button>
+              )}
+              <LogIn className="w-4 h-4 text-slate-600 group-hover:text-sky-400 transition-colors shrink-0" />
+            </div>
+          </div>
+          {node.childIds.map(childId => renderNode(childId, depth + 1))}
+        </div>
+      )
+    }
+
+    const standaloneNodes = Object.values(hierarchicalWorld.nodes).filter(
+      n => !n.parentId && n.id !== hierarchicalWorld.rootNodeId
+    )
+
+    return (
+      <div className="h-screen flex flex-col bg-gradient-to-b from-slate-800 to-slate-900">
+        {/* Header */}
+        <header className="border-b border-slate-700/50 bg-slate-800/80 px-6 py-3 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <Globe className="w-5 h-5 text-sky-400" />
+            <h1 className="text-sm font-semibold text-slate-200">World Overview</h1>
+            <span className="text-xs text-slate-500">
+              {Object.keys(hierarchicalWorld.nodes).length} location{Object.keys(hierarchicalWorld.nodes).length !== 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => setShowNewLocationDialog(true)}
+              className="bg-gradient-to-r from-sky-500 to-blue-600 text-white hover:opacity-90"
+              size="sm"
+            >
+              <Plus className="w-4 h-4 mr-1.5" />
+              New Location
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowWorldOverview(false)}
+              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+              size="sm"
+            >
+              Enter Editor
+            </Button>
+          </div>
+        </header>
+
+        {/* Scrollable card list */}
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-4xl mx-auto">
+            {renderNode(hierarchicalWorld.rootNodeId, 0)}
+            {standaloneNodes.length > 0 && (
+              <>
+                <div className="border-t border-slate-700/50 my-4 pt-4">
+                  <h3 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Standalone Locations</h3>
+                </div>
+                {standaloneNodes.map(n => renderNode(n.id, 0))}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Dialogs still need to render */}
+        <Dialog open={showNewLocationDialog} onOpenChange={setShowNewLocationDialog}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-white">New Location</DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Create a new world location. You can optionally attach it to an existing parent.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Name</label>
+                <input
+                  type="text"
+                  value={newLocName}
+                  onChange={(e) => setNewLocName(e.target.value)}
+                  placeholder="My Location"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700/50 border border-slate-600/50 text-sm text-slate-200 focus:outline-none focus:border-sky-500/50"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Level</label>
+                <select
+                  value={newLocLevel}
+                  onChange={(e) => setNewLocLevel(e.target.value as WorldLevel)}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700/50 border border-slate-600/50 text-sm text-slate-200 focus:outline-none focus:border-sky-500/50"
+                >
+                  <option value="country">Country</option>
+                  <option value="city">City</option>
+                  <option value="building">Building</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Parent (optional)</label>
+                <select
+                  value={newLocParentId || ''}
+                  onChange={(e) => setNewLocParentId(e.target.value || null)}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700/50 border border-slate-600/50 text-sm text-slate-200 focus:outline-none focus:border-sky-500/50"
+                >
+                  <option value="">None (standalone)</option>
+                  {Object.values(hierarchicalWorld.nodes)
+                    .filter(n => getChildLevel(n.level) === newLocLevel)
+                    .map(n => (
+                      <option key={n.id} value={n.id}>{n.name} ({n.level})</option>
+                    ))
+                  }
+                </select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setShowNewLocationDialog(false); setNewLocName(""); setNewLocParentId(null) }}
+                className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={!newLocName.trim()}
+                onClick={() => {
+                  const hw = hwRef.current
+                  if (!hw) return
+                  const sizeX = newLocLevel === 'building' ? 32 : newLocLevel === 'city' ? 128 : 256
+                  const sizeZ = sizeX
+                  const newNode = createWorldNode(newLocParentId, newLocLevel, newLocName.trim(), null, sizeX, sizeZ)
+                  hw.nodes[newNode.id] = newNode
+                  if (newLocParentId && hw.nodes[newLocParentId]) {
+                    hw.nodes[newLocParentId].childIds.push(newNode.id)
+                  }
+                  setHierarchicalWorld({ ...hw })
+                  setShowNewLocationDialog(false)
+                  setNewLocName("")
+                  setNewLocParentId(null)
+                  setHasUnsavedChanges(true)
+                }}
+                className="bg-sky-500 text-white hover:bg-sky-600"
+              >
+                Create
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!attachParentDialogNodeId} onOpenChange={(open) => { if (!open) setAttachParentDialogNodeId(null) }}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-white">Attach to Parent</DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Choose a parent location to attach "{attachParentDialogNodeId && hierarchicalWorld.nodes[attachParentDialogNodeId]?.name}" to.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 py-2 max-h-64 overflow-y-auto">
+              {attachParentDialogNodeId && (() => {
+                const childNode = hierarchicalWorld.nodes[attachParentDialogNodeId]
+                if (!childNode) return null
+                const validParents = Object.values(hierarchicalWorld.nodes).filter(n =>
+                  n.id !== attachParentDialogNodeId && getChildLevel(n.level) === childNode.level
+                )
+                if (validParents.length === 0) {
+                  return <p className="text-sm text-slate-400">No valid parent locations found for this level.</p>
+                }
+                return validParents.map(parent => (
+                  <button
+                    key={parent.id}
+                    onClick={() => {
+                      const hw = hwRef.current
+                      if (!hw || !attachParentDialogNodeId) return
+                      const child = hw.nodes[attachParentDialogNodeId]
+                      if (!child) return
+                      child.parentId = parent.id
+                      parent.childIds.push(attachParentDialogNodeId)
+                      setHierarchicalWorld({ ...hw })
+                      setAttachParentDialogNodeId(null)
+                      setHasUnsavedChanges(true)
+                    }}
+                    className="w-full flex items-center gap-3 p-3 rounded-lg bg-slate-700/50 border border-slate-600/50 hover:border-sky-500/50 hover:bg-slate-700 transition-all text-left"
+                  >
+                    <Globe className="w-4 h-4 text-slate-400 shrink-0" />
+                    <div>
+                      <div className="text-sm text-slate-200">{parent.name}</div>
+                      <div className="text-[10px] text-slate-500 capitalize">{parent.level}</div>
+                    </div>
+                  </button>
+                ))
+              })()}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAttachParentDialogNodeId(null)}
+                className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600"
+              >
+                Cancel
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    )
+  }
+
   return (
     <div className="h-screen flex flex-col bg-[#1e1e1e]">
       {/* Hidden file input for heightmap */}
@@ -2713,17 +3006,25 @@ export function WorldPage() {
             </div>
           )}
 
-          {/* Level indicator badge */}
-          {currentLevel !== 'world' && (
-            <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+          {/* Overview + Exit buttons */}
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+            {hierarchicalWorld && Object.keys(hierarchicalWorld.nodes).length > 1 && (
+              <button
+                onClick={() => setShowWorldOverview(true)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/50 text-xs text-slate-300 hover:text-white hover:bg-slate-700/80 backdrop-blur-sm transition-all"
+              >
+                Overview
+              </button>
+            )}
+            {currentLevel !== 'world' && (
               <button
                 onClick={handleExitToParent}
                 className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/50 text-xs text-slate-300 hover:text-white hover:bg-slate-700/80 backdrop-blur-sm transition-all"
               >
                 Exit to Parent
               </button>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* 3D Viewport — hidden (not unmounted) when cartography active */}
           <div style={{ display: activeTool === 'cartography' ? 'none' : 'block' }} className="w-full h-full">

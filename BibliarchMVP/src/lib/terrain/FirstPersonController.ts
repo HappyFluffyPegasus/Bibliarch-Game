@@ -1,13 +1,19 @@
-import * as THREE from 'three'
-import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js'
+import {
+  FreeCamera,
+  Vector3,
+  Vector2,
+  Quaternion,
+  Matrix,
+  Ray,
+  Scene,
+} from '@babylonjs/core'
 import { TerrainData } from '@/types/world'
 
 export class FirstPersonController {
-  private controls: PointerLockControls
-  private camera: THREE.PerspectiveCamera
+  private camera: FreeCamera
+  private scene: Scene
   private domElement: HTMLElement
 
-  // Key state
   private keys = {
     forward: false,
     backward: false,
@@ -18,69 +24,50 @@ export class FirstPersonController {
     sprint: false,
   }
 
-  // Settings
   private _subMode: 'walk' | 'fly' = 'walk'
   private _speed = 1.0
-
-  // Character head bone height at 100% scale (from Viewer3D CAMERA_POSITIONS)
   private eyeHeight = 1.65
 
-  // Physics
   private velocityY = 0
   private isGrounded = false
-  private gravity = -30      // units/s²
-  private jumpImpulse = 10   // units/s
+  private gravity = -30
+  private jumpImpulse = 10
   private jumpRequested = false
 
-  // Double-space fly toggle
   private lastSpaceTime = 0
   private readonly DOUBLE_TAP_MS = 300
 
-  // Mode change callback (walk ↔ fly)
   private _onSubModeChange: ((mode: 'walk' | 'fly') => void) | null = null
-
-  // Shift lock (Roblox-style cursor lock toggle)
   private _shiftLocked = false
   private _onShiftLockChange: ((locked: boolean) => void) | null = null
 
-  // Drag-to-look (trackpad / right-click drag)
   private isDragLooking = false
   private lastDragX = 0
   private lastDragY = 0
-  private dragEuler = new THREE.Euler(0, 0, 0, 'YXZ')
   private readonly DRAG_SENSITIVITY = 0.003
+
+  private direction = new Vector3()
+  private moveVector = new Vector3()
+  private _forward = new Vector3()
+  private _right = new Vector3()
+  private _up = new Vector3(0, 1, 0)
+
+  private handleKeyDown: (e: KeyboardEvent) => void
+  private handleKeyUp: (e: KeyboardEvent) => void
   private handleMouseDownDrag: (e: MouseEvent) => void
   private handleMouseMoveDrag: (e: MouseEvent) => void
   private handleMouseUpDrag: (e: MouseEvent) => void
   private handleContextMenu: (e: Event) => void
 
-  // Internals (cached to avoid per-frame allocations)
-  private direction = new THREE.Vector3()
-  private moveVector = new THREE.Vector3()
-  private _forward = new THREE.Vector3()
-  private _right = new THREE.Vector3()
-  private _up = new THREE.Vector3(0, 1, 0)
-  private handleKeyDown: (e: KeyboardEvent) => void
-  private handleKeyUp: (e: KeyboardEvent) => void
-
-  constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
+  constructor(camera: FreeCamera, scene: Scene, domElement: HTMLElement) {
     this.camera = camera
+    this.scene = scene
     this.domElement = domElement
-    this.controls = new PointerLockControls(camera, domElement)
 
-    // Shift lock state is driven entirely by pointer lock events.
-    // This handles ESC, lock failures, and toggle correctly.
-    this.controls.addEventListener('lock', () => {
-      this._shiftLocked = true
-      this._onShiftLockChange?.(true)
-    })
-    this.controls.addEventListener('unlock', () => {
-      this._shiftLocked = false
-      this._onShiftLockChange?.(false)
-    })
+    // Disable Babylon.js default camera controls — we handle input ourselves
+    camera.inputs.clear()
 
     this.handleKeyDown = (e: KeyboardEvent) => {
-      // Don't capture when in inputs
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement ||
@@ -103,7 +90,6 @@ export class FirstPersonController {
         case 'ControlLeft': case 'ControlRight': this.keys.sprint = true; break
         case 'Space': {
           e.preventDefault()
-          // Ignore key repeat events — only act on fresh presses
           if (e.repeat) {
             this.keys.up = true
             break
@@ -111,13 +97,11 @@ export class FirstPersonController {
           this.keys.up = true
 
           const now = performance.now()
-          // Double-tap space → toggle fly/walk
           if (now - this.lastSpaceTime < this.DOUBLE_TAP_MS) {
             this.toggleSubMode()
             this.lastSpaceTime = 0
           } else {
             this.lastSpaceTime = now
-            // Single space in walk mode → jump
             if (this._subMode === 'walk' && this.isGrounded) {
               this.jumpRequested = true
             }
@@ -140,8 +124,6 @@ export class FirstPersonController {
       }
     }
 
-    // ── Drag-to-look handlers (right-click / two-finger trackpad) ──
-
     this.handleMouseDownDrag = (e: MouseEvent) => {
       if (e.button === 2) {
         this.isDragLooking = true
@@ -151,19 +133,17 @@ export class FirstPersonController {
     }
 
     this.handleMouseMoveDrag = (e: MouseEvent) => {
-      if (!this.isDragLooking || this.controls.isLocked) return
+      if (!this.isDragLooking && !this._shiftLocked) return
 
-      const dx = e.clientX - this.lastDragX
-      const dy = e.clientY - this.lastDragY
+      const dx = e.movementX || (e.clientX - this.lastDragX)
+      const dy = e.movementY || (e.clientY - this.lastDragY)
       this.lastDragX = e.clientX
       this.lastDragY = e.clientY
 
-      // Rotate camera via euler angles (same method PointerLockControls uses)
-      this.dragEuler.setFromQuaternion(this.camera.quaternion)
-      this.dragEuler.y -= dx * this.DRAG_SENSITIVITY
-      this.dragEuler.x -= dy * this.DRAG_SENSITIVITY
-      this.dragEuler.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.dragEuler.x))
-      this.camera.quaternion.setFromEuler(this.dragEuler)
+      // Rotate camera
+      this.camera.rotation.y += dx * this.DRAG_SENSITIVITY
+      this.camera.rotation.x += dy * this.DRAG_SENSITIVITY
+      this.camera.rotation.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.camera.rotation.x))
     }
 
     this.handleMouseUpDrag = (e: MouseEvent) => {
@@ -180,7 +160,6 @@ export class FirstPersonController {
   private toggleSubMode(): void {
     this._subMode = this._subMode === 'walk' ? 'fly' : 'walk'
     if (this._subMode === 'walk') {
-      // Entering walk mode: let gravity take over
       this.velocityY = 0
     }
     this._onSubModeChange?.(this._subMode)
@@ -188,21 +167,24 @@ export class FirstPersonController {
 
   private toggleShiftLock(): void {
     if (this._shiftLocked) {
-      this.controls.unlock()
+      document.exitPointerLock()
+      this._shiftLocked = false
+      this._onShiftLockChange?.(false)
     } else {
-      // Call requestPointerLock directly so we can catch the Promise rejection.
-      // PointerLockControls still detects lock via the pointerlockchange event.
       const promise = this.domElement.requestPointerLock() as unknown as Promise<void> | void
       if (promise && typeof (promise as Promise<void>).catch === 'function') {
-        (promise as Promise<void>).catch(() => { /* browser denied — no user gesture or other restriction */ })
+        (promise as Promise<void>).catch(() => {})
       }
+      this._shiftLocked = true
+      this._onShiftLockChange?.(true)
     }
   }
 
-  /** Public reset for when exiting FP mode */
   resetShiftLock(): void {
     if (this._shiftLocked) {
-      this.controls.unlock()
+      document.exitPointerLock()
+      this._shiftLocked = false
+      this._onShiftLockChange?.(false)
     }
   }
 
@@ -227,7 +209,7 @@ export class FirstPersonController {
   }
 
   isLocked(): boolean {
-    return this.controls.isLocked
+    return this._shiftLocked
   }
 
   lock(): void {
@@ -235,34 +217,44 @@ export class FirstPersonController {
     if (promise && typeof (promise as Promise<void>).catch === 'function') {
       (promise as Promise<void>).catch(() => {})
     }
+    this._shiftLocked = true
+    this._onShiftLockChange?.(true)
   }
 
   unlock(): void {
-    this.controls.unlock()
+    document.exitPointerLock()
+    this._shiftLocked = false
+    this._onShiftLockChange?.(false)
     this.resetKeys()
     this.velocityY = 0
     this.jumpRequested = false
   }
 
   onLock(callback: () => void): void {
-    this.controls.addEventListener('lock', callback)
+    // Pointer lock change listener
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement === this.domElement) {
+        callback()
+      }
+    })
   }
 
-  offLock(callback: () => void): void {
-    this.controls.removeEventListener('lock', callback)
+  offLock(_callback: () => void): void {
+    // Would need to track and remove specific listener
   }
 
   onUnlock(callback: () => void): void {
-    this.controls.addEventListener('unlock', callback)
+    document.addEventListener('pointerlockchange', () => {
+      if (!document.pointerLockElement) {
+        callback()
+      }
+    })
   }
 
-  offUnlock(callback: () => void): void {
-    this.controls.removeEventListener('unlock', callback)
-  }
+  offUnlock(_callback: () => void): void {}
 
-  /** Returns true if the controller is in use (pointer locked or drag-looking) */
   isEngaged(): boolean {
-    return this.controls.isLocked || this.isDragLooking
+    return this._shiftLocked || this.isDragLooking
   }
 
   bindEvents(): void {
@@ -295,19 +287,14 @@ export class FirstPersonController {
     this.keys.sprint = false
   }
 
-  /** Get a raycaster from the center of the screen (for crosshair tool interaction) */
-  getCenterRay(): THREE.Raycaster {
-    const raycaster = new THREE.Raycaster()
-    raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera)
-    return raycaster
+  getCenterRay(): Ray {
+    return this.camera.getForwardRay()
   }
 
-  /** Get terrain height at a world XZ position by sampling the heightmap */
   private getTerrainHeight(terrain: TerrainData, worldX: number, worldZ: number): number {
     const gridX = worldX / terrain.cellSize
     const gridZ = worldZ / terrain.cellSize
 
-    // Bilinear interpolation
     const gx0 = Math.floor(gridX)
     const gz0 = Math.floor(gridZ)
     const gx1 = gx0 + 1
@@ -330,10 +317,7 @@ export class FirstPersonController {
     return h0 + (h1 - h0) * fz
   }
 
-  /** Called each frame. Moves camera based on key state and mode. */
   update(delta: number, terrain: TerrainData): void {
-
-    // Clamp delta to prevent physics explosion on lag spikes
     const dt = Math.min(delta, 0.1)
 
     const sprintMultiplier = this.keys.sprint ? 2 : 1
@@ -343,20 +327,19 @@ export class FirstPersonController {
     const worldSizeX = terrain.size * terrain.cellSize
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
 
-    // Get camera forward direction (horizontal only for WASD) — reuse cached vectors
-    this.camera.getWorldDirection(this.direction)
-    this._forward.set(this.direction.x, 0, this.direction.z).normalize()
-    this._right.crossVectors(this._forward, this._up).normalize()
+    // Get camera forward direction
+    const forward = this.camera.getForwardRay().direction
+    this._forward.set(forward.x, 0, forward.z).normalize()
+    this._right = Vector3.Cross(this._forward, this._up).normalize()
 
-    // Horizontal movement (both modes)
     this.moveVector.set(0, 0, 0)
-    if (this.keys.forward) this.moveVector.add(this._forward)
-    if (this.keys.backward) this.moveVector.sub(this._forward)
-    if (this.keys.right) this.moveVector.add(this._right)
-    if (this.keys.left) this.moveVector.sub(this._right)
+    if (this.keys.forward) this.moveVector.addInPlace(this._forward)
+    if (this.keys.backward) this.moveVector.subtractInPlace(this._forward)
+    if (this.keys.right) this.moveVector.addInPlace(this._right)
+    if (this.keys.left) this.moveVector.subtractInPlace(this._right)
 
-    if (this.moveVector.lengthSq() > 0) {
-      this.moveVector.normalize().multiplyScalar(moveSpeed)
+    if (this.moveVector.lengthSquared() > 0) {
+      this.moveVector.normalize().scaleInPlace(moveSpeed)
     }
 
     this.camera.position.x += this.moveVector.x
@@ -366,23 +349,16 @@ export class FirstPersonController {
     this.camera.position.x = Math.max(0, Math.min(worldSizeX, this.camera.position.x))
     this.camera.position.z = Math.max(0, Math.min(worldSizeZ, this.camera.position.z))
 
-    // Terrain height at current position
     const terrainY = this.getTerrainHeight(terrain, this.camera.position.x, this.camera.position.z)
     const floorY = terrainY + this.eyeHeight
 
     if (this._subMode === 'fly') {
-      // ── Fly mode (creative mode) ──
       if (this.keys.up) this.camera.position.y += moveSpeed
       if (this.keys.down) this.camera.position.y -= moveSpeed
-
-      // Floor clamp
       if (this.camera.position.y < floorY) {
         this.camera.position.y = floorY
       }
     } else {
-      // ── Walk mode (gravity + jump) ──
-
-      // Jump
       if (this.jumpRequested && this.isGrounded) {
         this.velocityY = this.jumpImpulse
         this.isGrounded = false
@@ -390,11 +366,9 @@ export class FirstPersonController {
       }
       this.jumpRequested = false
 
-      // Gravity
       this.velocityY += this.gravity * dt
       this.camera.position.y += this.velocityY * dt
 
-      // Ground collision
       if (this.camera.position.y <= floorY) {
         this.camera.position.y = floorY
         this.velocityY = 0
@@ -407,6 +381,5 @@ export class FirstPersonController {
 
   dispose(): void {
     this.unbindEvents()
-    this.controls.dispose()
   }
 }

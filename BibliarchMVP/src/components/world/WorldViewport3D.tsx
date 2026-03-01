@@ -1,8 +1,29 @@
 'use client'
 
 import { useEffect, useRef, useCallback, useState } from 'react'
-import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import {
+  Engine,
+  Scene,
+  ArcRotateCamera,
+  FreeCamera,
+  Vector3,
+  Color3,
+  Color4,
+  HemisphericLight,
+  DirectionalLight,
+  Mesh,
+  MeshBuilder,
+  StandardMaterial,
+  TransformNode,
+  Plane,
+  Matrix,
+  DynamicTexture,
+  VertexData,
+  VertexBuffer,
+  LinesMesh,
+  type AbstractMesh,
+  Viewport,
+} from '@babylonjs/core'
 import { TerrainData, EditorTool, BrushSettings, MaterialBrushSettings, WorldObject, LevelBounds, PolygonBorder, CityLot, RoadNetwork, BuildingData, RoadWaypoint, WorldLevel, isPointInPolygon } from '@/types/world'
 import { ChunkManager, worldToGrid } from '@/lib/terrain/ChunkManager'
 
@@ -164,10 +185,10 @@ export default function WorldViewport3D({
   const [isPointerLocked, setIsPointerLocked] = useState(false)
   const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const sceneRef = useRef<THREE.Scene | null>(null)
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
-  const controlsRef = useRef<OrbitControls | null>(null)
+  const sceneRef = useRef<Scene | null>(null)
+  const engineRef = useRef<Engine | null>(null)
+  const cameraRef = useRef<ArcRotateCamera | null>(null)
+  const fpCameraRef = useRef<FreeCamera | null>(null)
   const fpControllerRef = useRef<FirstPersonController | null>(null)
   const chunkManagerRef = useRef<ChunkManager | null>(null)
 
@@ -176,35 +197,33 @@ export default function WorldViewport3D({
   const lotManagerRef = useRef<LotManager | null>(null)
   const roadManagerRef = useRef<RoadNetworkManager | null>(null)
   const wallManagerRef = useRef<WallManager | null>(null)
-  const borderPreviewRef = useRef<THREE.Object3D | null>(null)
-  const roadPreviewRef = useRef<THREE.Group | null>(null)
+  const borderPreviewRef = useRef<TransformNode | null>(null)
+  const roadPreviewRef = useRef<TransformNode | null>(null)
   // Marquee select refs
   const isMarqueeRef = useRef(false)
   const marqueeStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
   const marqueeEndRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
-  const gridHelperRef = useRef<THREE.GridHelper | null>(null)
-  const sunRef = useRef<THREE.DirectionalLight | null>(null)
-  const ambientRef = useRef<THREE.AmbientLight | null>(null)
-  const waterMeshRef = useRef<THREE.Mesh | null>(null)
-  const boundaryOutlineRef = useRef<THREE.Line | null>(null)
+  const gridMeshRef = useRef<LinesMesh | null>(null)
+  const sunRef = useRef<DirectionalLight | null>(null)
+  const ambientRef = useRef<HemisphericLight | null>(null)
+  const waterMeshRef = useRef<Mesh | null>(null)
+  const boundaryOutlineRef = useRef<LinesMesh | null>(null)
   const polygonBoundaryRef = useRef(polygonBoundary)
   polygonBoundaryRef.current = polygonBoundary
-  const boundaryLineRef = useRef<THREE.Line | null>(null)
-  const brushCursorRef = useRef<THREE.Mesh | null>(null)
-  const ghostMeshRef = useRef<THREE.Group | null>(null)
-  const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster())
-  const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2(-999, -999))
-  const weatherParticlesRef = useRef<THREE.Points | null>(null)
+  const boundaryLineRef = useRef<LinesMesh | null>(null)
+  const brushCursorRef = useRef<Mesh | null>(null)
+  const ghostMeshRef = useRef<TransformNode | null>(null)
+  const weatherParticlesRef = useRef<Mesh | null>(null)
   const weatherVelocitiesRef = useRef<Float32Array | null>(null)
-  const animFrameRef = useRef<number>(0)
+  const weatherPositionsRef = useRef<Float32Array | null>(null)
+  const fpsFramesRef = useRef(0)
+  const fpsTimeRef = useRef(performance.now())
   const isPaintingRef = useRef(false)
   const isDraggingObjectRef = useRef(false)
   const dragObjectIdRef = useRef<string | null>(null)
   const dragLastPosRef = useRef<[number, number, number] | null>(null)
-  const dragPlaneRef = useRef<THREE.Plane>(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0))
+  const dragPlaneRef = useRef<Plane>(new Plane(0, 1, 0, 0))
   const lastPaintTimeRef = useRef(0)
-  const fpsFramesRef = useRef(0)
-  const fpsTimeRef = useRef(performance.now())
 
   // Keep props in refs for event handlers
   const terrainRef = useRef(terrain)
@@ -245,7 +264,7 @@ export default function WorldViewport3D({
   onRegionDoubleClickRef.current = onRegionDoubleClick
   const childRegionsRef = useRef(childRegions)
   childRegionsRef.current = childRegions
-  const regionGroupRef = useRef<THREE.Group | null>(null)
+  const regionGroupRef = useRef<TransformNode | null>(null)
   const lastClickTimeRef = useRef(0)
   const lastClickRegionRef = useRef<string | null>(null)
   const onCameraUpdateRef = useRef(onCameraUpdate)
@@ -269,7 +288,10 @@ export default function WorldViewport3D({
   const lastLotClickTimeRef = useRef(0)
   const lastLotClickIdRef = useRef<string | null>(null)
 
-  // ── Initialize Three.js scene ──────────────────────────────
+  // Mouse position in screen coords for raycasting
+  const mouseScreenRef = useRef<{ x: number; y: number }>({ x: -999, y: -999 })
+
+  // ── Initialize Babylon.js scene ──────────────────────────────
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -277,90 +299,100 @@ export default function WorldViewport3D({
     const width = container.clientWidth
     const height = container.clientHeight
 
+    // Create canvas for Babylon.js
+    const canvas = document.createElement('canvas')
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.style.outline = 'none'
+    container.appendChild(canvas)
+
+    // Engine — enable device pixel ratio scaling for crisp rendering
+    const engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: false }, true)
+    engine.setHardwareScalingLevel(1 / window.devicePixelRatio)
+    engineRef.current = engine
+
     // Scene
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x87CEEB)
-    scene.fog = new THREE.Fog(0x87CEEB, 200, 500)
+    const scene = new Scene(engine)
+    scene.clearColor = new Color4(0.529, 0.808, 0.922, 1) // #87CEEB
+    scene.fogMode = Scene.FOGMODE_LINEAR
+    scene.fogColor = new Color3(0.529, 0.808, 0.922)
+    scene.fogStart = 200
+    scene.fogEnd = 500
     sceneRef.current = scene
 
-    // Camera
+    // Camera (ArcRotateCamera replaces OrbitControls)
     const worldSizeX = terrain.size * terrain.cellSize
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
     const worldSize = Math.max(worldSizeX, worldSizeZ)
-    const camera = new THREE.PerspectiveCamera(60, width / height, 0.5, worldSize * 3)
-    camera.position.set(worldSizeX * 0.15, worldSize * 0.12, worldSizeZ * 0.15)
-    camera.lookAt(worldSizeX * 0.4, 0, worldSizeZ * 0.4)
+    // ArcRotateCamera: alpha (azimuth), beta (polar), radius, target
+    const targetPos = new Vector3(worldSizeX * 0.4, 0, worldSizeZ * 0.4)
+    const initPos = new Vector3(worldSizeX * 0.15, worldSize * 0.12, worldSizeZ * 0.15)
+    const dx = initPos.x - targetPos.x
+    const dy = initPos.y - targetPos.y
+    const dz = initPos.z - targetPos.z
+    const initRadius = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    const initAlpha = Math.atan2(dz, dx)
+    const initBeta = Math.acos(dy / initRadius)
+
+    const camera = new ArcRotateCamera('orbit-camera', initAlpha, initBeta, initRadius, targetPos.clone(), scene)
+    camera.fov = 60 * Math.PI / 180 // Babylon uses radians
+    camera.minZ = 0.5
+    camera.maxZ = worldSize * 3
+    camera.attachControl(canvas, true)
+    camera.inertia = 0.92
+    camera.lowerRadiusLimit = 5
+    camera.upperRadiusLimit = worldSize * 2
+    camera.upperBetaLimit = Math.PI / 2.05
+    // Mouse button mapping: left = none (we handle left click), middle = rotate, right = pan
+    ;(camera.inputs.attached.pointers as any).buttons = [1, 2]  // middle=1, right=2
     cameraRef.current = camera
 
-    // Renderer — no antialias, no shadows, capped pixel ratio for performance
-    const renderer = new THREE.WebGLRenderer({ antialias: false })
-    renderer.setSize(width, height)
-    renderer.setPixelRatio(1)
-    container.appendChild(renderer.domElement)
-    rendererRef.current = renderer
-
-    // Controls
-    const controls = new OrbitControls(camera, renderer.domElement)
-    controls.enableDamping = true
-    controls.dampingFactor = 0.08
-    controls.maxPolarAngle = Math.PI / 2.05
-    controls.minDistance = 5
-    controls.maxDistance = worldSize * 2
-    controls.target.set(worldSizeX * 0.4, 0, worldSizeZ * 0.4)
-    controls.mouseButtons = {
-      LEFT: -1 as THREE.MOUSE,
-      MIDDLE: THREE.MOUSE.ROTATE,
-      RIGHT: THREE.MOUSE.PAN,
-    }
-    controls.update()
-    controlsRef.current = controls
+    // First-person camera (hidden by default)
+    const fpCamera = new FreeCamera('fp-camera', new Vector3(0, 10, 0), scene)
+    fpCamera.fov = 110 * Math.PI / 180
+    fpCamera.minZ = 0.5
+    fpCamera.maxZ = worldSize * 3
+    fpCameraRef.current = fpCamera
 
     // Lighting
-    const ambient = new THREE.AmbientLight(0xffffff, 0.6)
-    scene.add(ambient)
+    const ambient = new HemisphericLight('ambient', new Vector3(0, 1, 0), scene)
+    ambient.intensity = 0.6
+    ambient.groundColor = new Color3(0.333, 0.42, 0.184) // #556B2F approx
+    ambient.diffuse = new Color3(0.529, 0.808, 0.922) // sky tint
     ambientRef.current = ambient
 
-    const sun = new THREE.DirectionalLight(0xffffff, 0.9)
+    const sun = new DirectionalLight('sun', new Vector3(-1, -1, -1), scene)
+    sun.intensity = 0.9
+    sun.position = new Vector3(worldSize * 0.5, worldSize * 0.8, worldSize * 0.3)
     sunRef.current = sun
-    sun.position.set(worldSize * 0.5, worldSize * 0.8, worldSize * 0.3)
-    scene.add(sun)
-
-    const hemi = new THREE.HemisphereLight(0x87CEEB, 0x556B2F, 0.3)
-    scene.add(hemi)
 
     // Chunk manager
-    const chunkManager = new ChunkManager()
-    scene.add(chunkManager.getGroup())
+    const chunkManager = new ChunkManager(scene)
     chunkManager.setTerrain(terrain)
     chunkManagerRef.current = chunkManager
 
     // Object manager
-    const objectManager = new ObjectManager()
-    scene.add(objectManager.getGroup())
+    const objectManager = new ObjectManager(scene)
     objectManagerRef.current = objectManager
 
     // Border manager
-    const borderManager = new BorderManager()
-    scene.add(borderManager.getGroup())
+    const borderManager = new BorderManager(scene)
     borderManagerRef.current = borderManager
 
     // Lot manager
-    const lotManager = new LotManager()
-    scene.add(lotManager.getGroup())
+    const lotManager = new LotManager(scene)
     lotManagerRef.current = lotManager
 
     // Road network manager
-    const roadManager = new RoadNetworkManager()
-    scene.add(roadManager.getGroup())
+    const roadManager = new RoadNetworkManager(scene)
     roadManagerRef.current = roadManager
 
     // Wall manager (building level)
-    const wallManager = new WallManager()
-    scene.add(wallManager.getGroup())
+    const wallManager = new WallManager(scene)
     wallManagerRef.current = wallManager
 
     // First-person controller
-    const fpController = new FirstPersonController(camera, renderer.domElement)
+    const fpController = new FirstPersonController(fpCamera, scene, canvas)
     fpController.onSubModeChange = (mode) => {
       onSubModeChangeRef.current(mode)
     }
@@ -369,41 +401,39 @@ export default function WorldViewport3D({
     }
     fpControllerRef.current = fpController
 
-    // Brush cursor
-    const cursorGeo = new THREE.RingGeometry(0.8, 1, 32)
-    cursorGeo.rotateX(-Math.PI / 2)
-    const cursorMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.6,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    })
-    const cursorMesh = new THREE.Mesh(cursorGeo, cursorMat)
-    cursorMesh.visible = false
-    cursorMesh.renderOrder = 999
-    scene.add(cursorMesh)
+    // Brush cursor — torus (ring) lying flat
+    const cursorMesh = MeshBuilder.CreateTorus('brush-cursor', {
+      diameter: 2,
+      thickness: 0.2,
+      tessellation: 32,
+    }, scene)
+    const cursorMat = new StandardMaterial('brush-cursor-mat', scene)
+    cursorMat.diffuseColor = Color3.White()
+    cursorMat.disableLighting = true
+    cursorMat.alpha = 0.6
+    cursorMat.backFaceCulling = false
+    cursorMat.disableDepthWrite = true
+    cursorMesh.material = cursorMat
+    cursorMesh.setEnabled(false)
+    cursorMesh.renderingGroupId = 3
     brushCursorRef.current = cursorMesh
 
     // Camera position reporting (throttled ~10fps)
     let lastCameraUpdate = 0
-    const camDir = new THREE.Vector3()
 
-    // Animation loop
-    const clock = new THREE.Clock()
-    function animate() {
-      animFrameRef.current = requestAnimationFrame(animate)
-      const delta = clock.getDelta()
+    // Render loop
+    let lastTime = performance.now()
+    engine.runRenderLoop(() => {
+      const now = performance.now()
+      const delta = (now - lastTime) / 1000
+      lastTime = now
 
       if (cameraModeRef.current === 'first-person') {
         fpController.update(delta, terrainRef.current)
-      } else {
-        controls.update()
       }
 
       // FPS counter
       fpsFramesRef.current++
-      const now = performance.now()
       if (now - fpsTimeRef.current >= 1000) {
         onFpsUpdate(fpsFramesRef.current)
         fpsFramesRef.current = 0
@@ -413,61 +443,71 @@ export default function WorldViewport3D({
       // Camera position reporting (throttled ~4fps to avoid React re-render spam)
       if (now - lastCameraUpdate > 250) {
         lastCameraUpdate = now
-        camera.getWorldDirection(camDir)
-        const yaw = Math.atan2(camDir.x, camDir.z)
-        onCameraUpdateRef.current?.(
-          [camera.position.x, camera.position.y, camera.position.z],
-          yaw
-        )
+        const activeCamera = scene.activeCamera
+        if (activeCamera) {
+          let camPos: Vector3
+          let yaw: number
+          if (activeCamera === fpCamera) {
+            camPos = fpCamera.position
+            const fwd = fpCamera.getForwardRay().direction
+            yaw = Math.atan2(fwd.x, fwd.z)
+          } else {
+            camPos = camera.position
+            const fwd = camera.getForwardRay().direction
+            yaw = Math.atan2(fwd.x, fwd.z)
+          }
+          onCameraUpdateRef.current?.(
+            [camPos.x, camPos.y, camPos.z],
+            yaw
+          )
+        }
       }
 
       // Frustum cull terrain chunks before rendering
-      chunkManagerRef.current?.cullChunks(camera)
-
-      // Update weather particles — follow camera + fall, scale with distance
-      const wp = weatherParticlesRef.current
-      const wv = weatherVelocitiesRef.current
-      if (wp && wv) {
-        const cameraDistance = camera.position.length()
-        const spread = Math.max(200, cameraDistance * 0.5)
-        const posAttr = wp.geometry.getAttribute('position') as THREE.BufferAttribute
-        const arr = posAttr.array as Float32Array
-        const count = wv.length
-        for (let i = 0; i < count; i++) {
-          arr[i * 3 + 1] -= wv[i] * delta
-          // Respawn at top when below camera
-          if (arr[i * 3 + 1] < camera.position.y - spread * 0.5) {
-            arr[i * 3] = camera.position.x + (Math.random() - 0.5) * spread
-            arr[i * 3 + 1] = camera.position.y + spread * 0.5 + Math.random() * spread * 0.5
-            arr[i * 3 + 2] = camera.position.z + (Math.random() - 0.5) * spread
-          }
-        }
-        // Scale particle size with distance
-        const mat = wp.material as THREE.PointsMaterial
-        mat.size = Math.max(0.4, cameraDistance * 0.003)
-        wp.position.set(0, 0, 0)
-        posAttr.needsUpdate = true
+      const activeCam = scene.activeCamera
+      if (activeCam && chunkManagerRef.current) {
+        chunkManagerRef.current.cullChunks(activeCam)
       }
 
-      renderer.render(scene, camera)
-    }
-    animate()
+      // Update weather particles — follow camera + fall, scale with distance
+      const wPositions = weatherPositionsRef.current
+      const wv = weatherVelocitiesRef.current
+      const wpMesh = weatherParticlesRef.current
+      if (wPositions && wv && wpMesh && activeCam) {
+        const camPos = activeCam.position
+        const cameraDistance = camPos.length()
+        const spread = Math.max(200, cameraDistance * 0.5)
+        const count = wv.length
+        for (let i = 0; i < count; i++) {
+          wPositions[i * 3 + 1] -= wv[i] * delta
+          // Respawn at top when below camera
+          if (wPositions[i * 3 + 1] < camPos.y - spread * 0.5) {
+            wPositions[i * 3] = camPos.x + (Math.random() - 0.5) * spread
+            wPositions[i * 3 + 1] = camPos.y + spread * 0.5 + Math.random() * spread * 0.5
+            wPositions[i * 3 + 2] = camPos.z + (Math.random() - 0.5) * spread
+          }
+        }
+        // Update vertex buffer
+        wpMesh.updateVerticesData(VertexBuffer.PositionKind, wPositions)
+        // Scale particle size with distance (adjust material point size if available)
+        const mat = wpMesh.material as StandardMaterial
+        if (mat) {
+          mat.pointSize = Math.max(2, cameraDistance * 0.02)
+        }
+      }
+
+      scene.render()
+    })
 
     // Resize
     function handleResize() {
-      if (!container) return
-      const w = container.clientWidth
-      const h = container.clientHeight
-      camera.aspect = w / h
-      camera.updateProjectionMatrix()
-      renderer.setSize(w, h)
+      engine.resize()
     }
     window.addEventListener('resize', handleResize)
 
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize)
-      cancelAnimationFrame(animFrameRef.current)
       fpController.dispose()
       chunkManager.dispose()
       objectManager.dispose()
@@ -475,51 +515,46 @@ export default function WorldViewport3D({
       lotManager.dispose()
       roadManager.dispose()
       wallManager.dispose()
-      controls.dispose()
-      renderer.dispose()
-      if (renderer.domElement.parentNode) {
-        renderer.domElement.parentNode.removeChild(renderer.domElement)
+      engine.stopRenderLoop()
+      scene.dispose()
+      engine.dispose()
+      if (canvas.parentNode) {
+        canvas.parentNode.removeChild(canvas)
       }
-      scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
-          obj.geometry?.dispose()
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m) => m.dispose())
-          } else {
-            obj.material?.dispose()
-          }
-        }
-      })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Saved orbit camera state for restoring when exiting first-person
-  const savedOrbitRef = useRef<{ pos: THREE.Vector3; target: THREE.Vector3 } | null>(null)
+  const savedOrbitRef = useRef<{ alpha: number; beta: number; radius: number; target: Vector3 } | null>(null)
 
   // ── Camera mode switching ─────────────────────────────────
   useEffect(() => {
-    const controls = controlsRef.current
-    const fpController = fpControllerRef.current
-    if (!controls || !fpController) return
-
     const camera = cameraRef.current
+    const fpCamera = fpCameraRef.current
+    const fpController = fpControllerRef.current
+    const scene = sceneRef.current
+    if (!camera || !fpCamera || !fpController || !scene) return
+
     const tr = terrainRef.current
 
     if (cameraMode === 'first-person') {
       // Save orbit state before switching
       savedOrbitRef.current = {
-        pos: camera ? camera.position.clone() : new THREE.Vector3(),
-        target: controls.target.clone(),
+        alpha: camera.alpha,
+        beta: camera.beta,
+        radius: camera.radius,
+        target: camera.target.clone(),
       }
 
-      controls.enabled = false
+      camera.detachControl()
+      scene.activeCamera = fpCamera
       fpController.bindEvents()
 
-      if (camera && tr) {
+      if (tr) {
         // Place camera at the orbit target (where user was looking) at ground level
-        const targetX = controls.target.x
-        const targetZ = controls.target.z
+        const targetX = camera.target.x
+        const targetZ = camera.target.z
 
         // Clamp to world bounds
         const worldSizeX = tr.size * tr.cellSize
@@ -541,33 +576,36 @@ export default function WorldViewport3D({
         const terrainY = (h00 + (h10 - h00) * fx) + ((h01 + (h11 - h01) * fx) - (h00 + (h10 - h00) * fx)) * fz
         const eyeHeight = 1.65
 
-        camera.position.set(px, terrainY + eyeHeight, pz)
+        fpCamera.position = new Vector3(px, terrainY + eyeHeight, pz)
         // Look forward along the direction from old camera to target (horizontal)
-        const lookDir = new THREE.Vector3(targetX - savedOrbitRef.current.pos.x, 0, targetZ - savedOrbitRef.current.pos.z)
-        if (lookDir.lengthSq() > 0.01) {
+        const orbitPos = camera.position
+        const lookDir = new Vector3(targetX - orbitPos.x, 0, targetZ - orbitPos.z)
+        if (lookDir.lengthSquared() > 0.01) {
           lookDir.normalize()
-          camera.lookAt(px + lookDir.x * 10, terrainY + eyeHeight, pz + lookDir.z * 10)
+          fpCamera.setTarget(new Vector3(px + lookDir.x * 10, terrainY + eyeHeight, pz + lookDir.z * 10))
         }
 
-        camera.fov = 110
-        camera.updateProjectionMatrix()
+        fpCamera.fov = 110 * Math.PI / 180
       }
     } else {
       fpController.resetShiftLock()
       fpController.unbindEvents()
-      controls.enabled = true
+      scene.activeCamera = camera
 
-      if (camera) {
-        // Restore saved orbit camera state
-        if (savedOrbitRef.current) {
-          camera.position.copy(savedOrbitRef.current.pos)
-          controls.target.copy(savedOrbitRef.current.target)
-          savedOrbitRef.current = null
-        }
-        camera.fov = 60
-        camera.updateProjectionMatrix()
-        controls.update()
+      const canvas = engineRef.current?.getRenderingCanvas()
+      if (canvas) {
+        camera.attachControl(canvas, true)
       }
+
+      // Restore saved orbit camera state
+      if (savedOrbitRef.current) {
+        camera.alpha = savedOrbitRef.current.alpha
+        camera.beta = savedOrbitRef.current.beta
+        camera.radius = savedOrbitRef.current.radius
+        camera.target = savedOrbitRef.current.target.clone()
+        savedOrbitRef.current = null
+      }
+      camera.fov = 60 * Math.PI / 180
     }
   }, [cameraMode])
 
@@ -582,20 +620,21 @@ export default function WorldViewport3D({
   // ── Reactive camera far plane and orbit distance ────
   useEffect(() => {
     const camera = cameraRef.current
-    const controls = controlsRef.current
-    if (!camera || !controls) return
+    const fpCamera = fpCameraRef.current
+    if (!camera) return
 
     const worldSize = Math.max(terrain.size, terrain.sizeZ) * terrain.cellSize
 
     if (cameraMode === 'first-person') {
       const fogFar = Math.max(600, Math.min(worldSize * 0.3, 2000))
-      camera.far = fogFar * 1.1
+      if (fpCamera) {
+        fpCamera.maxZ = fogFar * 1.1
+      }
     } else {
-      camera.far = Math.max(worldSize * 3, terrain.maxHeight * 6)
+      camera.maxZ = Math.max(worldSize * 3, terrain.maxHeight * 6)
     }
-    camera.updateProjectionMatrix()
 
-    controls.maxDistance = worldSize * 2
+    camera.upperRadiusLimit = worldSize * 2
   }, [terrain.size, terrain.sizeZ, terrain.cellSize, terrain.maxHeight, cameraMode])
 
   // ── Reset camera when terrain dimensions change (level navigation) ──
@@ -606,8 +645,7 @@ export default function WorldViewport3D({
     prevTerrainSizeRef.current = key
 
     const camera = cameraRef.current
-    const controls = controlsRef.current
-    if (!camera || !controls) return
+    if (!camera) return
 
     const worldSizeX = terrain.size * terrain.cellSize
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
@@ -615,51 +653,56 @@ export default function WorldViewport3D({
 
     const cx = worldSizeX * 0.5
     const cz = worldSizeZ * 0.5
-    const fovRad = (camera.fov * Math.PI) / 180
+    const fovRad = camera.fov // already in radians in Babylon
     const fitDistance = (worldSize / 2) / Math.tan(fovRad / 2)
     // Position at ~45-degree angle looking at terrain center
     const dist = fitDistance * 0.6
-    camera.position.set(cx + dist * 0.5, dist * 0.7, cz + dist * 0.5)
-    camera.near = Math.max(0.5, worldSize * 0.001)
-    camera.far = worldSize * 4
-    camera.updateProjectionMatrix()
+    camera.target = new Vector3(cx, 0, cz)
+    camera.radius = dist
+    camera.alpha = Math.PI / 4  // ~45 degrees azimuth
+    camera.beta = Math.PI / 4   // ~45 degrees from top
 
-    controls.target.set(cx, 0, cz)
-    controls.minDistance = Math.max(5, worldSize * 0.01)
-    controls.maxDistance = worldSize * 3
-    controls.update()
+    camera.minZ = Math.max(0.5, worldSize * 0.001)
+    camera.maxZ = worldSize * 4
+
+    camera.lowerRadiusLimit = Math.max(5, worldSize * 0.01)
+    camera.upperRadiusLimit = worldSize * 3
   }, [terrain.size, terrain.sizeZ, terrain.cellSize])
 
   // ── Camera preset handler ──────────────────────
   useEffect(() => {
-    if (!cameraPreset || !cameraRef.current || !controlsRef.current) return
+    if (!cameraPreset || !cameraRef.current) return
     const camera = cameraRef.current
-    const controls = controlsRef.current
     const worldSizeX = terrain.size * terrain.cellSize
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
     const worldSize = Math.max(worldSizeX, worldSizeZ)
     const cx = worldSizeX * 0.5
     const cz = worldSizeZ * 0.5
 
+    camera.target = new Vector3(cx, 0, cz)
+
     switch (cameraPreset) {
       case 'top':
-        camera.position.set(cx, worldSize * 0.8, cz)
-        controls.target.set(cx, 0, cz)
+        camera.alpha = 0
+        camera.beta = 0.01 // near-top-down
+        camera.radius = worldSize * 0.8
         break
       case 'front':
-        camera.position.set(cx, worldSize * 0.15, cz + worldSize * 0.6)
-        controls.target.set(cx, 0, cz)
+        camera.alpha = Math.PI / 2 // looking from +Z
+        camera.beta = Math.PI / 2 - 0.15 // near horizontal with slight elevation
+        camera.radius = worldSize * 0.6
         break
       case 'side':
-        camera.position.set(cx + worldSize * 0.6, worldSize * 0.15, cz)
-        controls.target.set(cx, 0, cz)
+        camera.alpha = 0 // looking from +X
+        camera.beta = Math.PI / 2 - 0.15
+        camera.radius = worldSize * 0.6
         break
       case 'perspective':
-        camera.position.set(cx + worldSize * 0.3, worldSize * 0.3, cz + worldSize * 0.3)
-        controls.target.set(cx, 0, cz)
+        camera.alpha = Math.PI / 4
+        camera.beta = Math.PI / 3
+        camera.radius = worldSize * 0.45
         break
     }
-    controls.update()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraPresetCounter])
 
@@ -713,24 +756,18 @@ export default function WorldViewport3D({
     const scene = sceneRef.current
     if (!scene) return
 
-    // Clean up old preview (may be a Group with children)
+    // Clean up old preview
     if (borderPreviewRef.current) {
-      borderPreviewRef.current.traverse(child => {
-        if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose()
-        if ((child as THREE.Mesh).material) {
-          const mat = (child as THREE.Mesh).material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material).dispose()
-        }
+      borderPreviewRef.current.getChildMeshes().forEach(child => {
+        child.dispose()
       })
-      scene.remove(borderPreviewRef.current)
+      borderPreviewRef.current.dispose()
       borderPreviewRef.current = null
     }
 
     if (borderDrawMode === 'drawing' && borderVertices.length > 0 && borderManagerRef.current) {
       const preview = borderManagerRef.current.renderPreview(borderVertices, null, terrain, borderColor)
       if (preview) {
-        scene.add(preview)
         borderPreviewRef.current = preview
       }
     }
@@ -743,37 +780,36 @@ export default function WorldViewport3D({
 
     // Clean up old outline
     if (boundaryOutlineRef.current) {
-      boundaryOutlineRef.current.geometry.dispose()
-      ;(boundaryOutlineRef.current.material as THREE.Material).dispose()
-      scene.remove(boundaryOutlineRef.current)
+      boundaryOutlineRef.current.dispose()
       boundaryOutlineRef.current = null
     }
 
     if (polygonBoundary && polygonBoundary.length >= 3) {
-      const points = polygonBoundary.map(v => {
+      const points: Vector3[] = polygonBoundary.map(v => {
         const gx = Math.floor(v.x / terrain.cellSize)
         const gz = Math.floor(v.z / terrain.cellSize)
         const idx = Math.max(0, Math.min(gz, terrain.sizeZ - 1)) * terrain.size + Math.max(0, Math.min(gx, terrain.size - 1))
         const y = (terrain.heights[idx] ?? 0) * terrain.maxHeight + 2
-        return new THREE.Vector3(v.x, y, v.z)
+        return new Vector3(v.x, y, v.z)
       })
       // Close the polygon
       points.push(points[0].clone())
 
-      const geo = new THREE.BufferGeometry().setFromPoints(points)
-      const mat = new THREE.LineDashedMaterial({
-        color: 0xff6b35,
+      const line = MeshBuilder.CreateDashedLines('boundary-outline', {
+        points,
         dashSize: 3,
         gapSize: 1.5,
-        opacity: 0.7,
-        transparent: true,
-        depthTest: false,
-      })
-      const line = new THREE.Line(geo, mat)
-      line.computeLineDistances()
-      line.renderOrder = 15
-      scene.add(line)
+        dashNb: points.length * 10,
+      }, scene)
+      line.color = new Color3(1, 0.42, 0.21)
+      line.renderingGroupId = 2
+      line.isPickable = false
       boundaryOutlineRef.current = line
+    }
+
+    // Pass polygon boundary to ChunkManager for terrain dimming
+    if (chunkManagerRef.current) {
+      chunkManagerRef.current.setPolygonBoundary(polygonBoundary && polygonBoundary.length >= 3 ? polygonBoundary : null)
     }
   }, [polygonBoundary, terrain])
 
@@ -802,22 +838,16 @@ export default function WorldViewport3D({
 
     // Clean up old preview
     if (roadPreviewRef.current) {
-      roadPreviewRef.current.traverse(child => {
-        if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose()
-        if ((child as THREE.Mesh).material) {
-          const mat = (child as THREE.Mesh).material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material).dispose()
-        }
+      roadPreviewRef.current.getChildMeshes().forEach(child => {
+        child.dispose()
       })
-      scene.remove(roadPreviewRef.current)
+      roadPreviewRef.current.dispose()
       roadPreviewRef.current = null
     }
 
     if (roadDrawMode === 'drawing' && roadWaypoints.length > 0 && roadManagerRef.current) {
       const preview = roadManagerRef.current.renderPreview(roadWaypoints, null, roadWidth, terrain)
       if (preview) {
-        scene.add(preview)
         roadPreviewRef.current = preview
       }
     }
@@ -848,17 +878,10 @@ export default function WorldViewport3D({
 
     // Remove old ghost
     if (ghostMeshRef.current) {
-      scene.remove(ghostMeshRef.current)
-      ghostMeshRef.current.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry?.dispose()
-          if (Array.isArray(child.material)) {
-            child.material.forEach((m) => m.dispose())
-          } else {
-            child.material?.dispose()
-          }
-        }
+      ghostMeshRef.current.getChildMeshes().forEach((child) => {
+        child.dispose()
       })
+      ghostMeshRef.current.dispose()
       ghostMeshRef.current = null
     }
 
@@ -866,18 +889,17 @@ export default function WorldViewport3D({
     if (activeTool === 'place-object' && selectedObjectType) {
       const entry = getCatalogEntry(selectedObjectType)
       if (entry) {
-        const ghost = entry.createMesh(entry.defaultColor)
-        ghost.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            const mat = child.material as THREE.Material & { transparent: boolean; opacity: number; depthWrite: boolean }
-            mat.transparent = true
-            mat.opacity = 0.5
-            mat.depthWrite = false
+        const ghost = entry.createMesh(entry.defaultColor, scene)
+        ghost.getChildMeshes().forEach((child) => {
+          if (child instanceof Mesh) {
+            const mat = child.material as StandardMaterial
+            if (mat) {
+              mat.alpha = 0.5
+              mat.disableDepthWrite = true
+            }
           }
         })
-        ghost.visible = false
-        ghost.renderOrder = 998
-        scene.add(ghost)
+        ghost.setEnabled(false)
         ghostMeshRef.current = ghost
       }
     }
@@ -888,13 +910,9 @@ export default function WorldViewport3D({
     const scene = sceneRef.current
     if (!scene) return
 
-    if (gridHelperRef.current) {
-      scene.remove(gridHelperRef.current)
-      gridHelperRef.current.geometry?.dispose()
-      if (gridHelperRef.current.material instanceof THREE.Material) {
-        gridHelperRef.current.material.dispose()
-      }
-      gridHelperRef.current = null
+    if (gridMeshRef.current) {
+      gridMeshRef.current.dispose()
+      gridMeshRef.current = null
     }
 
     if (showGrid) {
@@ -902,12 +920,38 @@ export default function WorldViewport3D({
       const worldSizeZ = terrain.sizeZ * terrain.cellSize
       const maxWorldSize = Math.max(worldSizeX, worldSizeZ)
       const maxCells = Math.min(Math.max(terrain.size, terrain.sizeZ), 64)
-      const grid = new THREE.GridHelper(maxWorldSize, maxCells, 0x444444, 0x333333)
-      grid.position.set(worldSizeX / 2, 0.05, worldSizeZ / 2)
-      grid.material.opacity = 0.15
-      grid.material.transparent = true
-      scene.add(grid)
-      gridHelperRef.current = grid
+      const step = maxWorldSize / maxCells
+
+      // Build grid lines manually
+      const points: Vector3[] = []
+      const halfX = worldSizeX / 2
+      const halfZ = worldSizeZ / 2
+
+      // Lines along X axis
+      for (let i = 0; i <= maxCells; i++) {
+        const z = i * step
+        points.push(new Vector3(0, 0.05, z))
+        points.push(new Vector3(worldSizeX, 0.05, z))
+      }
+      // Lines along Z axis
+      for (let i = 0; i <= maxCells; i++) {
+        const x = i * step
+        points.push(new Vector3(x, 0.05, 0))
+        points.push(new Vector3(x, 0.05, worldSizeZ))
+      }
+
+      const lineSegments: Vector3[][] = []
+      for (let i = 0; i < points.length; i += 2) {
+        lineSegments.push([points[i], points[i + 1]])
+      }
+
+      const grid = MeshBuilder.CreateLineSystem('grid-helper', {
+        lines: lineSegments,
+      }, scene)
+      grid.color = new Color3(0.2, 0.2, 0.2)
+      grid.alpha = 0.15
+      grid.isPickable = false
+      gridMeshRef.current = grid
     }
   }, [showGrid, terrain.size, terrain.sizeZ, terrain.cellSize])
 
@@ -917,9 +961,7 @@ export default function WorldViewport3D({
     if (!scene) return
 
     if (waterMeshRef.current) {
-      waterMeshRef.current.geometry.dispose()
-      ;(waterMeshRef.current.material as THREE.Material).dispose()
-      scene.remove(waterMeshRef.current)
+      waterMeshRef.current.dispose()
       waterMeshRef.current = null
     }
 
@@ -928,15 +970,19 @@ export default function WorldViewport3D({
       const worldSizeZ = terrain.sizeZ * terrain.cellSize
       // Water extends 5x beyond terrain edges to create an ocean effect
       const waterExtent = Math.max(worldSizeX, worldSizeZ) * 5
-      const waterGeo = new THREE.PlaneGeometry(waterExtent, waterExtent)
-      waterGeo.rotateX(-Math.PI / 2)
-      const waterMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(waterColor),
-      })
-      const waterMesh = new THREE.Mesh(waterGeo, waterMat)
-      waterMesh.position.set(worldSizeX / 2, terrain.seaLevel * terrain.maxHeight, worldSizeZ / 2)
-      waterMesh.userData.isWater = true
-      scene.add(waterMesh)
+      const waterMesh = MeshBuilder.CreateGround('water-plane', {
+        width: waterExtent,
+        height: waterExtent,
+      }, scene)
+      const waterMat = new StandardMaterial('water-mat', scene)
+      waterMat.diffuseColor = Color3.FromHexString(waterColor)
+      waterMat.specularColor = new Color3(0.3, 0.3, 0.35)
+      waterMat.specularPower = 64
+      waterMat.alpha = 0.85
+      waterMesh.material = waterMat
+      waterMesh.position = new Vector3(worldSizeX / 2, terrain.seaLevel * terrain.maxHeight, worldSizeZ / 2)
+      waterMesh.metadata = { isWater: true }
+      waterMesh.isPickable = false
       waterMeshRef.current = waterMesh
     }
   }, [showWater, terrain.seaLevel, terrain.maxHeight, terrain.size, terrain.sizeZ, terrain.cellSize, waterColor])
@@ -948,9 +994,7 @@ export default function WorldViewport3D({
 
     // Clean up old boundary
     if (boundaryLineRef.current) {
-      boundaryLineRef.current.geometry.dispose()
-      ;(boundaryLineRef.current.material as THREE.Material).dispose()
-      scene.remove(boundaryLineRef.current)
+      boundaryLineRef.current.dispose()
       boundaryLineRef.current = null
     }
 
@@ -960,24 +1004,22 @@ export default function WorldViewport3D({
     const borderY = Math.max(waterY + 0.5, 1)
 
     const points = [
-      new THREE.Vector3(0, borderY, 0),
-      new THREE.Vector3(worldSizeX, borderY, 0),
-      new THREE.Vector3(worldSizeX, borderY, worldSizeZ),
-      new THREE.Vector3(0, borderY, worldSizeZ),
-      new THREE.Vector3(0, borderY, 0),
+      new Vector3(0, borderY, 0),
+      new Vector3(worldSizeX, borderY, 0),
+      new Vector3(worldSizeX, borderY, worldSizeZ),
+      new Vector3(0, borderY, worldSizeZ),
+      new Vector3(0, borderY, 0),
     ]
 
-    const geo = new THREE.BufferGeometry().setFromPoints(points)
-    const mat = new THREE.LineDashedMaterial({
-      color: 0xff8800,
+    const line = MeshBuilder.CreateDashedLines('boundary-line', {
+      points,
       dashSize: 4,
       gapSize: 2,
-      opacity: 0.7,
-      transparent: true,
-    })
-    const line = new THREE.Line(geo, mat)
-    line.computeLineDistances()
-    scene.add(line)
+      dashNb: 100,
+    }, scene)
+    line.color = new Color3(1, 0.533, 0) // #ff8800
+    line.alpha = 0.7
+    line.isPickable = false
     boundaryLineRef.current = line
   }, [terrain.size, terrain.sizeZ, terrain.cellSize, terrain.seaLevel, terrain.maxHeight])
 
@@ -988,27 +1030,25 @@ export default function WorldViewport3D({
 
     // Clean up old region outlines
     if (regionGroupRef.current) {
-      scene.remove(regionGroupRef.current)
-      regionGroupRef.current.traverse((child) => {
-        if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose()
-        if ((child as THREE.Mesh).material) {
-          const mat = (child as THREE.Mesh).material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material).dispose()
-        }
+      regionGroupRef.current.getChildMeshes().forEach((child) => {
+        child.dispose()
       })
+      // Also dispose child TransformNodes (labels, etc.)
+      regionGroupRef.current.getChildren().forEach((child) => {
+        child.dispose()
+      })
+      regionGroupRef.current.dispose()
       regionGroupRef.current = null
     }
 
     if (!childRegions || childRegions.length === 0) return
 
-    const group = new THREE.Group()
-    group.name = 'childRegions'
+    const group = new TransformNode('childRegions', scene)
     const cs = terrain.cellSize
 
     for (const region of childRegions) {
       const b = region.bounds
-      const color = new THREE.Color(region.color || '#44aaff')
+      const color = Color3.FromHexString(region.color || '#44aaff')
 
       // Compute average height within bounds for Y position
       let avgH = 0
@@ -1025,11 +1065,11 @@ export default function WorldViewport3D({
 
       // Use polygon vertices if available, otherwise fall back to rectangular bounds
       const polyVerts = region.polygonVertices
-      let outlinePoints: THREE.Vector3[]
+      let outlinePoints: Vector3[]
 
       if (polyVerts && polyVerts.length >= 3) {
         // Polygon outline from border vertices (already in world coords)
-        outlinePoints = polyVerts.map(v => new THREE.Vector3(v.x, baseY, v.z))
+        outlinePoints = polyVerts.map(v => new Vector3(v.x, baseY, v.z))
         outlinePoints.push(outlinePoints[0].clone()) // close loop
       } else {
         // Rectangular outline from bounds
@@ -1038,75 +1078,80 @@ export default function WorldViewport3D({
         const x1 = (b.startX + b.width) * cs
         const z1 = (b.startZ + b.depth) * cs
         outlinePoints = [
-          new THREE.Vector3(x0, baseY, z0),
-          new THREE.Vector3(x1, baseY, z0),
-          new THREE.Vector3(x1, baseY, z1),
-          new THREE.Vector3(x0, baseY, z1),
-          new THREE.Vector3(x0, baseY, z0),
+          new Vector3(x0, baseY, z0),
+          new Vector3(x1, baseY, z0),
+          new Vector3(x1, baseY, z1),
+          new Vector3(x0, baseY, z1),
+          new Vector3(x0, baseY, z0),
         ]
       }
 
-      const outlineGeo = new THREE.BufferGeometry().setFromPoints(outlinePoints)
-      const outlineMat = new THREE.LineDashedMaterial({
-        color,
+      const outlineLine = MeshBuilder.CreateDashedLines(`region-outline-${region.id}`, {
+        points: outlinePoints,
         dashSize: 2,
         gapSize: 1,
-        opacity: 0.9,
-        transparent: true,
-        linewidth: 2,
-      })
-      const outlineLine = new THREE.Line(outlineGeo, outlineMat)
-      outlineLine.computeLineDistances()
-      outlineLine.renderOrder = 10
-      outlineLine.userData.regionId = region.id
-      group.add(outlineLine)
+        dashNb: outlinePoints.length * 10,
+      }, scene)
+      outlineLine.color = color
+      outlineLine.alpha = 0.9
+      outlineLine.renderingGroupId = 2
+      outlineLine.metadata = { regionId: region.id }
+      outlineLine.isPickable = false
+      outlineLine.parent = group
 
       // Semi-transparent fill
       if (polyVerts && polyVerts.length >= 3) {
-        // Polygon fill using ShapeGeometry
-        const shape = new THREE.Shape()
-        shape.moveTo(polyVerts[0].x, polyVerts[0].z)
-        for (let i = 1; i < polyVerts.length; i++) {
-          shape.lineTo(polyVerts[i].x, polyVerts[i].z)
+        // Create a polygon fill from vertices on the XZ plane
+        // Build indices for a triangle fan from the polygon
+        const positions: number[] = []
+        const indices: number[] = []
+        for (let i = 0; i < polyVerts.length; i++) {
+          positions.push(polyVerts[i].x, baseY - 0.1, polyVerts[i].z)
         }
-        shape.closePath()
-        const fillGeo = new THREE.ShapeGeometry(shape)
-        // ShapeGeometry is in XY plane, rotate to XZ
-        fillGeo.rotateX(-Math.PI / 2)
-        const fillMat = new THREE.MeshBasicMaterial({
-          color,
-          transparent: true,
-          opacity: 0.08,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-        })
-        const fillMesh = new THREE.Mesh(fillGeo, fillMat)
-        fillMesh.position.y = baseY - 0.1
-        fillMesh.renderOrder = 9
-        fillMesh.userData.regionId = region.id
-        group.add(fillMesh)
+        // Triangle fan from vertex 0
+        for (let i = 1; i < polyVerts.length - 1; i++) {
+          indices.push(0, i, i + 1)
+        }
+        const fillMesh = new Mesh(`region-fill-${region.id}`, scene)
+        const vertexData = new VertexData()
+        vertexData.positions = positions
+        vertexData.indices = indices
+        vertexData.applyToMesh(fillMesh)
+        const fillMat = new StandardMaterial(`region-fill-mat-${region.id}`, scene)
+        fillMat.diffuseColor = color
+        fillMat.alpha = 0.08
+        fillMat.backFaceCulling = false
+        fillMat.disableDepthWrite = true
+        fillMat.disableLighting = true
+        fillMesh.material = fillMat
+        fillMesh.renderingGroupId = 1
+        fillMesh.metadata = { regionId: region.id }
+        fillMesh.isPickable = false
+        fillMesh.parent = group
       } else {
         const x0 = b.startX * cs
         const z0 = b.startZ * cs
         const x1 = (b.startX + b.width) * cs
         const z1 = (b.startZ + b.depth) * cs
-        const fillGeo = new THREE.PlaneGeometry(b.width * cs, b.depth * cs)
-        fillGeo.rotateX(-Math.PI / 2)
-        const fillMat = new THREE.MeshBasicMaterial({
-          color,
-          transparent: true,
-          opacity: 0.08,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-        })
-        const fillMesh = new THREE.Mesh(fillGeo, fillMat)
-        fillMesh.position.set((x0 + x1) / 2, baseY - 0.1, (z0 + z1) / 2)
-        fillMesh.renderOrder = 9
-        fillMesh.userData.regionId = region.id
-        group.add(fillMesh)
+        const fillMesh = MeshBuilder.CreateGround(`region-fill-${region.id}`, {
+          width: b.width * cs,
+          height: b.depth * cs,
+        }, scene)
+        const fillMat = new StandardMaterial(`region-fill-mat-${region.id}`, scene)
+        fillMat.diffuseColor = color
+        fillMat.alpha = 0.08
+        fillMat.backFaceCulling = false
+        fillMat.disableDepthWrite = true
+        fillMat.disableLighting = true
+        fillMesh.material = fillMat
+        fillMesh.position = new Vector3((x0 + x1) / 2, baseY - 0.1, (z0 + z1) / 2)
+        fillMesh.renderingGroupId = 1
+        fillMesh.metadata = { regionId: region.id }
+        fillMesh.isPickable = false
+        fillMesh.parent = group
       }
 
-      // Label (text sprite) — compute centroid from polygon or bounds center
+      // Label (billboard text) — compute centroid from polygon or bounds center
       let labelX: number, labelZ: number
       if (polyVerts && polyVerts.length >= 3) {
         labelX = polyVerts.reduce((s, v) => s + v.x, 0) / polyVerts.length
@@ -1115,27 +1160,38 @@ export default function WorldViewport3D({
         labelX = (b.startX + b.width / 2) * cs
         labelZ = (b.startZ + b.depth / 2) * cs
       }
-      const canvas = document.createElement('canvas')
-      canvas.width = 256
-      canvas.height = 64
-      const ctx = canvas.getContext('2d')
-      if (ctx) {
-        ctx.fillStyle = `#${color.getHexString()}`
-        ctx.font = 'bold 28px sans-serif'
-        ctx.textAlign = 'center'
-        ctx.fillText(region.name, 128, 40)
 
-        const texture = new THREE.CanvasTexture(canvas)
-        const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.85 })
-        const sprite = new THREE.Sprite(labelMat)
-        sprite.position.set(labelX, baseY + 5, labelZ)
-        sprite.scale.set(b.width * cs * 0.5, b.width * cs * 0.125, 1)
-        sprite.userData.regionId = region.id
-        group.add(sprite)
-      }
+      // Create a billboard label using DynamicTexture on a plane
+      const labelWidth = b.width * cs * 0.5
+      const labelHeight = b.width * cs * 0.125
+      const dtRes = 256
+      const dt = new DynamicTexture(`region-label-tex-${region.id}`, { width: dtRes, height: 64 }, scene, false)
+      const dtCtx = dt.getContext() as unknown as CanvasRenderingContext2D
+      dtCtx.fillStyle = `rgb(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)})`
+      dtCtx.font = 'bold 28px sans-serif'
+      dtCtx.textAlign = 'center'
+      dtCtx.fillText(region.name, dtRes / 2, 40)
+      dt.update()
+
+      const labelPlane = MeshBuilder.CreatePlane(`region-label-${region.id}`, {
+        width: labelWidth,
+        height: labelHeight,
+      }, scene)
+      const labelMat = new StandardMaterial(`region-label-mat-${region.id}`, scene)
+      labelMat.diffuseTexture = dt
+      labelMat.diffuseTexture.hasAlpha = true
+      labelMat.useAlphaFromDiffuseTexture = true
+      labelMat.alpha = 0.85
+      labelMat.disableLighting = true
+      labelMat.backFaceCulling = false
+      labelPlane.material = labelMat
+      labelPlane.position = new Vector3(labelX, baseY + 5, labelZ)
+      labelPlane.billboardMode = Mesh.BILLBOARDMODE_ALL
+      labelPlane.metadata = { regionId: region.id }
+      labelPlane.isPickable = false
+      labelPlane.parent = group
     }
 
-    scene.add(group)
     regionGroupRef.current = group
   }, [childRegions, terrain.cellSize, terrain.size, terrain.sizeZ, terrain.heights, terrain.maxHeight])
 
@@ -1152,13 +1208,15 @@ export default function WorldViewport3D({
     const azRad = sunAngle * Math.PI / 180
     const elRad = sunElevation * Math.PI / 180
 
-    sun.position.set(
-      worldSizeX * 0.5 + distance * Math.cos(azRad) * Math.cos(elRad),
-      distance * Math.sin(elRad),
-      worldSizeZ * 0.5 + distance * Math.sin(azRad) * Math.cos(elRad)
-    )
-    sun.target.position.set(worldSizeX * 0.5, 0, worldSizeZ * 0.5)
-    sun.target.updateMatrixWorld()
+    const sunPosX = worldSizeX * 0.5 + distance * Math.cos(azRad) * Math.cos(elRad)
+    const sunPosY = distance * Math.sin(elRad)
+    const sunPosZ = worldSizeZ * 0.5 + distance * Math.sin(azRad) * Math.cos(elRad)
+    sun.position = new Vector3(sunPosX, sunPosY, sunPosZ)
+
+    // Direction from sun to terrain center
+    const targetX = worldSizeX * 0.5
+    const targetZ = worldSizeZ * 0.5
+    sun.direction = new Vector3(targetX - sunPosX, -sunPosY, targetZ - sunPosZ).normalize()
 
     // Adjust intensity based on elevation (lower sun = dimmer, warmer)
     const normalizedEl = sunElevation / 90 // 0 at horizon, 1 at zenith
@@ -1169,18 +1227,18 @@ export default function WorldViewport3D({
 
     // Warm color at low elevation, white at high
     const warmth = 1 - normalizedEl
-    sun.color.setRGB(1, 1 - warmth * 0.15, 1 - warmth * 0.35)
+    sun.diffuse = new Color3(1, 1 - warmth * 0.15, 1 - warmth * 0.35)
 
     // Update terrain chunk shader light direction
-    const lightDir = sun.position.clone().sub(new THREE.Vector3(worldSizeX * 0.5, 0, worldSizeZ * 0.5)).normalize()
+    const lightDir = new Vector3(sunPosX - targetX, sunPosY, sunPosZ - targetZ).normalize()
     chunkManagerRef.current?.updateLightDirection(lightDir)
   }, [sunAngle, sunElevation, terrain.size, terrain.sizeZ, terrain.cellSize])
 
   // ── Sky color effect ────────────────────────────────────────
   useEffect(() => {
     if (!sceneRef.current) return
-    const color = new THREE.Color(skyColor)
-    sceneRef.current.background = color
+    const c = Color3.FromHexString(skyColor)
+    sceneRef.current.clearColor = new Color4(c.r, c.g, c.b, 1)
   }, [skyColor])
 
   // ── Fog effect ──────────────────────────────────────────────
@@ -1189,21 +1247,26 @@ export default function WorldViewport3D({
     if (!scene) return
 
     if (!fogEnabled) {
-      scene.fog = null
+      scene.fogMode = Scene.FOGMODE_NONE
       return
     }
 
     const worldSize = Math.max(terrain.size, terrain.sizeZ) * terrain.cellSize
-    const fogColor = new THREE.Color(skyColor)
+    const fogColor = Color3.FromHexString(skyColor)
+    scene.fogColor = fogColor
 
     if (cameraMode === 'first-person') {
       const fogNear = Math.max(150, Math.min(worldSize * 0.08, 500))
       const fogFar = Math.max(600, Math.min(worldSize * 0.3, 2000))
-      scene.fog = new THREE.Fog(fogColor, fogNear, fogFar)
+      scene.fogMode = Scene.FOGMODE_LINEAR
+      scene.fogStart = fogNear
+      scene.fogEnd = fogFar
     } else {
       const fogNear = worldSize * 0.4
       const fogFar = worldSize * 1.2
-      scene.fog = new THREE.Fog(fogColor, fogNear, fogFar)
+      scene.fogMode = Scene.FOGMODE_LINEAR
+      scene.fogStart = fogNear
+      scene.fogEnd = fogFar
     }
   }, [fogEnabled, skyColor, weatherType, cameraMode, terrain.size, terrain.sizeZ, terrain.cellSize])
 
@@ -1214,11 +1277,10 @@ export default function WorldViewport3D({
 
     // Clean up old particles
     if (weatherParticlesRef.current) {
-      scene.remove(weatherParticlesRef.current)
-      weatherParticlesRef.current.geometry.dispose()
-      ;(weatherParticlesRef.current.material as THREE.Material).dispose()
+      weatherParticlesRef.current.dispose()
       weatherParticlesRef.current = null
       weatherVelocitiesRef.current = null
+      weatherPositionsRef.current = null
     }
 
     if (weatherType === 'clear' || weatherType === 'cloudy') return
@@ -1237,22 +1299,30 @@ export default function WorldViewport3D({
         : 3 + Math.random() * 3
     }
 
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    // Create point cloud mesh using raw vertex data
+    const pointMesh = new Mesh('weather-particles', scene)
+    const vertexData = new VertexData()
+    vertexData.positions = positions
+    // Create indices for points (each vertex is a point)
+    const indices = new Uint32Array(count)
+    for (let i = 0; i < count; i++) indices[i] = i
+    vertexData.indices = Array.from(indices)
+    vertexData.applyToMesh(pointMesh)
 
-    const material = new THREE.PointsMaterial({
-      color: weatherType === 'rain' ? 0xaaccff : 0xffffff,
-      size: weatherType === 'rain' ? 0.4 : 1.5,
-      transparent: true,
-      opacity: weatherType === 'rain' ? 0.6 : 0.8,
-      depthWrite: false,
-    })
+    const mat = new StandardMaterial('weather-mat', scene)
+    mat.disableLighting = true
+    mat.diffuseColor = weatherType === 'rain'
+      ? Color3.FromHexString('#aaccff')
+      : Color3.White()
+    mat.alpha = weatherType === 'rain' ? 0.6 : 0.8
+    mat.disableDepthWrite = true
+    mat.pointSize = weatherType === 'rain' ? 2 : 4
+    mat.pointsCloud = true
+    pointMesh.material = mat
 
-    const points = new THREE.Points(geometry, material)
-    points.name = 'weather-particles'
-    scene.add(points)
-    weatherParticlesRef.current = points
+    weatherParticlesRef.current = pointMesh
     weatherVelocitiesRef.current = velocities
+    weatherPositionsRef.current = new Float32Array(positions)
   }, [weatherType])
 
   // ── Weather: cloudy dims sun + tints sky ────────────────────
@@ -1267,17 +1337,18 @@ export default function WorldViewport3D({
       if (ambient) ambient.intensity = (0.3 + normalizedEl * 0.3) * 0.7
       // Tint scene background towards grey
       if (scene) {
-        const base = new THREE.Color(skyColor)
-        const grey = new THREE.Color(0x8a8a8a)
-        base.lerp(grey, 0.4)
-        scene.background = base
+        const base = Color3.FromHexString(skyColor)
+        const grey = new Color3(0.541, 0.541, 0.541) // #8a8a8a
+        const lerped = Color3.Lerp(base, grey, 0.4)
+        scene.clearColor = new Color4(lerped.r, lerped.g, lerped.b, 1)
       }
     } else {
       sun.intensity = 0.4 + normalizedEl * 0.6
       if (ambient) ambient.intensity = 0.3 + normalizedEl * 0.3
       // Restore original sky color
       if (scene) {
-        scene.background = new THREE.Color(skyColor)
+        const c = Color3.FromHexString(skyColor)
+        scene.clearColor = new Color4(c.r, c.g, c.b, 1)
       }
     }
   }, [weatherType, sunElevation, skyColor])
@@ -1289,65 +1360,92 @@ export default function WorldViewport3D({
     const size = activeTool === 'paint-material'
       ? materialBrush.size * terrain.cellSize
       : sculptBrush.size * terrain.cellSize
-    cursor.scale.set(size, size, size)
+    cursor.scaling = new Vector3(size, size, size)
   }, [activeTool, sculptBrush.size, materialBrush.size, terrain.cellSize])
 
   // ── Mouse interaction ─────────────────────────────────────
-  const updateMouseNDC = useCallback((e: MouseEvent) => {
+  const updateMouseScreen = useCallback((e: MouseEvent) => {
     const container = containerRef.current
     if (!container) return
     const rect = container.getBoundingClientRect()
-    mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-    mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
-  }, [])
-
-  // Cached center vector for first-person raycasting (avoid per-call allocation)
-  const centerNDCRef = useRef(new THREE.Vector2(0, 0))
-
-  /** Set raycaster from either mouse position (orbit) or screen center (first-person) */
-  const setupRaycaster = useCallback(() => {
-    const camera = cameraRef.current
-    if (!camera) return
-    // FP + pointer locked: raycast from crosshair (center)
-    // FP + not locked (trackpad drag): raycast from mouse position
-    if (cameraModeRef.current === 'first-person' && fpControllerRef.current?.isLocked()) {
-      raycasterRef.current.setFromCamera(centerNDCRef.current, camera)
-    } else {
-      raycasterRef.current.setFromCamera(mouseRef.current, camera)
+    mouseScreenRef.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
     }
   }, [])
 
-  const raycastTerrain = useCallback((): THREE.Vector3 | null => {
-    const camera = cameraRef.current
+  /** Raycast terrain using scene.pick or crosshair center for first-person */
+  const raycastTerrain = useCallback((): Vector3 | null => {
+    const scene = sceneRef.current
+    const engine = engineRef.current
+    if (!scene || !engine) return null
+
     const chunkMgr = chunkManagerRef.current
-    if (!camera || !chunkMgr) return null
+    if (!chunkMgr) return null
 
-    setupRaycaster()
-    const hits = raycasterRef.current.intersectObjects(chunkMgr.getChunkMeshes(), false)
-    if (hits.length > 0) {
-      return hits[0].point
+    const chunkMeshes = chunkMgr.getChunkMeshes()
+    const chunkSet = new Set<AbstractMesh>(chunkMeshes)
+
+    let pickX: number
+    let pickY: number
+
+    if (cameraModeRef.current === 'first-person' && fpControllerRef.current?.isLocked()) {
+      // FP + pointer locked: raycast from crosshair (center)
+      const canvas = engine.getRenderingCanvas()
+      if (!canvas) return null
+      pickX = canvas.width / 2
+      pickY = canvas.height / 2
+    } else {
+      pickX = mouseScreenRef.current.x
+      pickY = mouseScreenRef.current.y
     }
+
+    const pickResult = scene.pick(pickX, pickY, (mesh) => chunkSet.has(mesh))
+
+    if (pickResult && pickResult.hit && pickResult.pickedPoint) {
+      return pickResult.pickedPoint
+    }
+
     // Fallback: intersect ground plane at y=0 so clicks always register
-    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
-    const target = new THREE.Vector3()
-    const hit = raycasterRef.current.ray.intersectPlane(groundPlane, target)
-    return hit
-  }, [setupRaycaster])
-
-  const raycastObjects = useCallback((): { objectId: string; point: THREE.Vector3 } | null => {
-    const camera = cameraRef.current
-    const objMgr = objectManagerRef.current
-    if (!camera || !objMgr) return null
-
-    setupRaycaster()
-    const pickables = objMgr.getPickableMeshes()
-    const hits = raycasterRef.current.intersectObjects(pickables, false)
-    if (hits.length > 0) {
-      const id = objMgr.findObjectIdFromIntersection(hits[0])
-      if (id) return { objectId: id, point: hits[0].point }
+    const ray = scene.createPickingRay(pickX, pickY, Matrix.Identity(), scene.activeCamera)
+    const groundPlane = new Plane(0, 1, 0, 0)
+    const dist = ray.intersectsPlane(groundPlane)
+    if (dist !== null && dist >= 0) {
+      return ray.origin.add(ray.direction.scale(dist))
     }
     return null
-  }, [setupRaycaster])
+  }, [])
+
+  const raycastObjects = useCallback((): { objectId: string; point: Vector3 } | null => {
+    const scene = sceneRef.current
+    const engine = engineRef.current
+    const objMgr = objectManagerRef.current
+    if (!scene || !engine || !objMgr) return null
+
+    const pickables = objMgr.getPickableMeshes()
+    const pickableSet = new Set<AbstractMesh>(pickables)
+
+    let pickX: number
+    let pickY: number
+
+    if (cameraModeRef.current === 'first-person' && fpControllerRef.current?.isLocked()) {
+      const canvas = engine.getRenderingCanvas()
+      if (!canvas) return null
+      pickX = canvas.width / 2
+      pickY = canvas.height / 2
+    } else {
+      pickX = mouseScreenRef.current.x
+      pickY = mouseScreenRef.current.y
+    }
+
+    const pickResult = scene.pick(pickX, pickY, (mesh) => pickableSet.has(mesh))
+
+    if (pickResult && pickResult.hit && pickResult.pickedPoint) {
+      const id = objMgr.findObjectIdFromPick(pickResult)
+      if (id) return { objectId: id, point: pickResult.pickedPoint }
+    }
+    return null
+  }, [])
 
   const handleBrushStroke = useCallback(() => {
     const point = raycastTerrain()
@@ -1386,10 +1484,8 @@ export default function WorldViewport3D({
     const container = containerRef.current
     if (!container) return
 
-    // Throttle timestamps — raycast + state updates are expensive
-    let lastRaycastTime = 0
+    // Throttle timestamp — React state updates are expensive
     let lastCursorStateTime = 0
-    const RAYCAST_INTERVAL = 33   // ~30fps for raycasts
     const STATE_INTERVAL = 200    // ~5fps for React state updates
 
     const handleMouseDown = (e: MouseEvent) => {
@@ -1397,7 +1493,7 @@ export default function WorldViewport3D({
       const tool = activeToolRef.current
 
       if (tool === 'sculpt' || tool === 'paint-material') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         isPaintingRef.current = true
         lastPaintTimeRef.current = 0
         handleBrushStroke()
@@ -1405,7 +1501,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'place-object') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           onObjectPlaceRef.current([point.x, point.y, point.z])
@@ -1414,17 +1510,15 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'select') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const objHit = raycastObjects()
         if (objHit) {
           const additive = e.shiftKey || e.ctrlKey || e.metaKey
           onObjectSelectRef.current(objHit.objectId, additive)
           isDraggingObjectRef.current = true
           dragObjectIdRef.current = objHit.objectId
-          dragPlaneRef.current.setFromNormalAndCoplanarPoint(
-            new THREE.Vector3(0, 1, 0),
-            objHit.point
-          )
+          // Set drag plane from hit point (horizontal plane through the point)
+          dragPlaneRef.current = new Plane(0, 1, 0, -objHit.point.y)
         } else {
           // Click on empty space — start marquee tracking
           isMarqueeRef.current = true
@@ -1437,7 +1531,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'delete') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const objHit = raycastObjects()
         if (objHit) {
           onObjectSelectRef.current(objHit.objectId, false)
@@ -1446,7 +1540,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'define-region') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           // Check if click is inside an existing region (for double-click enter)
@@ -1482,7 +1576,7 @@ export default function WorldViewport3D({
 
       // ── New tool handlers ────────────────────────
       if (tool === 'draw-border') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           onBorderClickRef.current?.([point.x, point.y, point.z])
@@ -1491,7 +1585,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'draw-lot') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           // Check for lot click/double-click
@@ -1505,7 +1599,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'draw-road') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           onRoadClickRef.current?.([point.x, point.y, point.z])
@@ -1514,7 +1608,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'place-wall') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           onWallClickRef.current?.([point.x, point.y, point.z])
@@ -1523,7 +1617,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'place-door') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           onWallClickRef.current?.([point.x, point.y, point.z])
@@ -1532,7 +1626,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'paint-floor') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         isPaintingRef.current = true
         const point = raycastTerrain()
         if (point) {
@@ -1542,7 +1636,7 @@ export default function WorldViewport3D({
       }
 
       if (tool === 'place-furniture') {
-        updateMouseNDC(e)
+        updateMouseScreen(e)
         const point = raycastTerrain()
         if (point) {
           onFurniturePlaceRef.current?.([point.x, point.y, point.z])
@@ -1552,7 +1646,7 @@ export default function WorldViewport3D({
     }
 
     const handleMouseMove = (e: MouseEvent) => {
-      updateMouseNDC(e)
+      updateMouseScreen(e)
 
       // Marquee select tracking
       if (isMarqueeRef.current && activeToolRef.current === 'select') {
@@ -1572,11 +1666,19 @@ export default function WorldViewport3D({
 
       // Object dragging — needs responsive feel, but throttle terrain snap
       if (isDraggingObjectRef.current && dragObjectIdRef.current && activeToolRef.current === 'select') {
-        const camera = cameraRef.current
-        if (camera) {
-          raycasterRef.current.setFromCamera(mouseRef.current, camera)
-          const intersectPoint = new THREE.Vector3()
-          if (raycasterRef.current.ray.intersectPlane(dragPlaneRef.current, intersectPoint)) {
+        const scene = sceneRef.current
+        const engine = engineRef.current
+        if (scene && engine) {
+          const ray = scene.createPickingRay(
+            mouseScreenRef.current.x,
+            mouseScreenRef.current.y,
+            Matrix.Identity(),
+            scene.activeCamera
+          )
+          const plane = dragPlaneRef.current
+          const dist = ray.intersectsPlane(plane)
+          if (dist !== null && dist >= 0) {
+            const intersectPoint = ray.origin.add(ray.direction.scale(dist))
             const pos: [number, number, number] = [intersectPoint.x, intersectPoint.y, intersectPoint.z]
             dragLastPosRef.current = pos
             onObjectMoveRef.current(dragObjectIdRef.current!, pos)
@@ -1586,29 +1688,26 @@ export default function WorldViewport3D({
       }
 
       const now = performance.now()
-
-      // Throttle raycasts — this is the expensive operation
-      if (now - lastRaycastTime < RAYCAST_INTERVAL) return
-      lastRaycastTime = now
-
       const tool = activeToolRef.current
+
+      // Always raycast for ghost/cursor preview — keeps them responsive
       const point = raycastTerrain()
 
       if (point) {
-        // Update Three.js objects directly (cheap, no React)
+        // Update Babylon.js objects directly (cheap, no React)
         const cursor = brushCursorRef.current
         if (cursor) {
           const showCursor = tool === 'sculpt' || tool === 'paint-material'
-          cursor.visible = showCursor
+          cursor.setEnabled(showCursor)
           if (showCursor) {
-            cursor.position.set(point.x, point.y + 0.2, point.z)
+            cursor.position = new Vector3(point.x, point.y + 0.2, point.z)
           }
         }
 
         const ghost = ghostMeshRef.current
         if (ghost && tool === 'place-object') {
-          ghost.visible = true
-          ghost.position.set(point.x, point.y, point.z)
+          ghost.setEnabled(true)
+          ghost.position = new Vector3(point.x, point.y, point.z)
         }
 
         // Throttle React state updates separately (causes full page re-render)
@@ -1619,15 +1718,15 @@ export default function WorldViewport3D({
           onCursorMove([point.x, point.y, point.z], grid)
         }
       } else {
-        if (brushCursorRef.current) brushCursorRef.current.visible = false
-        if (ghostMeshRef.current) ghostMeshRef.current.visible = false
+        if (brushCursorRef.current) brushCursorRef.current.setEnabled(false)
+        if (ghostMeshRef.current) ghostMeshRef.current.setEnabled(false)
         if (now - lastCursorStateTime > STATE_INTERVAL) {
           lastCursorStateTime = now
           onCursorMove(null, null)
         }
       }
 
-      // Continuous painting
+      // Continuous painting (throttled)
       if (isPaintingRef.current) {
         if (now - lastPaintTimeRef.current > 50) {
           lastPaintTimeRef.current = now
@@ -1649,17 +1748,26 @@ export default function WorldViewport3D({
         if (mw > 5 || mh > 5) {
           const rect = { x: mx, y: my, w: mw, h: mh }
           // Project all object positions to screen and select those within rect
-          const camera = cameraRef.current
+          const scene = sceneRef.current
+          const engine = engineRef.current
           const objectManager = objectManagerRef.current
-          if (camera && objectManager && container) {
+          const activeCam = scene?.activeCamera
+          if (scene && engine && objectManager && activeCam && container) {
             const containerRect = container.getBoundingClientRect()
             const selectedIds: string[] = []
             const objs = objectsRef.current
+            const viewportWidth = containerRect.width
+            const viewportHeight = containerRect.height
             for (const obj of objs) {
-              const pos = new THREE.Vector3(obj.position[0], obj.position[1], obj.position[2])
-              pos.project(camera)
-              const sx = (pos.x * 0.5 + 0.5) * containerRect.width
-              const sy = (-pos.y * 0.5 + 0.5) * containerRect.height
+              const pos = new Vector3(obj.position[0], obj.position[1], obj.position[2])
+              const projected = Vector3.Project(
+                pos,
+                Matrix.Identity(),
+                scene.getTransformMatrix(),
+                new Viewport(0, 0, viewportWidth, viewportHeight)
+              )
+              const sx = projected.x
+              const sy = projected.y
               if (sx >= rect.x && sx <= rect.x + rect.w && sy >= rect.y && sy <= rect.y + rect.h) {
                 selectedIds.push(obj.id)
               }
@@ -1691,8 +1799,8 @@ export default function WorldViewport3D({
     const handleMouseLeave = () => {
       isMarqueeRef.current = false
       setMarqueeRect(null)
-      if (brushCursorRef.current) brushCursorRef.current.visible = false
-      if (ghostMeshRef.current) ghostMeshRef.current.visible = false
+      if (brushCursorRef.current) brushCursorRef.current.setEnabled(false)
+      if (ghostMeshRef.current) ghostMeshRef.current.setEnabled(false)
       onCursorMove(null, null)
       if (isPaintingRef.current) {
         isPaintingRef.current = false
@@ -1717,7 +1825,7 @@ export default function WorldViewport3D({
       container.removeEventListener('mouseup', handleMouseUp)
       container.removeEventListener('mouseleave', handleMouseLeave)
     }
-  }, [updateMouseNDC, raycastTerrain, raycastObjects, handleBrushStroke, onTerrainChanged, onCursorMove])
+  }, [updateMouseScreen, raycastTerrain, raycastObjects, handleBrushStroke, onTerrainChanged, onCursorMove])
 
   const cursorStyle = (() => {
     switch (activeTool) {

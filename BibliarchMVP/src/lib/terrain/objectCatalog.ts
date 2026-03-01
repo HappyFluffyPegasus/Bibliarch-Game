@@ -1,172 +1,165 @@
-import * as THREE from 'three'
+import {
+  Mesh,
+  MeshBuilder,
+  StandardMaterial,
+  Color3,
+  TransformNode,
+  VertexData,
+  Scene,
+} from '@babylonjs/core'
 import { WorldObjectCategory } from '@/types/world'
 
 export interface ObjectCatalogEntry {
   type: string
   name: string
   category: WorldObjectCategory
-  defaultColor: string // hex
+  defaultColor: string
   defaultScale: [number, number, number]
-  createMesh: (color: string) => THREE.Group
+  createMesh: (color: string, scene: Scene) => TransformNode
 }
 
-function hexToColor(hex: string): THREE.Color {
-  return new THREE.Color(hex)
+function hexToColor3(hex: string): Color3 {
+  return Color3.FromHexString(hex.startsWith('#') ? hex : `#${hex}`)
+}
+
+function createLambertMaterial(name: string, color: Color3, scene: Scene): StandardMaterial {
+  const mat = new StandardMaterial(name, scene)
+  mat.diffuseColor = color
+  mat.specularColor = Color3.Black()
+  return mat
 }
 
 // ── Mesh Factories ──────────────────────────────────────────
 
-function createPrimitiveCube(color: string): THREE.Group {
-  const group = new THREE.Group()
-  const geo = new THREE.BoxGeometry(1, 1, 1)
-  const mat = new THREE.MeshLambertMaterial({ color: hexToColor(color) })
-  const mesh = new THREE.Mesh(geo, mat)
+function createPrimitiveCube(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('cube-group', scene)
+  const mesh = MeshBuilder.CreateBox('cube', { size: 1 }, scene)
   mesh.position.y = 0.5
-  group.add(mesh)
-  return group
+  mesh.material = createLambertMaterial('cube-mat', hexToColor3(color), scene)
+  mesh.parent = parent
+  return parent
 }
 
-function createPrimitivePlane(color: string): THREE.Group {
-  const group = new THREE.Group()
-  const geo = new THREE.PlaneGeometry(2, 2)
-  geo.rotateX(-Math.PI / 2)
-  const mat = new THREE.MeshLambertMaterial({ color: hexToColor(color), side: THREE.DoubleSide })
-  const mesh = new THREE.Mesh(geo, mat)
+function createPrimitivePlane(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('plane-group', scene)
+  const mesh = MeshBuilder.CreateGround('plane', { width: 2, height: 2 }, scene)
   mesh.position.y = 0.02
-  group.add(mesh)
-  return group
+  const mat = createLambertMaterial('plane-mat', hexToColor3(color), scene)
+  mat.backFaceCulling = false
+  mesh.material = mat
+  mesh.parent = parent
+  return parent
 }
 
-function createPresetHouse(color: string): THREE.Group {
-  const group = new THREE.Group()
-  const c = hexToColor(color)
+function createPresetHouse(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('house-group', scene)
+  const c = hexToColor3(color)
 
-  // Box body
-  const bodyGeo = new THREE.BoxGeometry(2, 1.5, 2)
-  const bodyMat = new THREE.MeshLambertMaterial({ color: c })
-  const body = new THREE.Mesh(bodyGeo, bodyMat)
+  const body = MeshBuilder.CreateBox('house-body', { width: 2, height: 1.5, depth: 2 }, scene)
   body.position.y = 0.75
-  group.add(body)
+  body.material = createLambertMaterial('house-body-mat', c, scene)
+  body.parent = parent
 
-  // Pyramid roof
-  const roofGeo = new THREE.ConeGeometry(1.6, 1, 4)
-  const roofMat = new THREE.MeshLambertMaterial({ color: new THREE.Color(0x8B4513) })
-  const roof = new THREE.Mesh(roofGeo, roofMat)
+  const roof = MeshBuilder.CreateCylinder('house-roof', { height: 1, diameterTop: 0, diameterBottom: 3.2, tessellation: 4 }, scene)
   roof.position.y = 2
   roof.rotation.y = Math.PI / 4
-  group.add(roof)
+  roof.material = createLambertMaterial('house-roof-mat', new Color3(0.545, 0.271, 0.075), scene)
+  roof.parent = parent
 
-  return group
+  return parent
 }
 
-function createPresetShop(color: string): THREE.Group {
-  const group = new THREE.Group()
-  const c = hexToColor(color)
+function createPresetShop(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('shop-group', scene)
+  const c = hexToColor3(color)
 
-  // Wide box body
-  const bodyGeo = new THREE.BoxGeometry(3, 1.2, 2)
-  const bodyMat = new THREE.MeshLambertMaterial({ color: c })
-  const body = new THREE.Mesh(bodyGeo, bodyMat)
+  const body = MeshBuilder.CreateBox('shop-body', { width: 3, height: 1.2, depth: 2 }, scene)
   body.position.y = 0.6
-  group.add(body)
+  body.material = createLambertMaterial('shop-body-mat', c, scene)
+  body.parent = parent
 
-  // Overhang (flat roof extension)
-  const overhangGeo = new THREE.BoxGeometry(3.5, 0.1, 2.8)
-  const overhangMat = new THREE.MeshLambertMaterial({ color: new THREE.Color(0x654321) })
-  const overhang = new THREE.Mesh(overhangGeo, overhangMat)
+  const overhang = MeshBuilder.CreateBox('shop-overhang', { width: 3.5, height: 0.1, depth: 2.8 }, scene)
   overhang.position.y = 1.25
-  group.add(overhang)
+  overhang.material = createLambertMaterial('shop-overhang-mat', new Color3(0.396, 0.263, 0.129), scene)
+  overhang.parent = parent
 
-  return group
+  return parent
 }
 
-function createTree(color: string): THREE.Group {
-  const group = new THREE.Group()
+function createTree(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('tree-group', scene)
 
-  // Cylinder trunk
-  const trunkGeo = new THREE.CylinderGeometry(0.12, 0.15, 1, 8)
-  const trunkMat = new THREE.MeshLambertMaterial({ color: new THREE.Color(0x8B5A2B) })
-  const trunk = new THREE.Mesh(trunkGeo, trunkMat)
+  const trunk = MeshBuilder.CreateCylinder('tree-trunk', { height: 1, diameterTop: 0.24, diameterBottom: 0.3, tessellation: 8 }, scene)
   trunk.position.y = 0.5
-  group.add(trunk)
+  trunk.material = createLambertMaterial('tree-trunk-mat', new Color3(0.545, 0.353, 0.169), scene)
+  trunk.parent = parent
 
-  // Cone foliage
-  const foliageGeo = new THREE.ConeGeometry(0.7, 1.5, 8)
-  const foliageMat = new THREE.MeshLambertMaterial({ color: hexToColor(color) })
-  const foliage = new THREE.Mesh(foliageGeo, foliageMat)
+  const foliage = MeshBuilder.CreateCylinder('tree-foliage', { height: 1.5, diameterTop: 0, diameterBottom: 1.4, tessellation: 8 }, scene)
   foliage.position.y = 1.6
-  group.add(foliage)
+  foliage.material = createLambertMaterial('tree-foliage-mat', hexToColor3(color), scene)
+  foliage.parent = parent
 
-  return group
+  return parent
 }
 
-function createRock(color: string): THREE.Group {
-  const group = new THREE.Group()
+function createRock(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('rock-group', scene)
 
-  // Irregular sphere (icosahedron for rock-like shape)
-  const geo = new THREE.IcosahedronGeometry(0.5, 1)
-  // Slightly randomize vertices for irregularity
-  const posAttr = geo.getAttribute('position')
-  for (let i = 0; i < posAttr.count; i++) {
-    const x = posAttr.getX(i)
-    const y = posAttr.getY(i)
-    const z = posAttr.getZ(i)
-    const offset = 0.85 + Math.abs(Math.sin(x * 12.9898 + y * 78.233 + z * 45.164)) * 0.3
-    posAttr.setXYZ(i, x * offset, y * offset * 0.7, z * offset)
+  const mesh = MeshBuilder.CreateIcoSphere('rock', { radius: 0.5, subdivisions: 1 }, scene)
+  // Randomize vertices for irregular rock shape
+  const positions = mesh.getVerticesData('position')
+  if (positions) {
+    for (let i = 0; i < positions.length; i += 3) {
+      const x = positions[i], y = positions[i + 1], z = positions[i + 2]
+      const offset = 0.85 + Math.abs(Math.sin(x * 12.9898 + y * 78.233 + z * 45.164)) * 0.3
+      positions[i] = x * offset
+      positions[i + 1] = y * offset * 0.7
+      positions[i + 2] = z * offset
+    }
+    mesh.updateVerticesData('position', positions)
+    mesh.createNormals(false)
   }
-  geo.computeVertexNormals()
-
-  const mat = new THREE.MeshLambertMaterial({ color: hexToColor(color) })
-  const mesh = new THREE.Mesh(geo, mat)
   mesh.position.y = 0.3
-  group.add(mesh)
+  mesh.material = createLambertMaterial('rock-mat', hexToColor3(color), scene)
+  mesh.parent = parent
 
-  return group
+  return parent
 }
 
-function createBush(color: string): THREE.Group {
-  const group = new THREE.Group()
+function createBush(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('bush-group', scene)
 
-  // Squashed sphere
-  const geo = new THREE.SphereGeometry(0.5, 8, 6)
-  const mat = new THREE.MeshLambertMaterial({ color: hexToColor(color) })
-  const mesh = new THREE.Mesh(geo, mat)
-  mesh.scale.set(1, 0.6, 1)
+  const mesh = MeshBuilder.CreateSphere('bush', { diameter: 1, segments: 8 }, scene)
+  mesh.scaling.set(1, 0.6, 1)
   mesh.position.y = 0.3
-  group.add(mesh)
+  mesh.material = createLambertMaterial('bush-mat', hexToColor3(color), scene)
+  mesh.parent = parent
 
-  return group
+  return parent
 }
 
-function createLamp(color: string): THREE.Group {
-  const group = new THREE.Group()
+function createLamp(color: string, scene: Scene): TransformNode {
+  const parent = new TransformNode('lamp-group', scene)
 
-  // Pole
-  const poleGeo = new THREE.CylinderGeometry(0.04, 0.04, 2, 6)
-  const poleMat = new THREE.MeshLambertMaterial({ color: new THREE.Color(0x333333) })
-  const pole = new THREE.Mesh(poleGeo, poleMat)
+  const pole = MeshBuilder.CreateCylinder('lamp-pole', { height: 2, diameter: 0.08, tessellation: 6 }, scene)
   pole.position.y = 1
-  group.add(pole)
+  pole.material = createLambertMaterial('lamp-pole-mat', new Color3(0.2, 0.2, 0.2), scene)
+  pole.parent = parent
 
-  // Emissive sphere
-  const bulbGeo = new THREE.SphereGeometry(0.15, 8, 8)
-  const bulbMat = new THREE.MeshLambertMaterial({
-    color: hexToColor(color),
-    emissive: hexToColor(color),
-    emissiveIntensity: 0.8,
-  })
-  const bulb = new THREE.Mesh(bulbGeo, bulbMat)
+  const bulb = MeshBuilder.CreateSphere('lamp-bulb', { diameter: 0.3, segments: 8 }, scene)
   bulb.position.y = 2.1
-  group.add(bulb)
+  const bulbMat = createLambertMaterial('lamp-bulb-mat', hexToColor3(color), scene)
+  bulbMat.emissiveColor = hexToColor3(color)
+  bulb.material = bulbMat
+  bulb.parent = parent
 
-  return group
+  return parent
 }
 
 // ── Custom Item Runtime Registry ────────────────────────────
 
 const customRegistry = new Map<string, ObjectCatalogEntry>()
 
-/** Register a custom item so it appears in the catalog */
 export function registerCustomItem(item: {
   id: string
   name: string
@@ -184,57 +177,55 @@ export function registerCustomItem(item: {
       : (item.category === 'vehicle' ? 'prop' : 'decoration') as WorldObjectCategory,
     defaultColor: item.faces[0]?.color ?? '#888888',
     defaultScale: item.defaultScale,
-    createMesh: (color: string) => {
-      const group = new THREE.Group()
+    createMesh: (color: string, scene: Scene) => {
+      const parent = new TransformNode('custom-group', scene)
 
-      // Build mesh from vertex/face data
       const positions: number[] = []
       const colors: number[] = []
       const indices: number[] = []
-
       let vertIdx = 0
-      const c = hexToColor(color)
 
       for (const face of item.faces) {
-        const faceColor = hexToColor(face.color || color)
+        const faceColor = hexToColor3(face.color || color)
         const baseIdx = vertIdx
 
         for (const vi of face.vertexIndices) {
           const pos = item.vertices[vi]?.position ?? [0, 0, 0]
           positions.push(pos[0], pos[1], pos[2])
-          colors.push(faceColor.r, faceColor.g, faceColor.b)
+          colors.push(faceColor.r, faceColor.g, faceColor.b, 1)
           vertIdx++
         }
 
-        // Fan triangulation
         for (let i = 1; i < face.vertexIndices.length - 1; i++) {
           indices.push(baseIdx, baseIdx + i, baseIdx + i + 1)
         }
       }
 
       if (positions.length > 0) {
-        const geo = new THREE.BufferGeometry()
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-        geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
-        geo.setIndex(indices)
-        geo.computeVertexNormals()
+        const mesh = new Mesh('custom-mesh', scene)
+        const vertexData = new VertexData()
+        vertexData.positions = positions
+        vertexData.colors = colors
+        vertexData.indices = indices
+        VertexData.ComputeNormals(positions, indices, vertexData.normals = [])
+        vertexData.applyToMesh(mesh)
 
-        const mat = new THREE.MeshLambertMaterial({ vertexColors: true })
-        const mesh = new THREE.Mesh(geo, mat)
-        group.add(mesh)
+        const mat = new StandardMaterial('custom-mat', scene)
+        mat.specularColor = Color3.Black()
+        // Use vertex colors - Babylon.js does this automatically when color attribute is present
+        mesh.material = mat
+        mesh.parent = parent
       }
 
-      return group
+      return parent
     },
   })
 }
 
-/** Unregister a custom item */
 export function unregisterCustomItem(itemId: string): void {
   customRegistry.delete(`custom:${itemId}`)
 }
 
-/** Get all registered custom items */
 export function getCustomCatalogEntries(): ObjectCatalogEntry[] {
   return Array.from(customRegistry.values())
 }
@@ -309,7 +300,6 @@ export const OBJECT_CATALOG: Record<string, ObjectCatalogEntry> = {
 }
 
 export function getCatalogEntry(type: string): ObjectCatalogEntry | null {
-  // Check custom registry first (for "custom:xxx" keys)
   if (customRegistry.has(type)) return customRegistry.get(type)!
   return OBJECT_CATALOG[type] ?? null
 }

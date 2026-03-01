@@ -1,7 +1,12 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import * as THREE from 'three'
+import {
+  Scene,
+  FreeCamera,
+  TransformNode,
+  Vector3,
+} from '@babylonjs/core'
 import { idbGet } from '@/services/worldStorage'
 import { deserializeWorld, type World, type WorldLocation, type SerializedWorld } from '@/types/world'
 import { ChunkManager } from '@/lib/terrain/ChunkManager'
@@ -9,8 +14,8 @@ import { ChunkManager } from '@/lib/terrain/ChunkManager'
 interface SceneBackdropProps {
   storyId: string
   locationId: string | null
-  scene: THREE.Scene
-  camera: THREE.PerspectiveCamera
+  scene: Scene
+  camera: FreeCamera
 }
 
 /**
@@ -26,7 +31,7 @@ export default function SceneBackdrop({
   const [world, setWorld] = useState<World | null>(null)
   const [location, setLocation] = useState<WorldLocation | null>(null)
   const chunkManagerRef = useRef<ChunkManager | null>(null)
-  const terrainGroupRef = useRef<THREE.Group | null>(null)
+  const terrainGroupRef = useRef<TransformNode | null>(null)
 
   // Load world data
   useEffect(() => {
@@ -63,7 +68,7 @@ export default function SceneBackdrop({
     if (!world || !location) {
       // Clean up if no location
       if (terrainGroupRef.current) {
-        scene.remove(terrainGroupRef.current)
+        terrainGroupRef.current.dispose()
         terrainGroupRef.current = null
       }
       if (chunkManagerRef.current) {
@@ -75,15 +80,14 @@ export default function SceneBackdrop({
 
     // Create terrain group if needed
     if (!terrainGroupRef.current) {
-      terrainGroupRef.current = new THREE.Group()
-      terrainGroupRef.current.name = 'SceneBackdrop'
-      scene.add(terrainGroupRef.current)
+      terrainGroupRef.current = new TransformNode('SceneBackdrop', scene)
     }
 
     // Create chunk manager
     if (!chunkManagerRef.current) {
-      chunkManagerRef.current = new ChunkManager()
-      terrainGroupRef.current.add(chunkManagerRef.current.getGroup())
+      chunkManagerRef.current = new ChunkManager(scene)
+      const chunkGroup = chunkManagerRef.current.getParent()
+      chunkGroup.parent = terrainGroupRef.current
     }
 
     // Set terrain data
@@ -96,13 +100,12 @@ export default function SceneBackdrop({
       location.cameraPosition[2]
     )
 
-    // Apply rotation (Y axis)
-    const euler = new THREE.Euler(
+    // Apply rotation
+    camera.rotation.set(
       location.cameraRotation[0],
       location.cameraRotation[1],
       location.cameraRotation[2]
     )
-    camera.rotation.copy(euler)
 
     return () => {
       if (chunkManagerRef.current) {
@@ -110,7 +113,7 @@ export default function SceneBackdrop({
         chunkManagerRef.current = null
       }
       if (terrainGroupRef.current) {
-        scene.remove(terrainGroupRef.current)
+        terrainGroupRef.current.dispose()
         terrainGroupRef.current = null
       }
     }
@@ -126,8 +129,8 @@ export default function SceneBackdrop({
 export function useSceneBackdrop(
   storyId: string,
   locationId: string | null,
-  scene: THREE.Scene | null,
-  camera: THREE.PerspectiveCamera | null
+  scene: Scene | null,
+  camera: FreeCamera | null
 ) {
   const [isLoaded, setIsLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -155,13 +158,12 @@ export function useSceneBackdrop(
         }
 
         // Create terrain group
-        const terrainGroup = new THREE.Group()
-        terrainGroup.name = 'SceneBackdrop'
-        scene.add(terrainGroup)
+        const terrainGroup = new TransformNode('SceneBackdrop', scene)
 
         // Create chunk manager and set terrain
-        const chunkManager = new ChunkManager()
-        terrainGroup.add(chunkManager.getGroup())
+        const chunkManager = new ChunkManager(scene)
+        const chunkParent = chunkManager.getParent()
+        chunkParent.parent = terrainGroup
         chunkManager.setTerrain(world.terrain)
 
         setIsLoaded(true)
@@ -170,7 +172,7 @@ export function useSceneBackdrop(
         // Return cleanup function
         return () => {
           chunkManager.dispose()
-          scene.remove(terrainGroup)
+          terrainGroup.dispose()
         }
       } catch (e) {
         console.error('Failed to load backdrop:', e)

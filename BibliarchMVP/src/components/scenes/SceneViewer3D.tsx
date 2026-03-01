@@ -1,16 +1,29 @@
 'use client'
 
 import { useEffect, useRef, useCallback, useState, useImperativeHandle, forwardRef } from 'react'
-import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import {
+  Engine,
+  Scene as BabylonScene,
+  ArcRotateCamera,
+  HemisphericLight,
+  DirectionalLight,
+  MeshBuilder,
+  StandardMaterial,
+  Color3,
+  Color4,
+  Vector3,
+  Quaternion,
+  TransformNode,
+  Mesh,
+  ShadowGenerator,
+  GizmoManager,
+  UtilityLayerRenderer,
+} from '@babylonjs/core'
 import { SceneCharacterManager } from '@/lib/scenes/SceneCharacterManager'
 import type { SceneCharacter, DialogueLine, CharacterData, TransformGizmoMode, CameraKeyframe, MovementKeyframe, AnimationKeyframe, CharacterAnimationState, SceneProp } from '@/types/scenes'
 
 // Re-export types for backward compatibility
 export type { SceneCharacter, DialogueLine }
-
-// Dynamic import type for TransformControls
-type TransformControlsType = import('three-stdlib').TransformControls
 
 // Selection types
 export type SelectionType = 'character' | 'camera' | null
@@ -32,46 +45,46 @@ export interface ContextMenuEvent {
 export type LightingPreset = 'default' | 'day' | 'night' | 'sunset' | 'dramatic' | 'studio'
 
 const LIGHTING_PRESETS: Record<LightingPreset, {
-  ambient: { color: number; intensity: number }
-  main: { color: number; intensity: number; position: [number, number, number] }
-  fill: { color: number; intensity: number; position: [number, number, number] }
-  bg: number
+  ambient: { color: string; intensity: number }
+  main: { color: string; intensity: number; position: [number, number, number] }
+  fill: { color: string; intensity: number; position: [number, number, number] }
+  bg: string
 }> = {
   default: {
-    ambient: { color: 0xffffff, intensity: 0.5 },
-    main: { color: 0xffffff, intensity: 0.8, position: [10, 20, 10] },
-    fill: { color: 0x8888ff, intensity: 0.3, position: [-10, 10, -10] },
-    bg: 0x1a1a2e
+    ambient: { color: '#ffffff', intensity: 0.5 },
+    main: { color: '#ffffff', intensity: 0.8, position: [10, 20, 10] },
+    fill: { color: '#8888ff', intensity: 0.3, position: [-10, 10, -10] },
+    bg: '#1a1a2e'
   },
   day: {
-    ambient: { color: 0xc8e0ff, intensity: 0.7 },
-    main: { color: 0xffeedd, intensity: 1.0, position: [15, 30, 10] },
-    fill: { color: 0x87ceeb, intensity: 0.4, position: [-10, 10, -10] },
-    bg: 0x87ceeb
+    ambient: { color: '#c8e0ff', intensity: 0.7 },
+    main: { color: '#ffeedd', intensity: 1.0, position: [15, 30, 10] },
+    fill: { color: '#87ceeb', intensity: 0.4, position: [-10, 10, -10] },
+    bg: '#87ceeb'
   },
   night: {
-    ambient: { color: 0x222244, intensity: 0.2 },
-    main: { color: 0x6666aa, intensity: 0.3, position: [5, 20, 5] },
-    fill: { color: 0x222255, intensity: 0.1, position: [-10, 10, -10] },
-    bg: 0x0a0a1a
+    ambient: { color: '#222244', intensity: 0.2 },
+    main: { color: '#6666aa', intensity: 0.3, position: [5, 20, 5] },
+    fill: { color: '#222255', intensity: 0.1, position: [-10, 10, -10] },
+    bg: '#0a0a1a'
   },
   sunset: {
-    ambient: { color: 0xff8844, intensity: 0.4 },
-    main: { color: 0xff6633, intensity: 0.9, position: [-20, 5, 10] },
-    fill: { color: 0x4444aa, intensity: 0.3, position: [10, 10, -10] },
-    bg: 0x2d1b4e
+    ambient: { color: '#ff8844', intensity: 0.4 },
+    main: { color: '#ff6633', intensity: 0.9, position: [-20, 5, 10] },
+    fill: { color: '#4444aa', intensity: 0.3, position: [10, 10, -10] },
+    bg: '#2d1b4e'
   },
   dramatic: {
-    ambient: { color: 0x111122, intensity: 0.15 },
-    main: { color: 0xffffff, intensity: 1.2, position: [5, 15, 0] },
-    fill: { color: 0x000000, intensity: 0.0, position: [-10, 10, -10] },
-    bg: 0x0a0a0a
+    ambient: { color: '#111122', intensity: 0.15 },
+    main: { color: '#ffffff', intensity: 1.2, position: [5, 15, 0] },
+    fill: { color: '#000000', intensity: 0.0, position: [-10, 10, -10] },
+    bg: '#0a0a0a'
   },
   studio: {
-    ambient: { color: 0xffffff, intensity: 0.6 },
-    main: { color: 0xffffff, intensity: 1.0, position: [8, 15, 8] },
-    fill: { color: 0xffffff, intensity: 0.5, position: [-8, 10, -5] },
-    bg: 0x2a2a3a
+    ambient: { color: '#ffffff', intensity: 0.6 },
+    main: { color: '#ffffff', intensity: 1.0, position: [8, 15, 8] },
+    fill: { color: '#ffffff', intensity: 0.5, position: [-8, 10, -5] },
+    bg: '#2a2a3a'
   }
 }
 
@@ -104,65 +117,75 @@ interface SceneViewer3DProps {
 }
 
 // Create a simple camera mesh (looks like a movie camera)
-function createCameraMesh(): THREE.Group {
-  const group = new THREE.Group()
-  group.name = 'sceneCamera'
-  group.userData.isSceneCamera = true
+function createCameraMesh(scene: BabylonScene): TransformNode {
+  const group = new TransformNode('sceneCamera', scene)
+  group.metadata = { isSceneCamera: true }
 
   // Camera body
-  const bodyGeometry = new THREE.BoxGeometry(0.6, 0.4, 0.8)
-  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8, roughness: 0.3 })
-  const body = new THREE.Mesh(bodyGeometry, bodyMaterial)
-  body.position.set(0, 0, 0)
-  group.add(body)
+  const body = MeshBuilder.CreateBox('cameraBody', { width: 0.6, height: 0.4, depth: 0.8 }, scene)
+  const bodyMaterial = new StandardMaterial('cameraBodyMat', scene)
+  bodyMaterial.diffuseColor = Color3.FromHexString('#333333')
+  bodyMaterial.specularColor = new Color3(0.8, 0.8, 0.8)
+  body.material = bodyMaterial
+  body.position = new Vector3(0, 0, 0)
+  body.parent = group
 
   // Lens (faces -Z so the mesh visually points in the same direction the camera looks)
-  const lensGeometry = new THREE.CylinderGeometry(0.15, 0.2, 0.3, 16)
-  const lensMaterial = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.2 })
-  const lens = new THREE.Mesh(lensGeometry, lensMaterial)
+  const lens = MeshBuilder.CreateCylinder('cameraLens', { diameterTop: 0.3, diameterBottom: 0.4, height: 0.3, tessellation: 16 }, scene)
+  const lensMaterial = new StandardMaterial('cameraLensMat', scene)
+  lensMaterial.diffuseColor = Color3.FromHexString('#111111')
+  lensMaterial.specularColor = new Color3(0.9, 0.9, 0.9)
+  lens.material = lensMaterial
   lens.rotation.x = Math.PI / 2
-  lens.position.set(0, 0, -0.55)
-  group.add(lens)
+  lens.position = new Vector3(0, 0, -0.55)
+  lens.parent = group
 
   // Lens glass
-  const glassGeometry = new THREE.CircleGeometry(0.14, 16)
-  const glassMaterial = new THREE.MeshStandardMaterial({
-    color: 0x4a9eff,
-    metalness: 0.1,
-    roughness: 0.1,
-    transparent: true,
-    opacity: 0.7
-  })
-  const glass = new THREE.Mesh(glassGeometry, glassMaterial)
+  const glass = MeshBuilder.CreateDisc('cameraGlass', { radius: 0.14, tessellation: 16 }, scene)
+  const glassMaterial = new StandardMaterial('cameraGlassMat', scene)
+  glassMaterial.diffuseColor = Color3.FromHexString('#4a9eff')
+  glassMaterial.specularColor = new Color3(0.1, 0.1, 0.1)
+  glassMaterial.alpha = 0.7
+  glass.material = glassMaterial
   glass.rotation.y = Math.PI
-  glass.position.set(0, 0, -0.71)
-  group.add(glass)
+  glass.position = new Vector3(0, 0, -0.71)
+  glass.parent = group
 
   // Viewfinder (on the back, where the operator stands)
-  const viewfinderGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.2)
-  const viewfinder = new THREE.Mesh(viewfinderGeometry, bodyMaterial)
-  viewfinder.position.set(0.15, 0.25, 0.2)
-  group.add(viewfinder)
+  const viewfinder = MeshBuilder.CreateBox('cameraViewfinder', { width: 0.15, height: 0.15, depth: 0.2 }, scene)
+  viewfinder.material = bodyMaterial
+  viewfinder.position = new Vector3(0.15, 0.25, 0.2)
+  viewfinder.parent = group
 
   // Film reels (decorative)
-  const reelGeometry = new THREE.CylinderGeometry(0.12, 0.12, 0.1, 16)
-  const reelMaterial = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.9, roughness: 0.2 })
-  const reel1 = new THREE.Mesh(reelGeometry, reelMaterial)
-  reel1.rotation.x = Math.PI / 2
-  reel1.position.set(-0.2, 0.3, 0)
-  group.add(reel1)
+  const reelMaterial = new StandardMaterial('cameraReelMat', scene)
+  reelMaterial.diffuseColor = Color3.FromHexString('#444444')
+  reelMaterial.specularColor = new Color3(0.9, 0.9, 0.9)
 
-  const reel2 = new THREE.Mesh(reelGeometry, reelMaterial)
+  const reel1 = MeshBuilder.CreateCylinder('cameraReel1', { diameter: 0.24, height: 0.1, tessellation: 16 }, scene)
+  reel1.material = reelMaterial
+  reel1.rotation.x = Math.PI / 2
+  reel1.position = new Vector3(-0.2, 0.3, 0)
+  reel1.parent = group
+
+  const reel2 = MeshBuilder.CreateCylinder('cameraReel2', { diameter: 0.24, height: 0.1, tessellation: 16 }, scene)
+  reel2.material = reelMaterial
   reel2.rotation.x = Math.PI / 2
-  reel2.position.set(0.2, 0.3, 0)
-  group.add(reel2)
+  reel2.position = new Vector3(0.2, 0.3, 0)
+  reel2.parent = group
 
   // Invisible hitbox for easier selection (camera mesh is small)
-  const hitboxGeometry = new THREE.BoxGeometry(1.2, 0.8, 1.2)
-  const hitboxMaterial = new THREE.MeshBasicMaterial({ visible: false })
-  const hitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial)
-  hitbox.userData.isSceneCamera = true
-  group.add(hitbox)
+  const hitbox = MeshBuilder.CreateBox('cameraHitbox', { width: 1.2, height: 0.8, depth: 1.2 }, scene)
+  hitbox.visibility = 0
+  hitbox.isPickable = true
+  hitbox.metadata = { isSceneCamera: true }
+  hitbox.parent = group
+
+  // Mark all child meshes as camera meshes for picking
+  group.getChildMeshes().forEach(m => {
+    if (!m.metadata) m.metadata = {}
+    m.metadata.isSceneCamera = true
+  })
 
   return group
 }
@@ -178,12 +201,10 @@ function applyEasing(t: number, easing: string): number {
 }
 
 // Reusable quaternions to avoid allocation in hot path
-const _quatFrom = new THREE.Quaternion()
-const _quatTo = new THREE.Quaternion()
-const _quatResult = new THREE.Quaternion()
-const _eulerFrom = new THREE.Euler()
-const _eulerTo = new THREE.Euler()
-const _eulerResult = new THREE.Euler()
+const _quatFrom = new Quaternion()
+const _quatTo = new Quaternion()
+const _quatResult = new Quaternion()
+const _vecResult = new Vector3()
 
 // Interpolate between camera keyframes using quaternion slerp for rotation
 function interpolateCameraKeyframes(
@@ -227,12 +248,11 @@ function interpolateCameraKeyframes(
   t = applyEasing(t, toKf.easing)
 
   // Quaternion slerp for rotation (avoids gimbal lock)
-  _eulerFrom.set(fromKf.rotation[0], fromKf.rotation[1], fromKf.rotation[2])
-  _eulerTo.set(toKf.rotation[0], toKf.rotation[1], toKf.rotation[2])
-  _quatFrom.setFromEuler(_eulerFrom)
-  _quatTo.setFromEuler(_eulerTo)
-  _quatResult.slerpQuaternions(_quatFrom, _quatTo, t)
-  _eulerResult.setFromQuaternion(_quatResult)
+  // Convert Euler rotations to quaternions
+  Quaternion.FromEulerAnglesToRef(fromKf.rotation[0], fromKf.rotation[1], fromKf.rotation[2], _quatFrom)
+  Quaternion.FromEulerAnglesToRef(toKf.rotation[0], toKf.rotation[1], toKf.rotation[2], _quatTo)
+  Quaternion.SlerpToRef(_quatFrom, _quatTo, t, _quatResult)
+  _quatResult.toEulerAnglesToRef(_vecResult)
 
   return {
     position: [
@@ -240,7 +260,7 @@ function interpolateCameraKeyframes(
       fromKf.position[1] + (toKf.position[1] - fromKf.position[1]) * t,
       fromKf.position[2] + (toKf.position[2] - fromKf.position[2]) * t,
     ],
-    rotation: [_eulerResult.x, _eulerResult.y, _eulerResult.z],
+    rotation: [_vecResult.x, _vecResult.y, _vecResult.z],
     fov: fromKf.fov + (toKf.fov - fromKf.fov) * t
   }
 }
@@ -342,33 +362,31 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
   props: scenePropsProp = [],
   isRecording = false
 }, ref) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const sceneRef = useRef<THREE.Scene | null>(null)
-  const viewCameraRef = useRef<THREE.PerspectiveCamera | null>(null)  // The camera we render from
-  const sceneCameraRef = useRef<THREE.Group | null>(null)  // The physical camera object
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
-  const controlsRef = useRef<OrbitControls | null>(null)
-  const transformControlsRef = useRef<TransformControlsType | null>(null)
+  const engineRef = useRef<Engine | null>(null)
+  const sceneRef = useRef<BabylonScene | null>(null)
+  const viewCameraRef = useRef<ArcRotateCamera | null>(null)  // The orbit camera we render from normally
+  const sceneCameraNodeRef = useRef<TransformNode | null>(null)  // The physical camera object (movie camera mesh)
   const characterManagerRef = useRef<SceneCharacterManager | null>(null)
-  const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster())
-  const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2())
-  const clockRef = useRef<THREE.Clock>(new THREE.Clock())
+  const gizmoManagerRef = useRef<GizmoManager | null>(null)
+  const lastDeltaRef = useRef<number>(0)
 
-  const animationFrameRef = useRef<number | null>(null)
   const viewThroughCameraRef = useRef(viewThroughCamera)
   const [isDraggingGizmo, setIsDraggingGizmo] = useState(false)
 
   // Saved user camera position for restore after exiting camera view
-  const savedUserCameraRef = useRef<{position: [number,number,number], target: [number,number,number]} | null>(null)
+  const savedUserCameraRef = useRef<{alpha: number, beta: number, radius: number, target: [number,number,number]} | null>(null)
 
   // Light refs for preset switching
-  const ambientLightRef = useRef<THREE.AmbientLight | null>(null)
-  const mainLightRef = useRef<THREE.DirectionalLight | null>(null)
-  const fillLightRef = useRef<THREE.DirectionalLight | null>(null)
+  const ambientLightRef = useRef<HemisphericLight | null>(null)
+  const mainLightRef = useRef<DirectionalLight | null>(null)
+  const fillLightRef = useRef<DirectionalLight | null>(null)
+  const shadowGeneratorRef = useRef<ShadowGenerator | null>(null)
 
-  // Props group ref
-  const propsGroupRef = useRef<THREE.Group | null>(null)
-  const propMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map())
+  // Props parent node ref
+  const propsNodeRef = useRef<TransformNode | null>(null)
+  const propMeshesRef = useRef<Map<string, Mesh>>(new Map())
 
   // Keep viewThroughCamera ref in sync
   useEffect(() => {
@@ -393,7 +411,7 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
   // Expose methods via ref
   useImperativeHandle(ref, () => ({
     getCameraState: () => {
-      const cam = sceneCameraRef.current
+      const cam = sceneCameraNodeRef.current
       if (!cam) return { position: [0, 8, 12], rotation: [0, 0, 0], fov: 50 }
       return {
         position: [cam.position.x, cam.position.y, cam.position.z] as [number, number, number],
@@ -402,232 +420,247 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
       }
     },
     setCameraState: (state) => {
-      const cam = sceneCameraRef.current
+      const cam = sceneCameraNodeRef.current
       if (!cam) return
       cam.position.set(state.position[0], state.position[1], state.position[2])
-      cam.rotation.set(state.rotation[0], state.rotation[1], state.rotation[2])
+      cam.rotation = new Vector3(state.rotation[0], state.rotation[1], state.rotation[2])
       if (viewCameraRef.current) {
         viewCameraRef.current.fov = state.fov
-        viewCameraRef.current.updateProjectionMatrix()
       }
     },
     captureThumbnail: () => {
-      if (!rendererRef.current || !sceneRef.current || !viewCameraRef.current) return null
-      rendererRef.current.render(sceneRef.current, viewCameraRef.current)
-      return rendererRef.current.domElement.toDataURL('image/jpeg', 0.6)
+      const engine = engineRef.current
+      const scene = sceneRef.current
+      if (!engine || !scene) return null
+      scene.render()
+      const canvas = engine.getRenderingCanvas()
+      if (!canvas) return null
+      return canvas.toDataURL('image/jpeg', 0.6)
     },
     saveUserCamera: () => {
       const cam = viewCameraRef.current
-      const controls = controlsRef.current
-      if (!cam || !controls) return
+      if (!cam) return
       savedUserCameraRef.current = {
-        position: [cam.position.x, cam.position.y, cam.position.z],
-        target: [controls.target.x, controls.target.y, controls.target.z],
+        alpha: cam.alpha,
+        beta: cam.beta,
+        radius: cam.radius,
+        target: [cam.target.x, cam.target.y, cam.target.z],
       }
     },
     restoreUserCamera: () => {
       const saved = savedUserCameraRef.current
       const cam = viewCameraRef.current
-      const controls = controlsRef.current
-      if (!saved || !cam || !controls) return
-      cam.position.set(saved.position[0], saved.position[1], saved.position[2])
-      controls.target.set(saved.target[0], saved.target[1], saved.target[2])
-      controls.update()
+      if (!saved || !cam) return
+      cam.alpha = saved.alpha
+      cam.beta = saved.beta
+      cam.radius = saved.radius
+      cam.target = new Vector3(saved.target[0], saved.target[1], saved.target[2])
       savedUserCameraRef.current = null
     },
   }), [])
 
-  // Initialize Three.js scene
+  // Initialize Babylon.js scene
   useEffect(() => {
-    if (!containerRef.current) return
+    if (!canvasRef.current || !containerRef.current) return
 
+    const canvas = canvasRef.current
     const container = containerRef.current
     const width = container.clientWidth
     const height = container.clientHeight
 
+    // Engine
+    const engine = new Engine(canvas, true, { preserveDrawingBuffer: true })
+    engine.setSize(width, height)
+    engineRef.current = engine
+
     // Scene
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x1a1a2e)
+    const scene = new BabylonScene(engine)
+    const presetInit = LIGHTING_PRESETS[lightingPreset] || LIGHTING_PRESETS.default
+    scene.clearColor = Color4.FromHexString(presetInit.bg + 'ff')
     sceneRef.current = scene
 
-    // View camera (what we render from)
-    const viewCamera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000)
-    viewCamera.position.set(0, 8, 12)
-    viewCamera.lookAt(0, 1, 0)
+    // View camera (ArcRotateCamera replaces PerspectiveCamera + OrbitControls)
+    // ArcRotateCamera(name, alpha, beta, radius, target, scene)
+    // alpha = rotation around Y, beta = rotation around X (elevation)
+    // We want position roughly at (0, 8, 12) looking at (0, 1, 0)
+    const viewCamera = new ArcRotateCamera('viewCamera', -Math.PI / 2, Math.PI / 3, 15, new Vector3(0, 1, 0), scene)
+    viewCamera.minZ = 0.1
+    viewCamera.maxZ = 1000
+    viewCamera.fov = 50 * (Math.PI / 180) // Convert degrees to radians for Babylon
+    viewCamera.lowerRadiusLimit = 3
+    viewCamera.upperRadiusLimit = 50
+    viewCamera.upperBetaLimit = Math.PI / 2.1
+    viewCamera.inertia = 0.95 // Damping equivalent
+    viewCamera.attachControl(canvas, true)
+    scene.activeCamera = viewCamera
     viewCameraRef.current = viewCamera
 
     // Physical scene camera (can be selected and moved)
-    const sceneCamera = createCameraMesh()
-    sceneCamera.position.set(0, 2, 8)
-    // Lens faces -Z by default, which points toward origin from z=8 — no rotation needed
-    scene.add(sceneCamera)
-    sceneCameraRef.current = sceneCamera
+    const sceneCamera = createCameraMesh(scene)
+    sceneCamera.position = new Vector3(0, 2, 8)
+    // Lens faces -Z by default, which points toward origin from z=8 -- no rotation needed
+    sceneCameraNodeRef.current = sceneCamera
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
-    renderer.setSize(width, height)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    container.appendChild(renderer.domElement)
-    rendererRef.current = renderer
+    // GizmoManager (replaces TransformControls)
+    const utilLayer = new UtilityLayerRenderer(scene)
+    const gizmoManager = new GizmoManager(scene, 1, utilLayer)
+    gizmoManager.positionGizmoEnabled = false
+    gizmoManager.rotationGizmoEnabled = false
+    gizmoManager.scaleGizmoEnabled = false
+    gizmoManager.usePointerToAttachGizmos = false  // We attach manually
+    gizmoManagerRef.current = gizmoManager
 
-    // Controls
-    const controls = new OrbitControls(viewCamera, renderer.domElement)
-    controls.enableDamping = true
-    controls.dampingFactor = 0.05
-    controls.maxPolarAngle = Math.PI / 2.1
-    controls.minDistance = 3
-    controls.maxDistance = 50
-    controls.target.set(0, 1, 0)
-    controlsRef.current = controls
+    // Track gizmo dragging to disable camera
+    const onDragStartObserver = () => {
+      setIsDraggingGizmo(true)
+      viewCamera.detachControl()
+    }
+    const onDragEndObserver = () => {
+      setIsDraggingGizmo(false)
+      viewCamera.attachControl(canvas, true)
 
-    // Transform controls
-    let transformControls: TransformControlsType | null = null
-
-    const initTransformControls = async () => {
-      try {
-        const { TransformControls } = await import('three-stdlib')
-        transformControls = new TransformControls(viewCamera, renderer.domElement)
-        transformControls.setMode('translate')
-        transformControls.setSpace('world')
-        scene.add(transformControls as unknown as THREE.Object3D)
-        transformControlsRef.current = transformControls
-
-        const tc = transformControls as any
-
-        tc.addEventListener('dragging-changed', (event: { value: boolean }) => {
-          controls.enabled = !event.value
-          setIsDraggingGizmo(event.value)
-        })
-
-        tc.addEventListener('change', () => {
-          const obj = tc.object as THREE.Object3D | undefined
-          if (!obj) return
-
-          if (obj.userData.isSceneCamera) {
-            const pos: [number, number, number] = [obj.position.x, obj.position.y, obj.position.z]
-            const rot: [number, number, number] = [obj.rotation.x, obj.rotation.y, obj.rotation.z]
-            onMoveCameraRef.current(pos, rot)
-          } else if (obj.userData.sceneCharacterId) {
-            const pos: [number, number, number] = [obj.position.x, obj.position.y, obj.position.z]
-            const rot = obj.rotation.y
-            onMoveCharacterRef.current(obj.userData.sceneCharacterId, pos, rot)
-          }
-        })
-      } catch (error) {
-        console.warn('Failed to initialize TransformControls:', error)
+      // Report final position after gizmo drag ends
+      const attached = gizmoManager.attachedNode as TransformNode | null
+      if (attached) {
+        if (attached.metadata?.isSceneCamera) {
+          const pos: [number, number, number] = [attached.position.x, attached.position.y, attached.position.z]
+          const rot: [number, number, number] = [attached.rotation.x, attached.rotation.y, attached.rotation.z]
+          onMoveCameraRef.current(pos, rot)
+        } else if (attached.metadata?.sceneCharacterId) {
+          const pos: [number, number, number] = [attached.position.x, attached.position.y, attached.position.z]
+          const rot = attached.rotation.y
+          onMoveCharacterRef.current(attached.metadata.sceneCharacterId, pos, rot)
+        }
       }
     }
 
-    initTransformControls()
+    // Attach drag observers to each gizmo type
+    const attachDragObservers = () => {
+      if (gizmoManager.gizmos.positionGizmo) {
+        gizmoManager.gizmos.positionGizmo.onDragStartObservable.add(onDragStartObserver)
+        gizmoManager.gizmos.positionGizmo.onDragEndObservable.add(onDragEndObserver)
+      }
+      if (gizmoManager.gizmos.rotationGizmo) {
+        gizmoManager.gizmos.rotationGizmo.onDragStartObservable.add(onDragStartObserver)
+        gizmoManager.gizmos.rotationGizmo.onDragEndObservable.add(onDragEndObserver)
+      }
+      if (gizmoManager.gizmos.scaleGizmo) {
+        gizmoManager.gizmos.scaleGizmo.onDragStartObservable.add(onDragStartObserver)
+        gizmoManager.gizmos.scaleGizmo.onDragEndObservable.add(onDragEndObserver)
+      }
+    }
 
     // Lighting (using preset)
     const preset = LIGHTING_PRESETS[lightingPreset] || LIGHTING_PRESETS.default
-    const ambientLight = new THREE.AmbientLight(preset.ambient.color, preset.ambient.intensity)
-    scene.add(ambientLight)
+    const ambientLight = new HemisphericLight('ambientLight', new Vector3(0, 1, 0), scene)
+    ambientLight.diffuse = Color3.FromHexString(preset.ambient.color)
+    ambientLight.intensity = preset.ambient.intensity
+    ambientLight.groundColor = Color3.FromHexString(preset.ambient.color).scale(0.3)
     ambientLightRef.current = ambientLight
 
-    const mainLight = new THREE.DirectionalLight(preset.main.color, preset.main.intensity)
-    mainLight.position.set(...preset.main.position)
-    mainLight.castShadow = true
-    mainLight.shadow.mapSize.width = 2048
-    mainLight.shadow.mapSize.height = 2048
-    mainLight.shadow.camera.near = 0.5
-    mainLight.shadow.camera.far = 100
-    mainLight.shadow.camera.left = -20
-    mainLight.shadow.camera.right = 20
-    mainLight.shadow.camera.top = 20
-    mainLight.shadow.camera.bottom = -20
-    scene.add(mainLight)
+    const mainLight = new DirectionalLight('mainLight', new Vector3(-preset.main.position[0], -preset.main.position[1], -preset.main.position[2]).normalize(), scene)
+    mainLight.position = new Vector3(preset.main.position[0], preset.main.position[1], preset.main.position[2])
+    mainLight.diffuse = Color3.FromHexString(preset.main.color)
+    mainLight.intensity = preset.main.intensity
     mainLightRef.current = mainLight
 
-    const fillLight = new THREE.DirectionalLight(preset.fill.color, preset.fill.intensity)
-    fillLight.position.set(...preset.fill.position)
-    scene.add(fillLight)
+    // Shadow generator
+    const shadowGenerator = new ShadowGenerator(2048, mainLight)
+    shadowGenerator.useBlurExponentialShadowMap = true
+    shadowGenerator.blurKernel = 32
+    shadowGeneratorRef.current = shadowGenerator
+
+    const fillLight = new DirectionalLight('fillLight', new Vector3(-preset.fill.position[0], -preset.fill.position[1], -preset.fill.position[2]).normalize(), scene)
+    fillLight.position = new Vector3(preset.fill.position[0], preset.fill.position[1], preset.fill.position[2])
+    fillLight.diffuse = Color3.FromHexString(preset.fill.color)
+    fillLight.intensity = preset.fill.intensity
     fillLightRef.current = fillLight
 
-    scene.background = new THREE.Color(preset.bg)
-
     // Floor
-    const floorGeometry = new THREE.CircleGeometry(10, 64)
-    const floorMaterial = new THREE.MeshStandardMaterial({
-      color: 0x2d2d44,
-      roughness: 0.8,
-      metalness: 0.1,
-    })
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial)
-    floor.rotation.x = -Math.PI / 2
-    floor.receiveShadow = true
+    const floor = MeshBuilder.CreateDisc('floor', { radius: 10, tessellation: 64 }, scene)
+    const floorMaterial = new StandardMaterial('floorMat', scene)
+    floorMaterial.diffuseColor = Color3.FromHexString('#2d2d44')
+    floorMaterial.specularColor = new Color3(0.1, 0.1, 0.1)
+    floor.material = floorMaterial
+    floor.rotation.x = Math.PI / 2  // Babylon disc faces +Y by default, rotate to be flat on ground
+    floor.receiveShadows = true
     floor.name = 'floor'
-    scene.add(floor)
 
     // Props group
-    const propsGroup = new THREE.Group()
-    propsGroup.name = 'propsGroup'
-    scene.add(propsGroup)
-    propsGroupRef.current = propsGroup
+    const propsNode = new TransformNode('propsGroup', scene)
+    propsNodeRef.current = propsNode
 
-    // Stage edge glow
-    const ringGeometry = new THREE.RingGeometry(9.8, 10, 64)
-    const ringMaterial = new THREE.MeshBasicMaterial({
-      color: 0x4a9eff,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.5
-    })
-    const ring = new THREE.Mesh(ringGeometry, ringMaterial)
-    ring.rotation.x = -Math.PI / 2
+    // Stage edge glow (ring)
+    const ring = MeshBuilder.CreateTorus('stageRing', { diameter: 19.8, thickness: 0.2, tessellation: 64 }, scene)
+    const ringMaterial = new StandardMaterial('ringMat', scene)
+    ringMaterial.diffuseColor = Color3.FromHexString('#4a9eff')
+    ringMaterial.alpha = 0.5
+    ringMaterial.disableLighting = true
+    ring.material = ringMaterial
+    ring.rotation.x = Math.PI / 2
     ring.position.y = 0.01
-    scene.add(ring)
 
-    // Grid
-    const gridHelper = new THREE.GridHelper(20, 20, 0x444466, 0x333355)
-    gridHelper.position.y = 0.02
-    scene.add(gridHelper)
+    // Grid (Babylon.js has a built-in GridMaterial, but we can use CreateGround with a grid material
+    // or simply create lines. For simplicity, use the ground with grid-like appearance)
+    const grid = MeshBuilder.CreateGround('grid', { width: 20, height: 20, subdivisions: 20 }, scene)
+    const gridMaterial = new StandardMaterial('gridMat', scene)
+    gridMaterial.wireframe = true
+    gridMaterial.diffuseColor = Color3.FromHexString('#444466')
+    gridMaterial.disableLighting = true
+    gridMaterial.alpha = 0.4
+    grid.material = gridMaterial
+    grid.position.y = 0.02
+    grid.isPickable = false
 
     // Character manager
-    const characterGroup = new THREE.Group()
-    characterGroup.name = 'characters'
-    scene.add(characterGroup)
-    characterManagerRef.current = new SceneCharacterManager(characterGroup)
+    const characterNode = new TransformNode('characters', scene)
+    characterManagerRef.current = new SceneCharacterManager(characterNode, scene)
 
-    // Animation loop (single loop handles rendering + camera sync)
-    const animate = () => {
-      animationFrameRef.current = requestAnimationFrame(animate)
-      const delta = clockRef.current.getDelta()
+    // After gizmo manager is created, set initial mode and attach observers
+    attachDragObservers()
+
+    // Render loop
+    let lastTime = performance.now()
+    engine.runRenderLoop(() => {
+      const now = performance.now()
+      const delta = (now - lastTime) / 1000
+      lastTime = now
+      lastDeltaRef.current = delta
+
       characterManagerRef.current?.update(delta)
 
-      const tc = transformControlsRef.current as any
-      if (tc?.object && !tc.object.parent) {
-        tc.detach()
+      // Check if gizmo attached node was removed
+      const gm = gizmoManagerRef.current
+      if (gm?.attachedNode) {
+        // Verify node is still in scene by checking if it has a valid scene reference
+        const node = gm.attachedNode as TransformNode
+        if (!node.getScene || node.isDisposed()) {
+          gm.attachToNode(null)
+        }
       }
 
-      // When viewing through scene camera, skip orbit controls and sync directly
-      if (viewThroughCameraRef.current && sceneCameraRef.current) {
+      // When viewing through scene camera, position a temporary view override
+      if (viewThroughCameraRef.current && sceneCameraNodeRef.current) {
+        const scCam = sceneCameraNodeRef.current
+        scCam.computeWorldMatrix(true)
         // Camera looks in -Z direction (lens faces -Z in local space)
-        sceneCamera.updateMatrixWorld(true)
-        const forward = new THREE.Vector3(0, 0, -1)
-        forward.applyQuaternion(sceneCamera.getWorldQuaternion(new THREE.Quaternion()))
-        viewCamera.position.copy(sceneCamera.getWorldPosition(new THREE.Vector3()))
-        const lookTarget = viewCamera.position.clone().add(forward)
-        viewCamera.lookAt(lookTarget)
-      } else {
-        controls.update()
+        const forward = new Vector3(0, 0, -1)
+        const worldMatrix = scCam.getWorldMatrix()
+        const worldForward = Vector3.TransformNormal(forward, worldMatrix)
+        const worldPos = scCam.getAbsolutePosition()
+        // Move the orbit camera target to scene camera position, and set minimal radius
+        viewCamera.target.copyFrom(worldPos.add(worldForward.scale(0.1)))
+        viewCamera.alpha = Math.atan2(-worldForward.x, -worldForward.z)
+        viewCamera.beta = Math.acos(Math.max(-1, Math.min(1, -worldForward.y)))
+        viewCamera.radius = 0.01
       }
 
-      renderer.render(scene, viewCamera)
-    }
-    animationFrameRef.current = requestAnimationFrame(animate)
+      scene.render()
+    })
 
     // Resize handler
     const handleResize = () => {
-      if (!container) return
-      const w = container.clientWidth
-      const h = container.clientHeight
-      viewCamera.aspect = w / h
-      viewCamera.updateProjectionMatrix()
-      renderer.setSize(w, h)
+      engine.resize()
     }
     window.addEventListener('resize', handleResize)
 
@@ -635,18 +668,33 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
 
-      const tc = transformControlsRef.current
+      const gm = gizmoManagerRef.current
       switch (e.key.toLowerCase()) {
         case 'g':
-          tc?.setMode('translate')
+          if (gm) {
+            gm.positionGizmoEnabled = true
+            gm.rotationGizmoEnabled = false
+            gm.scaleGizmoEnabled = false
+            attachDragObservers()
+          }
           onGizmoModeChangeRef.current?.('translate')
           break
         case 'r':
-          tc?.setMode('rotate')
+          if (gm) {
+            gm.positionGizmoEnabled = false
+            gm.rotationGizmoEnabled = true
+            gm.scaleGizmoEnabled = false
+            attachDragObservers()
+          }
           onGizmoModeChangeRef.current?.('rotate')
           break
         case 's':
-          tc?.setMode('scale')
+          if (gm) {
+            gm.positionGizmoEnabled = false
+            gm.rotationGizmoEnabled = false
+            gm.scaleGizmoEnabled = true
+            attachDragObservers()
+          }
           onGizmoModeChangeRef.current?.('scale')
           break
         case 'escape':
@@ -657,23 +705,69 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
     window.addEventListener('keydown', handleKeyDown)
 
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
       window.removeEventListener('resize', handleResize)
       window.removeEventListener('keydown', handleKeyDown)
       characterManagerRef.current?.dispose()
-      transformControlsRef.current?.dispose()
-      controls.dispose()
-      renderer.dispose()
-      container.removeChild(renderer.domElement)
+      gizmoManager.dispose()
+      engine.stopRenderLoop()
+      scene.dispose()
+      engine.dispose()
     }
   }, [])
 
   // Update gizmo mode
   useEffect(() => {
-    if (transformControlsRef.current && gizmoMode) {
-      transformControlsRef.current.setMode(gizmoMode)
+    const gm = gizmoManagerRef.current
+    if (!gm) return
+
+    gm.positionGizmoEnabled = gizmoMode === 'translate'
+    gm.rotationGizmoEnabled = gizmoMode === 'rotate'
+    gm.scaleGizmoEnabled = gizmoMode === 'scale'
+
+    // Re-attach drag observers when gizmo mode changes
+    const onDragStartObserver = () => {
+      setIsDraggingGizmo(true)
+      if (viewCameraRef.current && canvasRef.current) {
+        viewCameraRef.current.detachControl()
+      }
+    }
+    const onDragEndObserver = () => {
+      setIsDraggingGizmo(false)
+      if (viewCameraRef.current && canvasRef.current) {
+        viewCameraRef.current.attachControl(canvasRef.current, true)
+      }
+
+      const attached = gm.attachedNode as TransformNode | null
+      if (attached) {
+        if (attached.metadata?.isSceneCamera) {
+          const pos: [number, number, number] = [attached.position.x, attached.position.y, attached.position.z]
+          const rot: [number, number, number] = [attached.rotation.x, attached.rotation.y, attached.rotation.z]
+          onMoveCameraRef.current(pos, rot)
+        } else if (attached.metadata?.sceneCharacterId) {
+          const pos: [number, number, number] = [attached.position.x, attached.position.y, attached.position.z]
+          const rot = attached.rotation.y
+          onMoveCharacterRef.current(attached.metadata.sceneCharacterId, pos, rot)
+        }
+      }
+    }
+
+    if (gm.gizmos.positionGizmo) {
+      gm.gizmos.positionGizmo.onDragStartObservable.clear()
+      gm.gizmos.positionGizmo.onDragEndObservable.clear()
+      gm.gizmos.positionGizmo.onDragStartObservable.add(onDragStartObserver)
+      gm.gizmos.positionGizmo.onDragEndObservable.add(onDragEndObserver)
+    }
+    if (gm.gizmos.rotationGizmo) {
+      gm.gizmos.rotationGizmo.onDragStartObservable.clear()
+      gm.gizmos.rotationGizmo.onDragEndObservable.clear()
+      gm.gizmos.rotationGizmo.onDragStartObservable.add(onDragStartObserver)
+      gm.gizmos.rotationGizmo.onDragEndObservable.add(onDragEndObserver)
+    }
+    if (gm.gizmos.scaleGizmo) {
+      gm.gizmos.scaleGizmo.onDragStartObservable.clear()
+      gm.gizmos.scaleGizmo.onDragEndObservable.clear()
+      gm.gizmos.scaleGizmo.onDragStartObservable.add(onDragStartObserver)
+      gm.gizmos.scaleGizmo.onDragEndObservable.add(onDragEndObserver)
     }
   }, [gizmoMode])
 
@@ -688,43 +782,33 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
     characterManagerRef.current.syncCharacters(characters)
   }, [characters])
 
-  // Update transform controls attachment
+  // Update gizmo attachment
   useEffect(() => {
-    const transformControls = transformControlsRef.current
-    if (!transformControls) return
+    const gm = gizmoManagerRef.current
+    if (!gm) return
 
-    const tc = transformControls as any
     let retryCount = 0
     let timeoutId: ReturnType<typeof setTimeout> | null = null
 
     const tryAttach = (): boolean => {
       if (!selectedId || !selectionType) {
-        tc.detach()
+        gm.attachToNode(null)
         return true
       }
 
-      let targetObject: THREE.Object3D | null = null
+      let targetNode: TransformNode | null = null
 
       if (selectionType === 'camera') {
-        targetObject = sceneCameraRef.current
+        targetNode = sceneCameraNodeRef.current
       } else if (selectionType === 'character') {
-        targetObject = characterManagerRef.current?.getCharacterGroup(selectedId) || null
+        targetNode = characterManagerRef.current?.getCharacterGroup(selectedId) || null
       }
 
-      if (targetObject) {
-        let obj: THREE.Object3D | null = targetObject
-        let isInScene = false
-        while (obj) {
-          if (obj === sceneRef.current) {
-            isInScene = true
-            break
-          }
-          obj = obj.parent
-        }
-
-        if (isInScene) {
+      if (targetNode) {
+        // Verify node is in scene
+        if (!targetNode.isDisposed()) {
           try {
-            tc.attach(targetObject)
+            gm.attachToNode(targetNode)
             return true
           } catch {
             // Retry
@@ -732,7 +816,7 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
         }
       }
 
-      tc.detach()
+      gm.attachToNode(null)
       return false
     }
 
@@ -756,8 +840,11 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
 
   // Disable gizmo during playback
   useEffect(() => {
-    if (transformControlsRef.current) {
-      (transformControlsRef.current as any).enabled = !isPlaying
+    const gm = gizmoManagerRef.current
+    if (!gm) return
+
+    if (isPlaying) {
+      gm.attachToNode(null)
     }
   }, [isPlaying])
 
@@ -768,29 +855,27 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
     if (!isPlaying && !viewThroughCamera) return
 
     const state = interpolateCameraKeyframes(cameraKeyframes, currentTime)
-    if (state && sceneCameraRef.current) {
-      sceneCameraRef.current.position.set(state.position[0], state.position[1], state.position[2])
-      sceneCameraRef.current.rotation.set(state.rotation[0], state.rotation[1], state.rotation[2])
+    if (state && sceneCameraNodeRef.current) {
+      sceneCameraNodeRef.current.position.set(state.position[0], state.position[1], state.position[2])
+      sceneCameraNodeRef.current.rotation = new Vector3(state.rotation[0], state.rotation[1], state.rotation[2])
       if (viewCameraRef.current) {
-        viewCameraRef.current.fov = state.fov
-        viewCameraRef.current.updateProjectionMatrix()
+        viewCameraRef.current.fov = state.fov * (Math.PI / 180) // Convert degrees to radians
       }
     }
   }, [isPlaying, viewThroughCamera, currentTime, cameraKeyframes, isDraggingGizmo])
 
   // Sync props with scene
   useEffect(() => {
-    if (!propsGroupRef.current) return
-    const group = propsGroupRef.current
+    if (!propsNodeRef.current || !sceneRef.current) return
+    const parentNode = propsNodeRef.current
+    const scene = sceneRef.current
     const existing = propMeshesRef.current
     const propIds = new Set(scenePropsProp.map(p => p.id))
 
     // Remove props no longer in scene
     existing.forEach((mesh, id) => {
       if (!propIds.has(id)) {
-        group.remove(mesh)
-        mesh.geometry.dispose()
-        ;(mesh.material as THREE.Material).dispose()
+        mesh.dispose()
         existing.delete(id)
       }
     })
@@ -800,29 +885,48 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
       let mesh = existing.get(prop.id)
       if (!mesh) {
         // Create geometry based on shape
-        let geometry: THREE.BufferGeometry
         switch (prop.shape) {
-          case 'sphere': geometry = new THREE.SphereGeometry(0.5, 16, 16); break
-          case 'cylinder': geometry = new THREE.CylinderGeometry(0.3, 0.3, 1, 16); break
-          case 'cone': geometry = new THREE.ConeGeometry(0.4, 1, 16); break
-          case 'plane': geometry = new THREE.PlaneGeometry(1, 1); break
-          case 'torus': geometry = new THREE.TorusGeometry(0.4, 0.15, 12, 24); break
-          default: geometry = new THREE.BoxGeometry(1, 1, 1); break
+          case 'sphere':
+            mesh = MeshBuilder.CreateSphere(`prop-${prop.id}`, { diameter: 1, segments: 16 }, scene)
+            break
+          case 'cylinder':
+            mesh = MeshBuilder.CreateCylinder(`prop-${prop.id}`, { diameter: 0.6, height: 1, tessellation: 16 }, scene)
+            break
+          case 'cone':
+            mesh = MeshBuilder.CreateCylinder(`prop-${prop.id}`, { diameterTop: 0, diameterBottom: 0.8, height: 1, tessellation: 16 }, scene)
+            break
+          case 'plane':
+            mesh = MeshBuilder.CreatePlane(`prop-${prop.id}`, { width: 1, height: 1 }, scene)
+            break
+          case 'torus':
+            mesh = MeshBuilder.CreateTorus(`prop-${prop.id}`, { diameter: 0.8, thickness: 0.3, tessellation: 24 }, scene)
+            break
+          default: // cube
+            mesh = MeshBuilder.CreateBox(`prop-${prop.id}`, { size: 1 }, scene)
+            break
         }
-        const material = new THREE.MeshStandardMaterial({ color: prop.color, roughness: 0.5, metalness: 0.2 })
-        mesh = new THREE.Mesh(geometry, material)
-        mesh.castShadow = true
-        mesh.receiveShadow = true
-        mesh.userData.propId = prop.id
-        group.add(mesh)
+        const material = new StandardMaterial(`propMat-${prop.id}`, scene)
+        material.diffuseColor = Color3.FromHexString(prop.color)
+        material.specularColor = new Color3(0.2, 0.2, 0.2)
+        mesh.material = material
+
+        // Add to shadow generator
+        if (shadowGeneratorRef.current) {
+          shadowGeneratorRef.current.addShadowCaster(mesh)
+        }
+        mesh.receiveShadows = true
+        mesh.metadata = { propId: prop.id }
+        mesh.parent = parentNode
         existing.set(prop.id, mesh)
       }
 
       // Update transform
-      mesh.position.set(...prop.position)
-      mesh.rotation.set(...prop.rotation)
-      mesh.scale.set(...prop.scale)
-      ;(mesh.material as THREE.MeshStandardMaterial).color.set(prop.color)
+      mesh.position = new Vector3(prop.position[0], prop.position[1], prop.position[2])
+      mesh.rotation = new Vector3(prop.rotation[0], prop.rotation[1], prop.rotation[2])
+      mesh.scaling = new Vector3(prop.scale[0], prop.scale[1], prop.scale[2])
+      if (mesh.material) {
+        ;(mesh.material as StandardMaterial).diffuseColor = Color3.FromHexString(prop.color)
+      }
     }
   }, [scenePropsProp])
 
@@ -830,37 +934,49 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
   useEffect(() => {
     const preset = LIGHTING_PRESETS[lightingPreset] || LIGHTING_PRESETS.default
     if (ambientLightRef.current) {
-      ambientLightRef.current.color.setHex(preset.ambient.color)
+      ambientLightRef.current.diffuse = Color3.FromHexString(preset.ambient.color)
       ambientLightRef.current.intensity = preset.ambient.intensity
+      ambientLightRef.current.groundColor = Color3.FromHexString(preset.ambient.color).scale(0.3)
     }
     if (mainLightRef.current) {
-      mainLightRef.current.color.setHex(preset.main.color)
+      mainLightRef.current.diffuse = Color3.FromHexString(preset.main.color)
       mainLightRef.current.intensity = preset.main.intensity
-      mainLightRef.current.position.set(...preset.main.position)
+      mainLightRef.current.position = new Vector3(preset.main.position[0], preset.main.position[1], preset.main.position[2])
+      mainLightRef.current.direction = new Vector3(-preset.main.position[0], -preset.main.position[1], -preset.main.position[2]).normalize()
     }
     if (fillLightRef.current) {
-      fillLightRef.current.color.setHex(preset.fill.color)
+      fillLightRef.current.diffuse = Color3.FromHexString(preset.fill.color)
       fillLightRef.current.intensity = preset.fill.intensity
-      fillLightRef.current.position.set(...preset.fill.position)
+      fillLightRef.current.position = new Vector3(preset.fill.position[0], preset.fill.position[1], preset.fill.position[2])
+      fillLightRef.current.direction = new Vector3(-preset.fill.position[0], -preset.fill.position[1], -preset.fill.position[2]).normalize()
     }
     if (sceneRef.current) {
-      sceneRef.current.background = new THREE.Color(preset.bg)
+      sceneRef.current.clearColor = Color4.FromHexString(preset.bg + 'ff')
     }
   }, [lightingPreset])
 
   // View through camera effect - toggle visibility/controls (sync happens in main loop)
   useEffect(() => {
-    if (!sceneCameraRef.current) return
+    if (!sceneCameraNodeRef.current) return
 
-    sceneCameraRef.current.visible = !viewThroughCamera
+    // Hide/show the scene camera mesh when viewing through it
+    sceneCameraNodeRef.current.getChildMeshes().forEach(m => m.setEnabled(!viewThroughCamera))
 
-    if (controlsRef.current) {
-      controlsRef.current.enabled = !viewThroughCamera
+    if (viewCameraRef.current && canvasRef.current) {
+      if (viewThroughCamera) {
+        viewCameraRef.current.detachControl()
+      } else {
+        viewCameraRef.current.attachControl(canvasRef.current, true)
+      }
     }
 
     return () => {
-      if (sceneCameraRef.current) sceneCameraRef.current.visible = true
-      if (controlsRef.current) controlsRef.current.enabled = true
+      if (sceneCameraNodeRef.current) {
+        sceneCameraNodeRef.current.getChildMeshes().forEach(m => m.setEnabled(true))
+      }
+      if (viewCameraRef.current && canvasRef.current) {
+        viewCameraRef.current.attachControl(canvasRef.current, true)
+      }
     }
   }, [viewThroughCamera])
 
@@ -921,68 +1037,35 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
     })
   }, [currentTime, animationKeyframes, characters])
 
-  // Handle mouse events
+  // Handle mouse events (picking)
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!containerRef.current || !viewCameraRef.current || !sceneRef.current) return
+    if (!sceneRef.current || !canvasRef.current) return
     if ((isPlaying && !isRecording) || isDraggingGizmo) return
 
-    const rect = containerRef.current.getBoundingClientRect()
-    mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-    mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+    const scene = sceneRef.current
 
-    raycasterRef.current.setFromCamera(mouseRef.current, viewCameraRef.current)
+    // Use Babylon.js scene.pick for raycasting
+    const pickResult = scene.pick(
+      e.nativeEvent.offsetX,
+      e.nativeEvent.offsetY,
+      (mesh) => mesh.isPickable
+    )
 
-    // Collect all clickable meshes
-    const allMeshes: THREE.Mesh[] = []
+    if (pickResult?.hit && pickResult.pickedMesh) {
+      const hit = pickResult.pickedMesh
 
-    // Add scene camera meshes
-    if (sceneCameraRef.current) {
-      sceneCameraRef.current.traverse((obj) => {
-        if (obj instanceof THREE.Mesh) {
-          allMeshes.push(obj)
-        }
-      })
-    }
-
-    // Add character HITBOX meshes (not SkinnedMeshes - those raycast against bind-pose)
-    const mgr = characterManagerRef.current
-    if (mgr?.getAllHitboxes) {
-      allMeshes.push(...mgr.getAllHitboxes())
-    } else if (mgr) {
-      // Fallback: traverse character groups for any mesh (less reliable for SkinnedMesh)
-      mgr.getAllCharacterGroups().forEach(group => {
-        group.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) allMeshes.push(obj)
-        })
-      })
-    }
-
-    // Also add prop meshes
-    if (propsGroupRef.current) {
-      propsGroupRef.current.traverse((obj) => {
-        if (obj instanceof THREE.Mesh) {
-          allMeshes.push(obj)
-        }
-      })
-    }
-
-    const intersects = raycasterRef.current.intersectObjects(allMeshes)
-
-    if (intersects.length > 0) {
-      const hit = intersects[0].object
-
-      // Check if it's the camera
-      let parent: THREE.Object3D | null = hit.parent
+      // Check if it's the camera - walk up the parent chain
+      let parent: TransformNode | null = hit as TransformNode
       while (parent) {
-        if (parent.userData.isSceneCamera) {
+        if (parent.metadata?.isSceneCamera) {
           onSelectRef.current('camera', 'camera')
           return
         }
-        parent = parent.parent
+        parent = parent.parent as TransformNode | null
       }
 
       // Check if it's a character hitbox
-      const sceneCharId = characterManagerRef.current?.findCharacterByIntersection(hit)
+      const sceneCharId = characterManagerRef.current?.findCharacterByMesh(hit)
       if (sceneCharId) {
         onSelectRef.current(sceneCharId, 'character')
         return
@@ -996,31 +1079,20 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
   // Handle right-click context menu
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    if (!containerRef.current || !viewCameraRef.current || !onContextMenuRef.current) return
+    if (!sceneRef.current || !onContextMenuRef.current) return
     if (isPlaying) return
 
-    const rect = containerRef.current.getBoundingClientRect()
-    mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-    mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+    const scene = sceneRef.current
 
-    raycasterRef.current.setFromCamera(mouseRef.current, viewCameraRef.current)
+    const pickResult = scene.pick(
+      e.nativeEvent.offsetX,
+      e.nativeEvent.offsetY,
+      (mesh) => mesh.isPickable
+    )
 
-    // Use hitbox meshes for reliable raycasting
-    const ctxMgr = characterManagerRef.current
-    const ctxMeshes: THREE.Mesh[] = []
-    if (ctxMgr?.getAllHitboxes) {
-      ctxMeshes.push(...ctxMgr.getAllHitboxes())
-    } else if (ctxMgr) {
-      ctxMgr.getAllCharacterGroups().forEach(group => {
-        group.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) ctxMeshes.push(obj)
-        })
-      })
-    }
-    const intersects = raycasterRef.current.intersectObjects(ctxMeshes)
     let hitCharId: string | null = null
-    if (intersects.length > 0) {
-      hitCharId = characterManagerRef.current?.findCharacterByIntersection(intersects[0].object) ?? null
+    if (pickResult?.hit && pickResult.pickedMesh) {
+      hitCharId = characterManagerRef.current?.findCharacterByMesh(pickResult.pickedMesh) ?? null
     }
 
     onContextMenuRef.current({
@@ -1036,7 +1108,12 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
       className="w-full h-full"
       onMouseDown={handleMouseDown}
       onContextMenu={handleContextMenu}
-    />
+    >
+      <canvas
+        ref={canvasRef}
+        style={{ width: '100%', height: '100%', display: 'block' }}
+      />
+    </div>
   )
 })
 

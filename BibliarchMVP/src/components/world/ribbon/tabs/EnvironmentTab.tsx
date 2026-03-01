@@ -9,7 +9,7 @@ interface EnvironmentTabProps {
 }
 
 const SUN_PRESETS = [
-  { label: 'Dawn', angle: 80, el: 12, sky: '#ff8c42', water: '#2d4a7a' },
+  { label: 'Dawn', angle: 80, el: 12, sky: '#e8a0c8', water: '#3a5a8a' },
   { label: 'Morning', angle: 120, el: 35, sky: '#87CEEB', water: '#2980b9' },
   { label: 'Noon', angle: 160, el: 75, sky: '#87CEEB', water: '#2980b9' },
   { label: 'Dusk', angle: 260, el: 12, sky: '#2d1b69', water: '#1a1040' },

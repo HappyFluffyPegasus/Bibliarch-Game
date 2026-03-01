@@ -1,21 +1,33 @@
-import * as THREE from 'three'
+import {
+  Mesh,
+  MeshBuilder,
+  Vector3,
+  Color3,
+  Color4,
+  StandardMaterial,
+  TransformNode,
+  Scene,
+  DynamicTexture,
+  VertexData,
+} from '@babylonjs/core'
 import { CityLot, TerrainData, LOT_ZONING_COLORS, LotZoning } from '@/types/world'
 
 /**
  * Manages rendering of city lots (rectangular parcels) in the 3D scene.
  */
 export class LotManager {
-  private group: THREE.Group
-  private lotMeshes: Map<string, THREE.Group> = new Map()
+  private parent: TransformNode
+  private lotMeshes: Map<string, TransformNode> = new Map()
   private selectedLotId: string | null = null
+  private scene: Scene
 
-  constructor() {
-    this.group = new THREE.Group()
-    this.group.name = 'city-lots'
+  constructor(scene: Scene) {
+    this.scene = scene
+    this.parent = new TransformNode('city-lots', scene)
   }
 
-  getGroup(): THREE.Group {
-    return this.group
+  getParent(): TransformNode {
+    return this.parent
   }
 
   syncLots(lots: CityLot[], terrain: TerrainData): void {
@@ -23,9 +35,8 @@ export class LotManager {
 
     for (const lot of lots) {
       const lotGroup = this.createLotMesh(lot, terrain)
-      lotGroup.userData.lotId = lot.id
+      lotGroup.metadata = { lotId: lot.id }
       this.lotMeshes.set(lot.id, lotGroup)
-      this.group.add(lotGroup)
     }
 
     // Re-apply selection
@@ -39,8 +50,8 @@ export class LotManager {
     if (this.selectedLotId) {
       const prev = this.lotMeshes.get(this.selectedLotId)
       if (prev) {
-        const outline = prev.getObjectByName('selection-outline')
-        if (outline) prev.remove(outline)
+        const outline = prev.getChildMeshes(false).find(m => m.name === 'selection-outline')
+        if (outline) outline.dispose()
       }
     }
 
@@ -49,16 +60,24 @@ export class LotManager {
     if (lotId) {
       const group = this.lotMeshes.get(lotId)
       if (group) {
-        // Add selection outline
-        const selOutline = group.getObjectByName('lot-outline') as THREE.LineLoop | null
-        if (selOutline) {
-          const geo = selOutline.geometry.clone()
-          const mat = new THREE.LineBasicMaterial({ color: 0x4488ff, linewidth: 2, opacity: 1, transparent: false })
-          const sel = new THREE.LineLoop(geo, mat)
-          sel.name = 'selection-outline'
-          sel.position.y = 0.2
-          sel.renderOrder = 15
-          group.add(sel)
+        // Find the outline mesh and create a highlighted copy
+        const lotOutline = group.getChildMeshes(false).find(m => m.name.startsWith('lot-outline'))
+        if (lotOutline) {
+          // Get the outline points from metadata
+          const outlineData = lotOutline.metadata?.outlinePoints as Vector3[] | undefined
+          if (outlineData && outlineData.length >= 2) {
+            const colors = outlineData.map(() => new Color4(0.27, 0.53, 1, 1))
+            // Close the loop
+            const points = [...outlineData, outlineData[0]]
+            const loopColors = [...colors, colors[0]]
+            const sel = MeshBuilder.CreateLines('selection-outline', {
+              points,
+              colors: loopColors,
+            }, this.scene)
+            sel.position.y = 0.2
+            sel.renderingGroupId = 2
+            sel.parent = group
+          }
         }
       }
     }
@@ -81,29 +100,23 @@ export class LotManager {
 
   dispose(): void {
     this.disposeAll()
+    this.parent.dispose()
   }
 
   private disposeAll(): void {
     for (const [, group] of this.lotMeshes) {
-      group.traverse(child => {
-        if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose()
-        if ((child as THREE.Mesh).material) {
-          const mat = (child as THREE.Mesh).material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material).dispose()
-        }
-      })
-      this.group.remove(group)
+      group.dispose()
     }
     this.lotMeshes.clear()
     this.selectedLotId = null
   }
 
-  private createLotMesh(lot: CityLot, terrain: TerrainData): THREE.Group {
-    const group = new THREE.Group()
+  private createLotMesh(lot: CityLot, terrain: TerrainData): TransformNode {
+    const group = new TransformNode(`lot-${lot.id}`, this.scene)
+    group.parent = this.parent
     const cs = terrain.cellSize
     const zoningColor = lot.color || LOT_ZONING_COLORS[lot.zoning] || '#888888'
-    const color = new THREE.Color(zoningColor)
+    const color = Color3.FromHexString(zoningColor)
 
     const x0 = lot.startX * cs
     const z0 = lot.startZ * cs
@@ -115,53 +128,64 @@ export class LotManager {
 
     // Outline rectangle
     const outlinePoints = [
-      new THREE.Vector3(x0, avgY, z0),
-      new THREE.Vector3(x1, avgY, z0),
-      new THREE.Vector3(x1, avgY, z1),
-      new THREE.Vector3(x0, avgY, z1),
+      new Vector3(x0, avgY, z0),
+      new Vector3(x1, avgY, z0),
+      new Vector3(x1, avgY, z1),
+      new Vector3(x0, avgY, z1),
     ]
-    const outlineGeo = new THREE.BufferGeometry().setFromPoints(outlinePoints)
-    const outlineMat = new THREE.LineBasicMaterial({ color, opacity: 0.9, transparent: true })
-    const outlineLine = new THREE.LineLoop(outlineGeo, outlineMat)
-    outlineLine.name = 'lot-outline'
-    outlineLine.renderOrder = 11
-    group.add(outlineLine)
+    const closedPoints = [...outlinePoints, outlinePoints[0]]
+    const outlineColors = closedPoints.map(() => new Color4(color.r, color.g, color.b, 0.9))
+    const outlineLine = MeshBuilder.CreateLines(`lot-outline-${lot.id}`, {
+      points: closedPoints,
+      colors: outlineColors,
+    }, this.scene)
+    outlineLine.renderingGroupId = 1
+    outlineLine.metadata = { outlinePoints }
+    outlineLine.parent = group
 
     // Semi-transparent fill
-    const fillGeo = new THREE.PlaneGeometry(lot.width * cs, lot.depth * cs)
-    fillGeo.rotateX(-Math.PI / 2)
-    const fillMat = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.12,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    })
-    const fillMesh = new THREE.Mesh(fillGeo, fillMat)
+    const fillMat = new StandardMaterial(`lot-fill-mat-${lot.id}`, this.scene)
+    fillMat.diffuseColor = color
+    fillMat.alpha = 0.12
+    fillMat.backFaceCulling = false
+    fillMat.disableLighting = true
+
+    const fillMesh = MeshBuilder.CreateGround(`lot-fill-${lot.id}`, {
+      width: lot.width * cs, height: lot.depth * cs
+    }, this.scene)
+    fillMesh.material = fillMat
     fillMesh.position.set((x0 + x1) / 2, avgY - 0.1, (z0 + z1) / 2)
-    fillMesh.renderOrder = 10
-    fillMesh.userData.lotId = lot.id
-    group.add(fillMesh)
+    fillMesh.renderingGroupId = 1
+    fillMesh.metadata = { lotId: lot.id }
+    fillMesh.parent = group
 
-    // Label
-    const canvas = document.createElement('canvas')
-    canvas.width = 256
-    canvas.height = 64
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      ctx.fillStyle = `#${color.getHexString()}`
-      ctx.font = 'bold 24px sans-serif'
-      ctx.textAlign = 'center'
-      ctx.fillText(lot.name, 128, 36)
+    // Label using DynamicTexture
+    const textureSize = 256
+    const texture = new DynamicTexture(`lot-label-tex-${lot.id}`, { width: textureSize, height: 64 }, this.scene)
+    texture.hasAlpha = true
+    const ctx = texture.getContext() as unknown as CanvasRenderingContext2D
+    ctx.clearRect(0, 0, textureSize, 64)
+    ctx.fillStyle = `#${color.toHexString().slice(1)}`
+    ctx.font = 'bold 24px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText(lot.name, 128, 36)
+    texture.update()
 
-      const texture = new THREE.CanvasTexture(canvas)
-      const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.8 })
-      const sprite = new THREE.Sprite(labelMat)
-      sprite.position.set((x0 + x1) / 2, avgY + 3, (z0 + z1) / 2)
-      const scale = Math.max(5, lot.width * cs * 0.3)
-      sprite.scale.set(scale, scale * 0.25, 1)
-      group.add(sprite)
-    }
+    const labelMat = new StandardMaterial(`lot-label-mat-${lot.id}`, this.scene)
+    labelMat.diffuseTexture = texture
+    labelMat.opacityTexture = texture
+    labelMat.disableLighting = true
+    labelMat.backFaceCulling = false
+
+    const scale = Math.max(5, lot.width * cs * 0.3)
+    const labelPlane = MeshBuilder.CreatePlane(`lot-label-${lot.id}`, {
+      width: scale, height: scale * 0.25
+    }, this.scene)
+    labelPlane.material = labelMat
+    labelPlane.position.set((x0 + x1) / 2, avgY + 3, (z0 + z1) / 2)
+    labelPlane.billboardMode = Mesh.BILLBOARDMODE_ALL
+    labelPlane.renderingGroupId = 2
+    labelPlane.parent = group
 
     return group
   }

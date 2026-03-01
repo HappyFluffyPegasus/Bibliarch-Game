@@ -1,157 +1,151 @@
 /**
  * AnimationManager - Handles animation playback for scene characters.
- * Manages poses, emotions, and animation clips with layered blending.
+ * Babylon.js port: uses AnimationGroup and Scene.beginAnimation.
  */
 
-import * as THREE from 'three'
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
+import {
+  Scene,
+  SceneLoader,
+  TransformNode,
+  Skeleton,
+  Bone,
+  Vector3,
+  Quaternion,
+  AnimationGroup,
+  AbstractMesh,
+} from '@babylonjs/core'
+import '@babylonjs/loaders'
+import '@/lib/registerFBXLoader'
 import type { CharacterAnimationState } from '@/types/scenes'
 import { getAnimationById, EMOTION_MORPH_TARGETS } from '@/utils/animationCatalog'
 
-// Cache for loaded animation clips
-const animationCache: Map<string, THREE.AnimationClip> = new Map()
-const loadingPromises: Map<string, Promise<THREE.AnimationClip | null>> = new Map()
+// Cache for loaded animation groups
+const animationCache: Map<string, AnimationGroup[]> = new Map()
+const loadingPromises: Map<string, Promise<AnimationGroup[] | null>> = new Map()
 
-/**
- * Load an animation clip from an FBX file
- */
-async function loadAnimationClip(path: string): Promise<THREE.AnimationClip | null> {
-  // Check cache
+async function loadAnimationClip(path: string, scene: Scene): Promise<AnimationGroup[] | null> {
   if (animationCache.has(path)) {
     return animationCache.get(path)!
   }
 
-  // Check if already loading
   if (loadingPromises.has(path)) {
     return loadingPromises.get(path)!
   }
 
-  // Load the animation
-  const loadPromise = new Promise<THREE.AnimationClip | null>((resolve) => {
-    const loader = new FBXLoader()
-    loader.load(
-      path,
-      (fbx) => {
-        if (fbx.animations.length > 0) {
-          const clip = fbx.animations[0]
-          animationCache.set(path, clip)
-          resolve(clip)
-        } else {
-          console.warn(`No animations found in ${path}`)
-          resolve(null)
-        }
-      },
-      undefined,
-      (error) => {
-        console.error(`Failed to load animation ${path}:`, error)
-        resolve(null)
+  const loadPromise = (async () => {
+    try {
+      const result = await SceneLoader.ImportAnimationsAsync('', path, scene, false)
+      // The animations are added to the scene's animation groups
+      const groups = scene.animationGroups.slice(-1) // Get the most recently added group
+      if (groups.length > 0) {
+        animationCache.set(path, groups)
+        return groups
       }
-    )
-  })
+      return null
+    } catch (error) {
+      console.error(`Failed to load animation ${path}:`, error)
+      return null
+    }
+  })()
 
   loadingPromises.set(path, loadPromise)
   return loadPromise
 }
 
 export class AnimationManager {
-  private mixer: THREE.AnimationMixer | null = null
-  private currentAction: THREE.AnimationAction | null = null
-  private targetObject: THREE.Object3D | null = null
+  private currentAnimGroup: AnimationGroup | null = null
+  private targetObject: TransformNode | null = null
+  private scene: Scene | null = null
 
-  // Bind pose storage for resetting
+  // Bind pose storage
   private bindPose: Map<string, {
-    position: THREE.Vector3
-    quaternion: THREE.Quaternion
-    scale: THREE.Vector3
+    position: Vector3
+    quaternion: Quaternion
+    scale: Vector3
   }> = new Map()
 
-  // Current state
   private currentState: CharacterAnimationState = {
     basePose: null,
     emotion: null,
     emotionIntensity: 1,
     clipAnimation: null,
-    clipLoop: true
+    clipLoop: true,
   }
 
   // Morph target references
-  private morphTargetMeshes: Map<string, THREE.SkinnedMesh> = new Map()
+  private morphTargetMeshes: Map<string, AbstractMesh> = new Map()
 
   constructor() {}
 
-  /**
-   * Initialize the animation manager with a target object
-   */
-  initialize(target: THREE.Object3D): void {
+  initialize(target: TransformNode, scene: Scene): void {
     this.targetObject = target
-    this.mixer = new THREE.AnimationMixer(target)
+    this.scene = scene
 
-    // Store bind pose
-    target.traverse((node) => {
-      if (node instanceof THREE.Bone) {
-        this.bindPose.set(node.name, {
-          position: node.position.clone(),
-          quaternion: node.quaternion.clone(),
-          scale: node.scale.clone()
-        })
-      }
+    // Store bind pose from skeleton bones
+    target.getChildMeshes(true).forEach(mesh => {
+      if ((mesh as any).skeleton) {
+        const skeleton = (mesh as any).skeleton as Skeleton
+        for (const bone of skeleton.bones) {
+          this.bindPose.set(bone.name, {
+            position: bone.position.clone(),
+            quaternion: bone.rotationQuaternion?.clone() || Quaternion.Identity(),
+            scale: bone.scaling.clone(),
+          })
+        }
 
-      // Collect morph target meshes
-      if (node instanceof THREE.SkinnedMesh && node.morphTargetDictionary) {
-        this.morphTargetMeshes.set(node.name, node)
-      }
-    })
-  }
-
-  /**
-   * Reset to bind pose
-   */
-  resetToBindPose(): void {
-    if (!this.targetObject) return
-
-    if (this.currentAction) {
-      this.currentAction.stop()
-      this.currentAction = null
-    }
-
-    this.mixer?.stopAllAction()
-
-    this.targetObject.traverse((node) => {
-      if (node instanceof THREE.Bone) {
-        const bind = this.bindPose.get(node.name)
-        if (bind) {
-          node.position.copy(bind.position)
-          node.quaternion.copy(bind.quaternion)
-          node.scale.copy(bind.scale)
+        // Collect morph target meshes
+        if ((mesh as any).morphTargetManager) {
+          this.morphTargetMeshes.set(mesh.name, mesh)
         }
       }
     })
   }
 
-  /**
-   * Apply animation state
-   */
+  resetToBindPose(): void {
+    if (!this.targetObject) return
+
+    if (this.currentAnimGroup) {
+      this.currentAnimGroup.stop()
+      this.currentAnimGroup = null
+    }
+
+    // Stop all scene animation groups targeting our object
+    this.scene?.animationGroups.forEach(group => {
+      group.stop()
+    })
+
+    // Restore bind pose
+    this.targetObject.getChildMeshes(true).forEach(mesh => {
+      if ((mesh as any).skeleton) {
+        const skeleton = (mesh as any).skeleton as Skeleton
+        for (const bone of skeleton.bones) {
+          const bind = this.bindPose.get(bone.name)
+          if (bind) {
+            bone.position = bind.position.clone()
+            if (bone.rotationQuaternion) {
+              bone.rotationQuaternion = bind.quaternion.clone()
+            }
+            bone.scaling = bind.scale.clone()
+          }
+        }
+      }
+    })
+  }
+
   async applyState(state: CharacterAnimationState): Promise<void> {
     this.currentState = { ...state }
 
-    // Apply emotion (morph targets)
     this.applyEmotion(state.emotion, state.emotionIntensity)
 
-    // Apply clip animation
     if (state.clipAnimation) {
       await this.playClip(state.clipAnimation, state.clipLoop)
     } else if (state.basePose) {
-      // Apply base pose
       await this.applyPose(state.basePose)
     } else {
-      // Reset to bind pose
       this.resetToBindPose()
     }
   }
 
-  /**
-   * Apply a pose
-   */
   private async applyPose(poseId: string): Promise<void> {
     const entry = getAnimationById(poseId)
     if (!entry) {
@@ -160,57 +154,51 @@ export class AnimationManager {
     }
 
     if (entry.path) {
-      // Pose has an animation file - play it (usually paused at frame 0)
       await this.playClip(poseId, false)
-      // Pause at first frame for static pose
-      if (this.currentAction) {
-        this.currentAction.paused = true
+      if (this.currentAnimGroup) {
+        this.currentAnimGroup.pause()
+        this.currentAnimGroup.goToFrame(0)
       }
     } else {
-      // Built-in pose - reset to bind pose for now
-      // In a full implementation, this would apply bone transforms
       this.resetToBindPose()
     }
   }
 
-  /**
-   * Apply emotion via morph targets
-   */
   private applyEmotion(emotionId: string | null, intensity: number): void {
-    // Reset all morph targets first
+    // Reset all morph targets
     this.morphTargetMeshes.forEach((mesh) => {
-      if (mesh.morphTargetInfluences) {
-        for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
-          mesh.morphTargetInfluences[i] = 0
+      const mtm = (mesh as any).morphTargetManager
+      if (mtm) {
+        for (let i = 0; i < mtm.numTargets; i++) {
+          mtm.getTarget(i).influence = 0
         }
       }
     })
 
     if (!emotionId) return
 
-    // Get morph target values for this emotion
     const targets = EMOTION_MORPH_TARGETS[emotionId]
     if (!targets) return
 
-    // Apply morph targets
     Object.entries(targets).forEach(([key, value]) => {
       const [meshName, targetName] = key.split(':')
       const mesh = this.morphTargetMeshes.get(meshName)
 
-      if (mesh?.morphTargetDictionary && mesh.morphTargetInfluences) {
-        const index = mesh.morphTargetDictionary[targetName]
-        if (index !== undefined) {
-          mesh.morphTargetInfluences[index] = value * intensity
+      if (mesh && (mesh as any).morphTargetManager) {
+        const mtm = (mesh as any).morphTargetManager
+        for (let i = 0; i < mtm.numTargets; i++) {
+          const target = mtm.getTarget(i)
+          if (target.name === targetName) {
+            target.influence = value * intensity
+            break
+          }
         }
       }
     })
   }
 
-  /**
-   * Play an animation clip
-   */
   private async playClip(clipId: string, loop: boolean): Promise<void> {
-    if (!this.mixer) return
+    if (!this.scene) return
 
     const entry = getAnimationById(clipId)
     if (!entry || !entry.path) {
@@ -218,65 +206,45 @@ export class AnimationManager {
       return
     }
 
-    const clip = await loadAnimationClip(entry.path)
-    if (!clip) return
+    const groups = await loadAnimationClip(entry.path, this.scene)
+    if (!groups || groups.length === 0) return
 
-    // Stop current action
-    if (this.currentAction) {
-      this.currentAction.fadeOut(0.3)
+    if (this.currentAnimGroup) {
+      this.currentAnimGroup.stop()
     }
 
-    // Play new action
-    const action = this.mixer.clipAction(clip)
-    action.reset()
-    action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
-    action.clampWhenFinished = !loop
-    action.fadeIn(0.3)
-    action.play()
+    const group = groups[0]
+    group.loopAnimation = loop
+    group.start(loop, 1.0, group.from, group.to, false)
 
-    this.currentAction = action
+    this.currentAnimGroup = group
   }
 
-  /**
-   * Update the animation mixer - call each frame
-   */
   update(delta: number): void {
-    this.mixer?.update(delta)
+    // Babylon.js animation system updates automatically with scene.render()
+    // No manual mixer update needed
   }
 
-  /**
-   * Get current animation state
-   */
   getState(): CharacterAnimationState {
     return { ...this.currentState }
   }
 
-  /**
-   * Stop all animations
-   */
   stop(): void {
-    if (this.currentAction) {
-      this.currentAction.stop()
-      this.currentAction = null
+    if (this.currentAnimGroup) {
+      this.currentAnimGroup.stop()
+      this.currentAnimGroup = null
     }
-    this.mixer?.stopAllAction()
   }
 
-  /**
-   * Dispose of resources
-   */
   dispose(): void {
     this.stop()
-    this.mixer = null
     this.targetObject = null
+    this.scene = null
     this.bindPose.clear()
     this.morphTargetMeshes.clear()
   }
 }
 
-/**
- * Preload commonly used animations
- */
-export async function preloadAnimations(paths: string[]): Promise<void> {
-  await Promise.all(paths.map(path => loadAnimationClip(path)))
+export async function preloadAnimations(paths: string[], scene: Scene): Promise<void> {
+  await Promise.all(paths.map(path => loadAnimationClip(path, scene)))
 }

@@ -1,22 +1,6 @@
-import * as THREE from 'three'
+import { Vector3 } from '@babylonjs/core'
 import { TerrainData } from '@/types/world'
-import { ChunkManager } from './ChunkManager'
 import { TerrainQuadtree, LODSelection } from './TerrainQuadtree'
-
-/**
- * Ring-based chunk streaming system.
- *
- * Manages which chunks are loaded into GPU memory based on camera distance.
- * Works with the TerrainQuadtree to determine what LOD each chunk should be.
- *
- * Ring system:
- * | Ring       | Distance | Content                              |
- * |------------|----------|--------------------------------------|
- * | Immediate  | 0-128m   | Full LOD 0 terrain + all objects     |
- * | Near       | 128-512m | LOD 1-2 terrain, instanced objects   |
- * | Far        | 512-2km  | LOD 3-4 terrain, billboard impostors |
- * | Unloaded   | 2km+     | Nothing                              |
- */
 
 export type StreamingRing = 'immediate' | 'near' | 'far' | 'unloaded'
 
@@ -39,29 +23,21 @@ export class ChunkStreamer {
   private quadtree: TerrainQuadtree
   private loadedChunks: Map<string, StreamedChunk> = new Map()
   private terrain: TerrainData | null = null
-  private maxLoadedChunks: number = 512  // Safety limit
+  private maxLoadedChunks: number = 512
 
   constructor() {
     this.quadtree = new TerrainQuadtree()
   }
 
-  /** Initialize or rebuild the quadtree for new terrain dimensions */
   setTerrain(terrain: TerrainData): void {
     this.terrain = terrain
     this.quadtree.build(terrain.size, terrain.sizeZ, terrain.cellSize, terrain.maxHeight)
   }
 
-  /**
-   * Update streaming based on camera position.
-   * Returns the LOD selections that should be rendered this frame.
-   */
-  update(cameraPos: THREE.Vector3): LODSelection[] {
+  update(cameraPos: Vector3): LODSelection[] {
     if (!this.terrain) return []
 
-    // Query the quadtree for visible chunks at appropriate LOD levels
     const selections = this.quadtree.selectLOD(cameraPos)
-
-    // Track which chunks are active this frame
     const activeKeys = new Set<string>()
     const now = performance.now()
 
@@ -70,7 +46,7 @@ export class ChunkStreamer {
       activeKeys.add(key)
 
       if (!this.loadedChunks.has(key)) {
-        const dist = cameraPos.distanceTo(new THREE.Vector3(
+        const dist = Vector3.Distance(cameraPos, new Vector3(
           sel.cx * this.terrain.cellSize + sel.size * this.terrain.cellSize / 2,
           0,
           sel.cz * this.terrain.cellSize + sel.size * this.terrain.cellSize / 2
@@ -89,7 +65,6 @@ export class ChunkStreamer {
       }
     }
 
-    // Evict chunks that haven't been accessed recently (unloaded ring)
     if (this.loadedChunks.size > this.maxLoadedChunks) {
       const sorted = Array.from(this.loadedChunks.entries())
         .filter(([k]) => !activeKeys.has(k))
@@ -104,7 +79,6 @@ export class ChunkStreamer {
     return selections
   }
 
-  /** Get the streaming ring classification for a distance */
   classifyRing(distance: number): StreamingRing {
     if (distance < RING_DISTANCES.immediate) return 'immediate'
     if (distance < RING_DISTANCES.near) return 'near'
@@ -112,7 +86,6 @@ export class ChunkStreamer {
     return 'unloaded'
   }
 
-  /** Get the current number of loaded chunks */
   getLoadedCount(): number {
     return this.loadedChunks.size
   }

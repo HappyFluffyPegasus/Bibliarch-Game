@@ -1,8 +1,22 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import {
+  Engine,
+  Scene,
+  FreeCamera,
+  HemisphericLight,
+  DirectionalLight,
+  Vector3,
+  Color3,
+  Color4,
+  SceneLoader,
+  TransformNode,
+  AbstractMesh,
+  StandardMaterial,
+  Mesh,
+} from '@babylonjs/core'
+import '@babylonjs/loaders'
 import { createToonMaterial } from '@/lib/shaders/toonMaterial'
 
 interface CharacterColors {
@@ -29,28 +43,26 @@ interface CharacterThumbnail3DProps {
 }
 
 // Cache the loaded model
-let cachedBaseModel: THREE.Group | null = null
-let modelLoadPromise: Promise<THREE.Group> | null = null
+let cachedBaseModel: TransformNode | null = null
+let modelLoadPromise: Promise<TransformNode> | null = null
+let cacheScene: Scene | null = null
 
-async function loadBaseModel(): Promise<THREE.Group> {
-  if (cachedBaseModel) return cachedBaseModel
+async function loadBaseModel(scene: Scene): Promise<TransformNode> {
+  if (cachedBaseModel && cacheScene === scene) return cachedBaseModel
 
-  if (!modelLoadPromise) {
-    modelLoadPromise = new Promise((resolve, reject) => {
-      const loader = new GLTFLoader()
-      loader.load(
-        '/models/Neighbor Base V16.glb',
-        (gltf) => {
-          cachedBaseModel = gltf.scene
-          resolve(cachedBaseModel)
-        },
-        undefined,
-        (error) => {
-          console.error('Failed to load character model for thumbnails:', error)
-          reject(error)
+  if (!modelLoadPromise || cacheScene !== scene) {
+    cacheScene = scene
+    modelLoadPromise = (async () => {
+      const result = await SceneLoader.ImportMeshAsync('', '/models/', 'Neighbor Base V16.glb', scene)
+      const root = new TransformNode('cached-char-model', scene)
+      for (const mesh of result.meshes) {
+        if (!mesh.parent || mesh.parent.name === '__root__') {
+          mesh.parent = root
         }
-      )
-    })
+      }
+      cachedBaseModel = root
+      return root
+    })()
   }
 
   return modelLoadPromise
@@ -58,7 +70,7 @@ async function loadBaseModel(): Promise<THREE.Group> {
 
 export default function CharacterThumbnail3D({ character, size = 48 }: CharacterThumbnail3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const engineRef = useRef<Engine | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [hasError, setHasError] = useState(false)
 
@@ -70,115 +82,102 @@ export default function CharacterThumbnail3D({ character, size = 48 }: Character
 
     async function renderThumbnail() {
       try {
-        const baseModel = await loadBaseModel()
+        // Create engine and scene
+        const engine = new Engine(canvas!, true, { preserveDrawingBuffer: true })
+        const scene = new Scene(engine)
+        scene.clearColor = new Color4(0, 0, 0, 0) // Transparent background
+        engineRef.current = engine
+
+        // Camera - focused on head/upper body
+        const camera = new FreeCamera('thumbCam', new Vector3(0, 1.5, 2.5), scene)
+        camera.setTarget(new Vector3(0, 1.2, 0))
+        camera.fov = 35 * Math.PI / 180
+
+        // Lighting
+        const ambient = new HemisphericLight('ambient', new Vector3(0, 1, 0), scene)
+        ambient.intensity = 0.8
+
+        const keyLight = new DirectionalLight('keyLight', new Vector3(-2, -3, -2).normalize(), scene)
+        keyLight.intensity = 0.9
+
+        const fillLight = new DirectionalLight('fillLight', new Vector3(2, -1, -1).normalize(), scene)
+        fillLight.intensity = 0.4
+        fillLight.diffuse = Color3.FromHexString('#8888ff')
+
+        // Load base model
+        const baseModel = await loadBaseModel(scene)
 
         if (!mounted || !canvas) return
 
-        // Create renderer with the actual canvas element
-        const renderer = new THREE.WebGLRenderer({
-          canvas,
-          antialias: true,
-          alpha: true,
-          preserveDrawingBuffer: true
-        })
-        renderer.setSize(size, size)
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-        renderer.setClearColor(0x000000, 0) // Transparent background
-        rendererRef.current = renderer
-
-        // Create scene
-        const scene = new THREE.Scene()
-
-        // Camera - focused on head/upper body
-        const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100)
-        camera.position.set(0, 1.5, 2.5)
-        camera.lookAt(0, 1.2, 0)
-
-        // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8)
-        scene.add(ambientLight)
-
-        const keyLight = new THREE.DirectionalLight(0xffffff, 0.9)
-        keyLight.position.set(2, 3, 2)
-        scene.add(keyLight)
-
-        const fillLight = new THREE.DirectionalLight(0x8888ff, 0.4)
-        fillLight.position.set(-2, 1, 1)
-        scene.add(fillLight)
-
         // Clone and customize model
-        const modelClone = baseModel.clone(true)
+        const modelClone = baseModel.clone('char-clone', null)!
 
         // Apply character customization
-        modelClone.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) {
-            const meshName = obj.name
-            const lowerName = meshName.toLowerCase()
+        modelClone.getChildMeshes().forEach((mesh) => {
+          const meshName = mesh.name
+          const lowerName = meshName.toLowerCase()
 
-            // Check visibility - show body parts by default
-            const visibleAssets = character.visibleAssets || []
-            const isBodyPart = lowerName.includes('body') || lowerName === 'body'
-            const isVisible = visibleAssets.includes(meshName) || isBodyPart
+          // Check visibility - show body parts by default
+          const visibleAssets = character.visibleAssets || []
+          const isBodyPart = lowerName.includes('body') || lowerName === 'body'
+          const isVisible = visibleAssets.includes(meshName) || isBodyPart
 
-            obj.visible = isVisible
+          mesh.setEnabled(isVisible)
 
-            // Apply colors with toon shading
-            if (character.colors) {
-              let baseColor = '#888888'
-              const colors = character.colors
+          // Apply colors with toon shading
+          if (character.colors && isVisible) {
+            let baseColor = '#888888'
+            const colors = character.colors
 
-              if (lowerName.includes('hair') || lowerName.includes('brow')) {
-                if (colors.hair) baseColor = colors.hair
-              } else if (lowerName.includes('body') || lowerName.includes('skin')) {
-                if (colors.body?.skinTone) baseColor = colors.body.skinTone
-              } else if (lowerName.includes('eye')) {
-                if (colors.body?.eyeColor) baseColor = colors.body.eyeColor
-              } else if (lowerName.includes('shirt') || lowerName.includes('top')) {
-                if (colors.tops?.primary) baseColor = colors.tops.primary
-              } else if (lowerName.includes('pants') || lowerName.includes('jean')) {
-                if (colors.pants) baseColor = colors.pants
-              } else if (lowerName.includes('shoe')) {
-                if (colors.shoes) baseColor = colors.shoes
-              } else if (lowerName.includes('dress')) {
-                if (colors.dresses) baseColor = colors.dresses
-              }
-
-              obj.material = createToonMaterial({
-                color: baseColor,
-                steps: 4,
-                ambient: 0.35,
-              })
+            if (lowerName.includes('hair') || lowerName.includes('brow')) {
+              if (colors.hair) baseColor = colors.hair
+            } else if (lowerName.includes('body') || lowerName.includes('skin')) {
+              if (colors.body?.skinTone) baseColor = colors.body.skinTone
+            } else if (lowerName.includes('eye')) {
+              if (colors.body?.eyeColor) baseColor = colors.body.eyeColor
+            } else if (lowerName.includes('shirt') || lowerName.includes('top')) {
+              if (colors.tops?.primary) baseColor = colors.tops.primary
+            } else if (lowerName.includes('pants') || lowerName.includes('jean')) {
+              if (colors.pants) baseColor = colors.pants
+            } else if (lowerName.includes('shoe')) {
+              if (colors.shoes) baseColor = colors.shoes
+            } else if (lowerName.includes('dress')) {
+              if (colors.dresses) baseColor = colors.dresses
             }
+
+            mesh.material = createToonMaterial(scene, {
+              color: baseColor,
+              steps: 4,
+              ambient: 0.35,
+            })
           }
         })
 
-        // Center model
-        const box = new THREE.Box3().setFromObject(modelClone)
-        const center = box.getCenter(new THREE.Vector3())
-        modelClone.position.x = -center.x
-        modelClone.position.z = -center.z
-        modelClone.position.y = -box.min.y
+        // Center model - compute bounding box
+        const childMeshes = modelClone.getChildMeshes()
+        if (childMeshes.length > 0) {
+          let min = childMeshes[0].getBoundingInfo().boundingBox.minimumWorld.clone()
+          let max = childMeshes[0].getBoundingInfo().boundingBox.maximumWorld.clone()
+          for (const m of childMeshes) {
+            if (!m.isEnabled()) continue
+            const bb = m.getBoundingInfo().boundingBox
+            min = Vector3.Minimize(min, bb.minimumWorld)
+            max = Vector3.Maximize(max, bb.maximumWorld)
+          }
+          const center = Vector3.Center(min, max)
+          modelClone.position.x = -center.x
+          modelClone.position.z = -center.z
+          modelClone.position.y = -min.y
+        }
 
-        scene.add(modelClone)
-
-        // Render
-        renderer.render(scene, camera)
+        // Render single frame
+        scene.render()
 
         if (!mounted) return
         setIsLoading(false)
 
         // Cleanup model clone
-        scene.remove(modelClone)
-        modelClone.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) {
-            obj.geometry.dispose()
-            if (Array.isArray(obj.material)) {
-              obj.material.forEach(m => m.dispose())
-            } else {
-              obj.material.dispose()
-            }
-          }
-        })
+        modelClone.dispose()
 
       } catch (error) {
         console.error('Error rendering character thumbnail:', error)
@@ -193,9 +192,9 @@ export default function CharacterThumbnail3D({ character, size = 48 }: Character
 
     return () => {
       mounted = false
-      if (rendererRef.current) {
-        rendererRef.current.dispose()
-        rendererRef.current = null
+      if (engineRef.current) {
+        engineRef.current.dispose()
+        engineRef.current = null
       }
     }
   }, [character.id, character.colors, character.visibleAssets, size])

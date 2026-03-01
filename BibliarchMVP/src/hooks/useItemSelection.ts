@@ -5,7 +5,7 @@
  */
 
 import { useRef, useCallback, useState, useMemo } from 'react'
-import * as THREE from 'three'
+import { Vector3 } from '@babylonjs/core'
 import { ItemVertex, ItemFace } from '@/types/items'
 import {
   buildAdjacency,
@@ -50,7 +50,7 @@ export interface UseItemSelectionReturn {
   setSelectedEdges: React.Dispatch<React.SetStateAction<number[]>>
 
   // Selection queries
-  getSelectionCentroid: (vertices: ItemVertex[]) => THREE.Vector3 | null
+  getSelectionCentroid: (vertices: ItemVertex[]) => Vector3 | null
   getSelectedVertexIndices: (mode: EditMode, faces: ItemFace[]) => Set<number>
 
   // Adjacency (rebuilt when mesh changes)
@@ -227,21 +227,21 @@ export function useItemSelection(): UseItemSelectionReturn {
   }, [])
 
   // Get centroid of selected vertices (for transform pivot)
-  const getSelectionCentroid = useCallback((vertices: ItemVertex[]): THREE.Vector3 | null => {
+  const getSelectionCentroid = useCallback((vertices: ItemVertex[]): Vector3 | null => {
     const sel = selectedVertices
     if (sel.length === 0) return null
 
-    const center = new THREE.Vector3()
+    const center = new Vector3(0, 0, 0)
     let count = 0
     for (const vi of sel) {
       const pos = vertices[vi]?.position
       if (pos) {
-        center.add(new THREE.Vector3(pos[0], pos[1], pos[2]))
+        center.addInPlace(new Vector3(pos[0], pos[1], pos[2]))
         count++
       }
     }
     if (count === 0) return null
-    center.divideScalar(count)
+    center.scaleInPlace(1 / count)
     return center
   }, [selectedVertices])
 

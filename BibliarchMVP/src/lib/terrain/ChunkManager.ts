@@ -1,9 +1,21 @@
-import * as THREE from 'three'
+import {
+  Mesh,
+  VertexData,
+  Vector3,
+  TransformNode,
+  Scene,
+  Frustum,
+  Matrix,
+  VertexBuffer,
+  type Camera,
+} from '@babylonjs/core'
 import {
   TerrainData,
   TerrainMaterialId,
   terrainIndex,
   isInBounds,
+  isPointInPolygon,
+  type BorderVertex,
 } from '@/types/world'
 import { getMaterialColor } from './materials'
 import { createToonTerrainMaterial } from '@/lib/shaders/toonMaterial'
@@ -12,34 +24,48 @@ const CHUNK_SIZE = 64
 
 /**
  * Manages terrain rendering as a grid of chunks.
- * Each chunk is a 32x32 cell mesh with vertex colors for materials.
+ * Each chunk is an updatable Babylon.js mesh with vertex colors.
  */
 export class ChunkManager {
-  private chunks: Map<string, THREE.Mesh> = new Map()
+  private chunks: Map<string, Mesh> = new Map()
   private dirtyChunks: Set<string> = new Set()
-  private group: THREE.Group
+  private parent: TransformNode
   private chunkSize: number
   private terrain: TerrainData | null = null
   private currentSize: number = 0
   private currentSizeZ: number = 0
+  private scene: Scene
+  private polygonBoundary: BorderVertex[] | null = null
 
-  constructor() {
-    this.group = new THREE.Group()
-    this.group.name = 'terrain-chunks'
+  constructor(scene: Scene) {
+    this.scene = scene
+    this.parent = new TransformNode('terrain-chunks', scene)
     this.chunkSize = CHUNK_SIZE
   }
 
-  /** Get the Three.js group containing all chunk meshes */
-  getGroup(): THREE.Group {
-    return this.group
+  getParent(): TransformNode {
+    return this.parent
   }
 
-  /** Get all chunk meshes for raycasting */
-  getChunkMeshes(): THREE.Mesh[] {
+  getChunkMeshes(): Mesh[] {
     return Array.from(this.chunks.values())
   }
 
-  /** Update terrain — reuses existing mesh/material objects when grid layout is unchanged */
+  setPolygonBoundary(boundary: BorderVertex[] | null): void {
+    this.polygonBoundary = boundary
+    // Mark all chunks dirty so they re-render with the new mask
+    if (this.terrain) {
+      const numChunksX = Math.ceil(this.terrain.size / this.chunkSize)
+      const numChunksZ = Math.ceil(this.terrain.sizeZ / this.chunkSize)
+      for (let cz = 0; cz < numChunksZ; cz++) {
+        for (let cx = 0; cx < numChunksX; cx++) {
+          this.dirtyChunks.add(`${cx}_${cz}`)
+        }
+      }
+      this.rebuildDirty()
+    }
+  }
+
   setTerrain(terrain: TerrainData): void {
     const oldSize = this.currentSize
     const oldSizeZ = this.currentSizeZ
@@ -49,7 +75,6 @@ export class ChunkManager {
     const numChunksZ = Math.ceil(terrain.sizeZ / this.chunkSize)
     const expectedChunks = numChunksX * numChunksZ
 
-    // Same grid layout with all chunks present: reuse objects, just rebuild geometry
     if (oldSize === terrain.size && oldSizeZ === terrain.sizeZ && this.chunks.size === expectedChunks) {
       for (const [key, mesh] of this.chunks) {
         const [cx, cz] = key.split('_').map(Number)
@@ -58,7 +83,6 @@ export class ChunkManager {
       return
     }
 
-    // Different size or missing chunks: full rebuild
     this.dispose()
     this.currentSize = terrain.size
     this.currentSizeZ = terrain.sizeZ
@@ -68,12 +92,10 @@ export class ChunkManager {
         const key = `${cx}_${cz}`
         const mesh = this.createChunkMesh(cx, cz, terrain)
         this.chunks.set(key, mesh)
-        this.group.add(mesh)
       }
     }
   }
 
-  /** Mark a region of cells as needing rebuild (after sculpt/paint) */
   markDirty(cellX: number, cellZ: number, radius: number): void {
     const cs = this.chunkSize
     const minCx = Math.floor(Math.max(0, cellX - radius) / cs)
@@ -88,7 +110,6 @@ export class ChunkManager {
     }
   }
 
-  /** Rebuild only dirty chunks. Call after brush strokes. */
   rebuildDirty(): void {
     if (!this.terrain) return
     for (const key of this.dirtyChunks) {
@@ -101,37 +122,27 @@ export class ChunkManager {
     this.dirtyChunks.clear()
   }
 
-  /** Frustum-cull chunks: hide any chunk whose bounding box is outside the camera frustum */
-  cullChunks(camera: THREE.Camera): void {
-    const projScreenMatrix = new THREE.Matrix4()
-    projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
-    const frustum = new THREE.Frustum()
-    frustum.setFromProjectionMatrix(projScreenMatrix)
+  cullChunks(camera: Camera): void {
+    const planes = Frustum.GetPlanes(camera.getTransformationMatrix())
 
     for (const [, mesh] of this.chunks) {
-      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
-      mesh.visible = frustum.intersectsBox(mesh.geometry.boundingBox!)
+      const bb = mesh.getBoundingInfo().boundingBox
+      mesh.setEnabled(bb.isInFrustum(planes))
     }
   }
 
-  /** Update the light direction uniform on all chunk materials */
-  updateLightDirection(direction: THREE.Vector3): void {
+  updateLightDirection(direction: Vector3): void {
     this.chunks.forEach(mesh => {
-      const mat = mesh.material as THREE.ShaderMaterial
-      if (mat.uniforms?.uLightDirection) {
-        mat.uniforms.uLightDirection.value.copy(direction)
+      const mat = mesh.material as any
+      if (mat && mat.setVector3) {
+        mat.setVector3('uLightDirection', direction)
       }
     })
   }
 
-  /** Dispose all GPU resources */
   dispose(): void {
     for (const mesh of this.chunks.values()) {
-      mesh.geometry.dispose()
-      if (mesh.material instanceof THREE.Material) {
-        mesh.material.dispose()
-      }
-      this.group.remove(mesh)
+      mesh.dispose()
     }
     this.chunks.clear()
     this.dirtyChunks.clear()
@@ -141,76 +152,71 @@ export class ChunkManager {
 
   // ── Private ────────────────────────────────────────────────
 
-  private createChunkMesh(cx: number, cz: number, terrain: TerrainData): THREE.Mesh {
+  private createChunkMesh(cx: number, cz: number, terrain: TerrainData): Mesh {
     const cs = this.chunkSize
     const startX = cx * cs
     const startZ = cz * cs
     const cellsX = Math.min(cs, terrain.size - startX)
     const cellsZ = Math.min(cs, terrain.sizeZ - startZ)
 
-    const geometry = this.buildChunkGeometry(startX, startZ, cellsX, cellsZ, terrain)
+    const mesh = new Mesh(`chunk_${cx}_${cz}`, this.scene)
+    mesh.parent = this.parent
 
-    const material = createToonTerrainMaterial({
+    const vertexData = this.buildChunkVertexData(startX, startZ, cellsX, cellsZ, terrain)
+    vertexData.applyToMesh(mesh, true) // updatable = true
+
+    const material = createToonTerrainMaterial(this.scene, {
       steps: 4,
       ambient: 0.35,
     })
+    mesh.material = material
 
-    const mesh = new THREE.Mesh(geometry, material)
-    mesh.userData.isTerrainChunk = true
-    mesh.userData.chunkX = cx
-    mesh.userData.chunkZ = cz
+    mesh.metadata = {
+      isTerrainChunk: true,
+      chunkX: cx,
+      chunkZ: cz,
+    }
 
     return mesh
   }
 
-  private updateChunkGeometry(mesh: THREE.Mesh, cx: number, cz: number, terrain: TerrainData): void {
+  private updateChunkGeometry(mesh: Mesh, cx: number, cz: number, terrain: TerrainData): void {
     const cs = this.chunkSize
     const startX = cx * cs
     const startZ = cz * cs
     const cellsX = Math.min(cs, terrain.size - startX)
     const cellsZ = Math.min(cs, terrain.sizeZ - startZ)
 
-    const geo = mesh.geometry
-    const posAttr = geo.getAttribute('position') as THREE.BufferAttribute
-    const colorAttr = geo.getAttribute('color') as THREE.BufferAttribute
-    const normalAttr = geo.getAttribute('normal') as THREE.BufferAttribute
-
-    // Verify buffer sizes match (same chunk dimensions) — if not, fall back to full rebuild
     const vertsX = cellsX + 1
     const vertsZ = cellsZ + 1
     const vertCount = vertsX * vertsZ
-    if (posAttr.count !== vertCount) {
-      geo.dispose()
-      mesh.geometry = this.buildChunkGeometry(startX, startZ, cellsX, cellsZ, terrain)
+
+    const posData = mesh.getVerticesData(VertexBuffer.PositionKind)
+    if (!posData || posData.length / 3 !== vertCount) {
+      // Size changed — full rebuild
+      const vertexData = this.buildChunkVertexData(startX, startZ, cellsX, cellsZ, terrain)
+      vertexData.applyToMesh(mesh, true)
       return
     }
 
-    // Update positions and colors in-place (no GPU memory alloc/dealloc)
-    this.fillPositionsAndColors(
-      posAttr.array as Float32Array,
-      colorAttr.array as Float32Array,
-      startX, startZ, vertsX, vertsZ, terrain
-    )
+    const positions = new Float32Array(vertCount * 3)
+    const colors = new Float32Array(vertCount * 4) // Babylon uses RGBA
+    const normals = new Float32Array(vertCount * 3)
 
-    // Recompute normals in-place
-    this.computeNormals(
-      posAttr.array as Float32Array,
-      geo.index!.array as Uint32Array,
-      normalAttr.array as Float32Array,
-      vertCount
-    )
+    this.fillPositionsAndColors(positions, colors, startX, startZ, vertsX, vertsZ, terrain)
 
-    posAttr.needsUpdate = true
-    colorAttr.needsUpdate = true
-    normalAttr.needsUpdate = true
-    geo.computeBoundingBox()
-    geo.computeBoundingSphere()
+    // Get indices for normal computation
+    const indices = mesh.getIndices()
+    if (indices) {
+      this.computeNormals(positions, indices as Uint32Array, normals, vertCount)
+    }
+
+    mesh.updateVerticesData(VertexBuffer.PositionKind, positions)
+    mesh.updateVerticesData(VertexBuffer.ColorKind, colors)
+    mesh.updateVerticesData(VertexBuffer.NormalKind, normals)
+    mesh.refreshBoundingInfo()
   }
 
-  /**
-   * Fill position and color arrays for a chunk's vertices.
-   * Shared by both buildChunkGeometry (initial) and updateChunkGeometry (in-place).
-   */
   private fillPositionsAndColors(
     positions: Float32Array,
     colors: Float32Array,
@@ -249,68 +255,43 @@ export class ChunkManager {
           b = Math.min(1, b * tint + depth * 0.15)
         }
 
-        colors[vi * 3] = r
-        colors[vi * 3 + 1] = g
-        colors[vi * 3 + 2] = b
+        // Dim cells outside polygon boundary
+        if (this.polygonBoundary && this.polygonBoundary.length >= 3) {
+          if (!isPointInPolygon(wx, wz, this.polygonBoundary)) {
+            r *= 0.3
+            g *= 0.3
+            b *= 0.3
+          }
+        }
+
+        // Babylon.js uses RGBA vertex colors (4 components)
+        colors[vi * 4] = r
+        colors[vi * 4 + 1] = g
+        colors[vi * 4 + 2] = b
+        colors[vi * 4 + 3] = 1
       }
     }
   }
 
-  /**
-   * Build BufferGeometry for a chunk section.
-   * Vertices are in world space so chunks tile seamlessly.
-   */
-  private buildChunkGeometry(
+  private buildChunkVertexData(
     startX: number,
     startZ: number,
     cellsX: number,
     cellsZ: number,
     terrain: TerrainData,
-    lodStep: number = 1
-  ): THREE.BufferGeometry {
-    const vertsX = Math.floor(cellsX / lodStep) + 1
-    const vertsZ = Math.floor(cellsZ / lodStep) + 1
+    _lodStep: number = 1
+  ): VertexData {
+    const vertsX = cellsX + 1
+    const vertsZ = cellsZ + 1
     const vertCount = vertsX * vertsZ
 
-    // Attribute arrays
     const positions = new Float32Array(vertCount * 3)
-    const colors = new Float32Array(vertCount * 3)
+    const colors = new Float32Array(vertCount * 4) // RGBA
     const normals = new Float32Array(vertCount * 3)
 
-    if (lodStep === 1) {
-      this.fillPositionsAndColors(positions, colors, startX, startZ, vertsX, vertsZ, terrain)
-    } else {
-      // LOD: sample every lodStep-th vertex
-      const cellSize = terrain.cellSize
-      for (let vz = 0; vz < vertsZ; vz++) {
-        for (let vx = 0; vx < vertsX; vx++) {
-          const vi = vz * vertsX + vx
-          const gx = Math.min(startX + vx * lodStep, terrain.size - 1)
-          const gz = Math.min(startZ + vz * lodStep, terrain.sizeZ - 1)
+    this.fillPositionsAndColors(positions, colors, startX, startZ, vertsX, vertsZ, terrain)
 
-          positions[vi * 3] = gx * cellSize
-          positions[vi * 3 + 1] = terrain.heights[terrainIndex(gx, gz, terrain.size)] * terrain.maxHeight
-          positions[vi * 3 + 2] = gz * cellSize
-
-          const matId = terrain.materials[terrainIndex(gx, gz, terrain.size)] as TerrainMaterialId
-          const rgb = getMaterialColor(matId)
-          let r = rgb[0], g = rgb[1], b = rgb[2]
-          const height = terrain.heights[terrainIndex(gx, gz, terrain.size)]
-          if (height < terrain.seaLevel) {
-            const depth = Math.min((terrain.seaLevel - height) / terrain.seaLevel, 1)
-            const tint = 1 - depth * 0.45
-            r = r * tint * 0.7
-            g = g * tint * 0.85
-            b = Math.min(1, b * tint + depth * 0.15)
-          }
-          colors[vi * 3] = r
-          colors[vi * 3 + 1] = g
-          colors[vi * 3 + 2] = b
-        }
-      }
-    }
-
-    // Build index buffer (two triangles per cell in the LOD grid)
+    // Build index buffer
     const cellCountX = vertsX - 1
     const cellCountZ = vertsZ - 1
     const indexCount = cellCountX * cellCountZ * 6
@@ -324,89 +305,68 @@ export class ChunkManager {
         const bl = (cz + 1) * vertsX + cx
         const br = bl + 1
 
+        // Babylon.js uses clockwise winding (opposite of Three.js)
         indices[idx++] = tl
-        indices[idx++] = bl
-        indices[idx++] = tr
         indices[idx++] = tr
         indices[idx++] = bl
+        indices[idx++] = tr
         indices[idx++] = br
+        indices[idx++] = bl
       }
     }
 
-    // Compute normals
     this.computeNormals(positions, indices, normals, vertCount)
 
-    // Assemble geometry
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
-    geometry.setIndex(new THREE.BufferAttribute(indices, 1))
-    geometry.computeBoundingBox()
-    geometry.computeBoundingSphere()
+    const vertexData = new VertexData()
+    vertexData.positions = positions
+    vertexData.normals = normals
+    vertexData.colors = colors
+    vertexData.indices = indices
 
-    return geometry
+    return vertexData
   }
 
-  /** Compute smooth normals for the mesh */
   private computeNormals(
     positions: Float32Array,
-    indices: Uint32Array,
+    indices: Uint32Array | number[],
     normals: Float32Array,
     vertCount: number
   ): void {
-    // Zero out
     normals.fill(0)
 
-    const vA = new THREE.Vector3()
-    const vB = new THREE.Vector3()
-    const vC = new THREE.Vector3()
-    const ab = new THREE.Vector3()
-    const ac = new THREE.Vector3()
-    const faceNormal = new THREE.Vector3()
-
-    // Accumulate face normals
     for (let i = 0; i < indices.length; i += 3) {
       const a = indices[i]
       const b = indices[i + 1]
       const c = indices[i + 2]
 
-      vA.set(positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2])
-      vB.set(positions[b * 3], positions[b * 3 + 1], positions[b * 3 + 2])
-      vC.set(positions[c * 3], positions[c * 3 + 1], positions[c * 3 + 2])
+      const ax = positions[a * 3], ay = positions[a * 3 + 1], az = positions[a * 3 + 2]
+      const bx = positions[b * 3], by = positions[b * 3 + 1], bz = positions[b * 3 + 2]
+      const cx2 = positions[c * 3], cy = positions[c * 3 + 1], cz = positions[c * 3 + 2]
 
-      ab.subVectors(vB, vA)
-      ac.subVectors(vC, vA)
-      faceNormal.crossVectors(ab, ac)
+      const abx = bx - ax, aby = by - ay, abz = bz - az
+      const acx = cx2 - ax, acy = cy - ay, acz = cz - az
 
-      normals[a * 3] += faceNormal.x
-      normals[a * 3 + 1] += faceNormal.y
-      normals[a * 3 + 2] += faceNormal.z
-      normals[b * 3] += faceNormal.x
-      normals[b * 3 + 1] += faceNormal.y
-      normals[b * 3 + 2] += faceNormal.z
-      normals[c * 3] += faceNormal.x
-      normals[c * 3 + 1] += faceNormal.y
-      normals[c * 3 + 2] += faceNormal.z
+      const nx = aby * acz - abz * acy
+      const ny = abz * acx - abx * acz
+      const nz = abx * acy - aby * acx
+
+      normals[a * 3] += nx; normals[a * 3 + 1] += ny; normals[a * 3 + 2] += nz
+      normals[b * 3] += nx; normals[b * 3 + 1] += ny; normals[b * 3 + 2] += nz
+      normals[c * 3] += nx; normals[c * 3 + 1] += ny; normals[c * 3 + 2] += nz
     }
 
-    // Normalize
-    const n = new THREE.Vector3()
     for (let i = 0; i < vertCount; i++) {
-      n.set(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2])
-      n.normalize()
-      normals[i * 3] = n.x
-      normals[i * 3 + 1] = n.y
-      normals[i * 3 + 2] = n.z
+      const x = normals[i * 3], y = normals[i * 3 + 1], z = normals[i * 3 + 2]
+      const len = Math.sqrt(x * x + y * y + z * z) || 1
+      normals[i * 3] = x / len
+      normals[i * 3 + 1] = y / len
+      normals[i * 3 + 2] = z / len
     }
   }
 }
 
-/**
- * Convert a world-space raycaster hit point to terrain grid coordinates.
- */
 export function worldToGrid(
-  point: THREE.Vector3,
+  point: Vector3,
   terrain: TerrainData
 ): { x: number; z: number } | null {
   const gx = Math.round(point.x / terrain.cellSize)

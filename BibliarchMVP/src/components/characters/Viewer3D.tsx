@@ -1,11 +1,29 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { createToonMaterial, setToonMaterialColor, createColoredShadowMaterial } from '@/lib/shaders/toonMaterial'
+import {
+  Engine,
+  Scene,
+  ArcRotateCamera,
+  HemisphericLight,
+  DirectionalLight,
+  Vector3,
+  Color3,
+  Color4,
+  TransformNode,
+  Mesh,
+  SceneLoader,
+  Texture,
+  AnimationGroup,
+  Skeleton,
+  type AbstractMesh,
+  type ISceneLoaderAsyncResult,
+  type Nullable,
+  Space,
+} from '@babylonjs/core'
+import '@babylonjs/loaders'
+import '@/lib/registerFBXLoader'
+import { GridMaterial, CustomMaterial } from '@babylonjs/materials'
 import { getUndertoneTexturePath, getUndertone } from '@/lib/hairTextures'
 import { SpringBoneSystem } from '@/lib/SpringBoneSystem'
 
@@ -55,51 +73,59 @@ interface Viewer3DProps {
 }
 
 const CAMERA_POSITIONS = {
-  DEFAULT: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
-  BODY: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
-  HAIR: { position: new THREE.Vector3(-1.2, 1.7, 0), target: new THREE.Vector3(0, 1.65, 0), fov: 40 },
-  TOPS: { position: new THREE.Vector3(-1.8, 1.2, 0), target: new THREE.Vector3(0, 1.1, 0), fov: 45 },
-  DRESSES: { position: new THREE.Vector3(-2.8, 1.0, 0), target: new THREE.Vector3(0, 1.0, 0), fov: 40 },
-  PANTS: { position: new THREE.Vector3(-2.0, 0.8, 0), target: new THREE.Vector3(0, 0.6, 0), fov: 50 },
-  SHOES: { position: new THREE.Vector3(-1.5, 0.3, 0.3), target: new THREE.Vector3(0, 0.1, 0), fov: 45 },
-  ACCESSORIES: { position: new THREE.Vector3(-5, 1.55, 0), target: new THREE.Vector3(0, 1.1, 0), fov: 28 },
-  EXPRESSIONS: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
-  POSES: { position: new THREE.Vector3(-4, 1.65, 0), target: new THREE.Vector3(0, 1.4, 0), fov: 30 },
+  DEFAULT: { position: new Vector3(-4, 1.65, 0), target: new Vector3(0, 1.4, 0), fov: 30 },
+  BODY: { position: new Vector3(-4, 1.65, 0), target: new Vector3(0, 1.4, 0), fov: 30 },
+  HAIR: { position: new Vector3(-1.2, 1.7, 0), target: new Vector3(0, 1.65, 0), fov: 40 },
+  TOPS: { position: new Vector3(-1.8, 1.2, 0), target: new Vector3(0, 1.1, 0), fov: 45 },
+  DRESSES: { position: new Vector3(-2.8, 1.0, 0), target: new Vector3(0, 1.0, 0), fov: 40 },
+  PANTS: { position: new Vector3(-2.0, 0.8, 0), target: new Vector3(0, 0.6, 0), fov: 50 },
+  SHOES: { position: new Vector3(-1.5, 0.3, 0.3), target: new Vector3(0, 0.1, 0), fov: 45 },
+  ACCESSORIES: { position: new Vector3(-5, 1.55, 0), target: new Vector3(0, 1.1, 0), fov: 28 },
+  EXPRESSIONS: { position: new Vector3(-4, 1.65, 0), target: new Vector3(0, 1.4, 0), fov: 30 },
+  POSES: { position: new Vector3(-4, 1.65, 0), target: new Vector3(0, 1.4, 0), fov: 30 },
+}
+
+/** Convert a vertical FOV in degrees to ArcRotateCamera radius approximation */
+function fovToRadius(fov: number, targetDistance: number): number {
+  // Approximate: smaller FOV = camera further away, larger = closer
+  // The Three.js default was fov=28 at distance ~4.3
+  const baseFov = 28
+  const baseRadius = 4.3
+  return baseRadius * (baseFov / fov)
 }
 
 export default function Viewer3D({ currentSection, visibleAssets, categoryColors, meshColors, transforms, onMeshesLoaded, onMorphTargetsLoaded, morphTargetValues, selectedPose, heightScale = 1.0 }: Viewer3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
-  const controlsRef = useRef<OrbitControls | null>(null)
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
-  const sceneRef = useRef<THREE.Scene | null>(null)
-  const meshMapRef = useRef<Map<string, THREE.Mesh>>(new Map())
-  const skinnedMeshMapRef = useRef<Map<string, THREE.SkinnedMesh>>(new Map())
-  const materialMapRef = useRef<Map<string, THREE.Material>>(new Map())
-  const sceneObjectsRef = useRef<THREE.Group | null>(null)
-  const originalTransformsRef = useRef<Map<string, { position: THREE.Vector3, rotation: THREE.Euler, scale: THREE.Vector3 }>>(new Map())
+  const cameraRef = useRef<ArcRotateCamera | null>(null)
+  const engineRef = useRef<Engine | null>(null)
+  const sceneRef = useRef<Scene | null>(null)
+  const meshMapRef = useRef<Map<string, AbstractMesh>>(new Map())
+  const skinnedMeshMapRef = useRef<Map<string, AbstractMesh>>(new Map())
+  const materialMapRef = useRef<Map<string, any>>(new Map())
+  const sceneObjectsRef = useRef<TransformNode | null>(null)
+  const originalTransformsRef = useRef<Map<string, { position: Vector3, rotation: Vector3, scale: Vector3 }>>(new Map())
 
   // Animation system refs
-  const mixerRef = useRef<THREE.AnimationMixer | null>(null)
-  const currentActionRef = useRef<THREE.AnimationAction | null>(null)
-  const clockRef = useRef<THREE.Clock>(new THREE.Clock())
-  const bindPoseRef = useRef<Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion, scale: THREE.Vector3 }>>(new Map())
+  const animationGroupsRef = useRef<AnimationGroup[]>([])
+  const currentAnimGroupRef = useRef<AnimationGroup | null>(null)
+  const skeletonRef = useRef<Skeleton | null>(null)
+  const bindPoseRef = useRef<Map<string, { position: Vector3, rotationQuaternion: any, scale: Vector3 }>>(new Map())
   const modelBonesRef = useRef<string[]>([])
   const heightScaleRef = useRef<number>(1.0)
   const visibleAssetsRef = useRef<string[]>(visibleAssets)
-  const hairTextureRef = useRef<THREE.Texture | null>(null)
+  const hairTextureRef = useRef<Texture | null>(null)
   const currentHairColorRef = useRef<string | null>(null)
-  const textureLoaderRef = useRef<THREE.TextureLoader | null>(null)
   const springBonesRef = useRef<SpringBoneSystem | null>(null)
+  const lastTimeRef = useRef<number>(0)
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [modelReady, setModelReady] = useState(false)
   const [currentHairTexture, setCurrentHairTexture] = useState<string | null>(null)
+  // TODO: Hair meshes don't show — likely FBX armature parenting issue. Hair is parented to a different armature in Blender.
 
   // Keep ref in sync with prop
   visibleAssetsRef.current = visibleAssets
-
   useEffect(() => {
     if (!canvasRef.current) return
 
@@ -111,56 +137,62 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     skinnedMeshMapRef.current.clear()
     materialMapRef.current.clear()
 
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x2a2a2a)
+    const engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true })
+    engineRef.current = engine
+
+    const scene = new Scene(engine)
+    scene.clearColor = new Color4(0.165, 0.165, 0.165, 1) // 0x2a2a2a
     sceneRef.current = scene
 
-    const camera = new THREE.PerspectiveCamera(
-      28,
-      canvas.clientWidth / canvas.clientHeight,
-      0.1,
-      1000
+    // ArcRotateCamera: alpha = horizontal rotation, beta = vertical rotation, radius = distance
+    // Position (-4, 1.65, 0) looking at (0, 1.1, 0) means camera is along negative X
+    const camera = new ArcRotateCamera(
+      'camera',
+      Math.PI,  // alpha: camera on -X side (facing character front)
+      Math.PI / 2.5,  // beta: slightly above horizontal
+      4.3,        // radius: distance from target
+      new Vector3(0, 1.1, 0), // target
+      scene
     )
-    camera.position.set(-4, 1.65, 0)
+    camera.fov = 28 * (Math.PI / 180) // Convert degrees to radians for Babylon.js
+    camera.minZ = 0.1
+    camera.maxZ = 1000
+    camera.attachControl(canvas, true)
+
+    // Orbit controls are built into ArcRotateCamera
+    camera.useBouncingBehavior = false
+    camera.panningSensibility = 0 // Disable panning (equivalent to enablePan = false)
+    camera.lowerRadiusLimit = 0.5
+    camera.upperRadiusLimit = 8
+    camera.upperBetaLimit = Math.PI / 1.5
+    camera.lowerBetaLimit = Math.PI / 6
+    camera.angularSensibilityX = 1250 // Lower = faster rotation (inverse of rotateSpeed)
+    camera.angularSensibilityY = 1250
+    camera.wheelPrecision = 125 // Inverse of zoomSpeed
+    camera.inertia = 0.92 // Damping equivalent
+
     cameraRef.current = camera
 
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true
-    })
-    renderer.setSize(canvas.clientWidth, canvas.clientHeight)
-    renderer.setPixelRatio(window.devicePixelRatio)
-    renderer.shadowMap.enabled = true
-    rendererRef.current = renderer
+    // Key light - white from front-left (matches Three.js directional light)
+    const directionalLight = new DirectionalLight('dirLight', new Vector3(3, -1.4, -2).normalize(), scene)
+    directionalLight.intensity = 1.0
+    directionalLight.diffuse = Color3.White()
 
-    const controls = new OrbitControls(camera, canvas)
-    controls.target.set(0, 1.1, 0)
-    controls.enableDamping = true
-    controls.dampingFactor = 0.08
-    controls.minDistance = 0.5
-    controls.maxDistance = 8
-    controls.maxPolarAngle = Math.PI / 1.5
-    controls.minPolarAngle = Math.PI / 6
-    controls.enablePan = false
-    controls.rotateSpeed = 0.8
-    controls.zoomSpeed = 0.8
-    controlsRef.current = controls
+    // Warm ambient — just enough to keep shadow areas warm, not bright
+    const ambientLight = new HemisphericLight('ambientLight', new Vector3(0, 1, 0), scene)
+    ambientLight.intensity = 0.3
+    ambientLight.diffuse = new Color3(0.4, 0.35, 0.3)
+    ambientLight.groundColor = new Color3(0.4, 0.35, 0.3) // Same as diffuse so tint is uniform
 
-    // Key light - bright white from front
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 2.0)
-    directionalLight.position.set(-3, 1.4, 2)
-    scene.add(directionalLight)
-
-    // Warm ambient to tint shadow areas orange (not black!)
-    const ambientLight = new THREE.AmbientLight(0xff6622, 0.8)
-    scene.add(ambientLight)
-
-    const grid = new THREE.GridHelper(10, 10, 0x404040, 0x404040)
-    scene.add(grid)
-
-    const loader = new FBXLoader()
-    const textureLoader = new THREE.TextureLoader()
-    textureLoaderRef.current = textureLoader
+    // Grid
+    const gridMesh = Mesh.CreateGround('grid', 10, 10, 10, scene)
+    const gridMaterial = new GridMaterial('gridMaterial', scene)
+    gridMaterial.majorUnitFrequency = 1
+    gridMaterial.gridRatio = 1
+    gridMaterial.mainColor = Color3.FromHexString('#404040')
+    gridMaterial.lineColor = Color3.FromHexString('#404040')
+    gridMaterial.opacity = 0.99
+    gridMesh.material = gridMaterial
 
     // Load hair texture based on undertone selection
     const initialHairColor = categoryColors?.hair || '#4a3728' // Default brown
@@ -171,318 +203,305 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     setCurrentHairTexture(undertone?.name || 'Warm')
     console.log('Hair undertone:', initialUndertone, '->', texturePath)
 
-    const hairTexture = textureLoader.load(
-      texturePath,
-      (tex) => {
-        console.log('Hair texture loaded successfully', tex)
-        tex.colorSpace = THREE.SRGBColorSpace
-        tex.needsUpdate = true
-        hairTextureRef.current = tex
-      },
-      undefined,
-      (err) => {
-        console.error('Failed to load hair texture:', err)
-      }
-    )
+    const hairTexture = new Texture(texturePath, scene, false, false, Texture.TRILINEAR_SAMPLINGMODE, () => {
+      console.log('Hair texture loaded successfully')
+      hairTextureRef.current = hairTexture
+    }, (message, exception) => {
+      console.error('Failed to load hair texture:', message, exception)
+    })
+    hairTextureRef.current = hairTexture
 
-    // Load the working model (no shape keys, good for animation)
-    loader.load(
-      '/models/Bibliarch Maybe.fbx',
-      (fbx) => {
-        if (!mounted) return  // Stale callback from unmounted instance
+    // Load the working model
+    const loadModel = async () => {
+      try {
+        const result: ISceneLoaderAsyncResult = await SceneLoader.ImportMeshAsync(
+          '',
+          '/models/',
+          'Bibliarch Maybe.fbx',
+          scene
+        )
 
-        fbx.scale.setScalar(0.01)
-        fbx.name = 'Character Rig'
-        fbx.rotation.y = -Math.PI / 2
+        if (!mounted) return
 
-        const wrapper = new THREE.Group()
-        wrapper.name = 'animationRoot'
-        wrapper.add(fbx)
-        scene.add(wrapper)
+        // Create wrapper transform node
+        const wrapper = new TransformNode('animationRoot', scene)
         sceneObjectsRef.current = wrapper
 
-        // Rebind all SkinnedMeshes AFTER adding to scene.
-        // Calling bind() without a second argument forces Three.js to
-        // recompute bind matrices from the current (scaled) world matrices.
-        // Without this, the 0.01 scale causes armatures to collapse.
-        fbx.updateMatrixWorld(true)
-        fbx.traverse((node) => {
-          if (node instanceof THREE.SkinnedMesh) {
-            node.bind(node.skeleton)
+        // Create a parent node for the FBX content
+        const fbxRoot = new TransformNode('Character Rig', scene)
+        fbxRoot.scaling.setAll(0.01)
+        fbxRoot.rotation.y = -Math.PI / 2
+        fbxRoot.parent = wrapper
+
+        // Parent all loaded meshes and transform nodes to fbxRoot
+        for (const mesh of result.meshes) {
+          if (!mesh.parent || mesh.parent.name === '__root__') {
+            mesh.parent = fbxRoot
           }
-        })
+        }
+        for (const tnode of result.transformNodes) {
+          if (!tnode.parent || tnode.parent.name === '__root__') {
+            tnode.parent = fbxRoot
+          }
+        }
+
+        // Store skeleton reference
+        if (result.skeletons.length > 0) {
+          skeletonRef.current = result.skeletons[0]
+        }
+
+        // Force compute world matrices after reparenting
+        fbxRoot.computeWorldMatrix(true)
 
         const meshes: string[] = []
         const morphTargets: MorphTargetInfo[] = []
         const boneNames: string[] = []
 
-        const workingMeshes = new Map<string, THREE.SkinnedMesh>()
+        const workingMeshes = new Map<string, AbstractMesh>()
 
-        // Force all nodes visible first — parent visibility=false blocks child rendering
-        fbx.traverse((node) => { node.visible = true })
-
-        fbx.traverse((node) => {
-          if (node instanceof THREE.Bone) {
-            boneNames.push(node.name)
-            bindPoseRef.current.set(node.name, {
-              position: node.position.clone(),
-              quaternion: node.quaternion.clone(),
-              scale: node.scale.clone()
+        // Collect bone names from skeleton
+        if (result.skeletons.length > 0) {
+          const skeleton = result.skeletons[0]
+          for (const bone of skeleton.bones) {
+            boneNames.push(bone.name)
+            bindPoseRef.current.set(bone.name, {
+              position: bone.getPosition(Space.LOCAL).clone(),
+              rotationQuaternion: bone.getRotationQuaternion(Space.LOCAL).clone(),
+              scale: bone.getScale().clone()
             })
           }
+        }
 
-          if (node instanceof THREE.Mesh || node instanceof THREE.SkinnedMesh) {
-            const meshName = node.name || 'unnamed_mesh'
-            console.log('Found mesh:', meshName)
-            meshes.push(meshName)
-            meshMapRef.current.set(meshName, node as THREE.Mesh)
+        // Process all loaded meshes
+        for (const node of result.meshes) {
+          const meshName = node.name || 'unnamed_mesh'
+          console.log('Found mesh:', meshName)
+          meshes.push(meshName)
+          meshMapRef.current.set(meshName, node)
 
-            if (node instanceof THREE.SkinnedMesh) {
-              skinnedMeshMapRef.current.set(meshName, node)
-              workingMeshes.set(meshName, node)
-            }
+          const hasSkeleton = !!node.skeleton
+          if (hasSkeleton) {
+            skinnedMeshMapRef.current.set(meshName, node)
+            workingMeshes.set(meshName, node)
+          }
 
-            originalTransformsRef.current.set(meshName, {
-              position: node.position.clone(),
-              rotation: node.rotation.clone(),
-              scale: node.scale.clone()
-            })
+          originalTransformsRef.current.set(meshName, {
+            position: node.position.clone(),
+            rotation: node.rotation.clone(),
+            scale: node.scaling.clone()
+          })
 
-            const lowerName = meshName.toLowerCase()
+          const lowerName = meshName.toLowerCase()
 
-            // Check if this is an eye mesh - keep original material completely unchanged
+          // Replace FBX loader materials with StandardMaterial (FBX loader materials are broken)
+          {
             const isEyeMesh = lowerName.includes('eye') || meshName === 'Eyes' || meshName === 'Eyes_3'
 
-            if (!isEyeMesh) {
-              // Convert materials to toon shading for non-eye meshes
-              const materials = node.material ? (Array.isArray(node.material) ? node.material : [node.material]) : []
-              const toonMaterials: THREE.Material[] = []
-              const isSkinned = node instanceof THREE.SkinnedMesh
+            const isSkinMesh = lowerName.includes('body') || lowerName.includes('skin') ||
+                               lowerName.includes('head') || lowerName.includes('face') ||
+                               lowerName.includes('hand') || lowerName.includes('arm') ||
+                               lowerName.includes('leg') || lowerName.includes('foot') ||
+                               lowerName === 'plane072' || lowerName.includes('base')
 
-              materials.forEach((mat, matIndex) => {
-                let baseColor = new THREE.Color(0xcccccc)
-                let map: THREE.Texture | null = null
+            const isHairMesh = lowerName.includes('hair') || lowerName.includes('pigtail') ||
+                               lowerName.includes('ponytail') || lowerName.includes('bob') ||
+                               lowerName.includes('bangs') || lowerName.includes('bun') ||
+                               lowerName.includes('braids') || lowerName.includes('luke') ||
+                               lowerName.includes('ahoge')
 
-                if (mat instanceof THREE.MeshStandardMaterial ||
-                    mat instanceof THREE.MeshPhongMaterial ||
-                    mat instanceof THREE.MeshBasicMaterial ||
-                    mat instanceof THREE.MeshLambertMaterial) {
-                  baseColor = mat.color.clone()
-                  map = mat.map
-                }
-
-                // For skinned meshes, use MeshToonMaterial (preserves textures)
-                let toonMat: THREE.Material
-                if (isSkinned) {
-                  // Check if this is a skin/body mesh
-                  const isSkinMesh = lowerName.includes('body') || lowerName.includes('skin') ||
-                                     lowerName.includes('head') || lowerName.includes('face') ||
-                                     lowerName.includes('hand') || lowerName.includes('arm') ||
-                                     lowerName.includes('leg') || lowerName.includes('foot')
-
-                  // Check if this is a hair mesh
-                  const isHairMesh = lowerName.includes('hair') || lowerName.includes('pigtail') ||
-                                     lowerName.includes('ponytail') || lowerName.includes('bob') ||
-                                     lowerName.includes('bangs') || lowerName.includes('bun') ||
-                                     lowerName.includes('braids') || lowerName.includes('luke') ||
-                                     lowerName.includes('ahoge')
-
-                  if (isHairMesh) {
-                    console.log('Found hair mesh:', meshName, 'applying hair texture with tint')
-                  }
-
-                  // Use toon material - warm ambient light tints shadow areas
-                  // For hair, use the tint color to adjust texture to desired color
-                  const hairTintColor = isHairMesh
-                    ? new THREE.Color(initialHairColor)  // Tint texture to target color
-                    : new THREE.Color(baseColor)
-
-                  toonMat = createColoredShadowMaterial({
-                    color: isHairMesh ? hairTintColor : baseColor,
-                    map: isHairMesh ? hairTexture : map,
-                  })
-
-                  if (isSkinMesh) {
-                    ;(toonMat as any)._isSkinMesh = true
-                  }
-                  if (isHairMesh) {
-                    ;(toonMat as any)._isHairMesh = true
-                  }
-                } else {
-                  toonMat = createToonMaterial({
-                    color: baseColor,
-                    skinning: false,
-                    steps: 4,
-                    ambient: 0.3,
-                    rimPower: 4.0,
-                  })
-                }
-
-                toonMaterials.push(toonMat)
-                const matName = mat?.name || `${meshName}_mat_${matIndex}`
-                if (!materialMapRef.current.has(matName)) {
-                  materialMapRef.current.set(matName, toonMat)
-                }
-              })
-
-              // Apply toon materials to mesh
-              if (toonMaterials.length === 1) {
-                node.material = toonMaterials[0]
-              } else if (toonMaterials.length > 1) {
-                node.material = toonMaterials
-              }
-
+            // Try to salvage texture from original material
+            const origMat = node.material as any
+            let origTexture: Texture | null = null
+            let origColor: Color3 | null = null
+            if (origMat) {
+              origTexture = origMat.diffuseTexture || origMat.albedoTexture || null
+              origColor = origMat.diffuseColor || origMat.albedoColor || null
             }
-            // Eye meshes keep their original material - no changes needed
 
-            node.visible = true
-            node.frustumCulled = false  // SkinnedMesh bounding sphere is unreliable after 0.01 scale + rebind
-            node.castShadow = true
-            node.receiveShadow = true
+            // Create CustomMaterial (extends StandardMaterial — bones work automatically)
+            // with cel-shading GLSL injected into the fragment shader
+            const mat = new CustomMaterial(`${meshName}_mat`, scene)
+            mat.backFaceCulling = false
+            mat.specularColor = Color3.Black()
+            mat.transparencyMode = 0 // MATERIAL_OPAQUE — force fully opaque
+
+            // Hard 2-tone cel shading using world normal + single light direction
+            mat.Fragment_Before_FragColor(`
+              vec3 n = normalize(vNormalW);
+              vec3 ld = normalize(vec3(-3.0, 1.4, 2.0));
+              float NdotL = dot(n, ld) * 0.5 + 0.5;
+              float toon = NdotL > 0.5 ? 1.0 : 0.706;
+              color = vec4(vDiffuseColor.rgb * toon, 1.0);
+            `)
+
+            if (isEyeMesh) {
+              // Eyes: keep original FBX material (has embedded texture)
+              // Don't replace it — skip to next mesh
+            } else if (isHairMesh) {
+              mat.diffuseColor = Color3.FromHexString(initialHairColor.startsWith('#') ? initialHairColor : `#${initialHairColor}`)
+              if (hairTexture) mat.diffuseTexture = hairTexture
+              ;(mat as any)._isHairMesh = true
+            } else if (isSkinMesh) {
+              mat.diffuseColor = origColor || Color3.FromHexString('#e8beac')
+              if (origTexture) mat.diffuseTexture = origTexture
+              ;(mat as any)._isSkinMesh = true
+            } else {
+              mat.diffuseColor = origColor || Color3.FromHexString('#cccccc')
+              if (origTexture) mat.diffuseTexture = origTexture
+            }
+
+            if (!isEyeMesh) {
+              ;(mat as any)._isToonMaterial = true
+              ;(mat as any)._toonColor = mat.diffuseColor.clone()
+              node.material = mat
+              materialMapRef.current.set(`${meshName}_mat`, mat)
+            }
           }
-        })
+
+          node.setEnabled(true)
+          node.isVisible = true
+          node.visibility = 1.0
+          node.hasVertexAlpha = false
+          node.isPickable = true
+
+          // Equivalent of frustumCulled = false
+          node.alwaysSelectAsActiveMesh = true
+        }
 
         modelBonesRef.current = boneNames
         console.log(`Working model loaded: ${boneNames.length} bones, ${meshes.length} meshes`)
 
-        // Create animation mixer on the fbx model (not wrapper) so it targets bones correctly
-        mixerRef.current = new THREE.AnimationMixer(fbx)
+        // Store animation groups from the loaded result
+        animationGroupsRef.current = result.animationGroups || []
 
         // Now load the shape keys model from FBX
-        loader.load(
-          '/models/Bibliarch Maybe.fbx',
-          (shapeKeysFbx) => {
-            if (!mounted) return  // Stale callback from unmounted instance
-            console.log('Loading shape keys from Bibliarch Maybe.fbx...')
+        try {
+          const shapeKeysResult = await SceneLoader.ImportMeshAsync(
+            '',
+            '/models/',
+            'Bibliarch Maybe.fbx',
+            scene
+          )
 
-            console.log('[ShapeKeys] FBX loaded, traversing scene...')
-            let meshCount = 0
-            shapeKeysFbx.traverse((node) => {
-              if (node instanceof THREE.SkinnedMesh || node instanceof THREE.Mesh) {
-                meshCount++
-                const geo = node.geometry as THREE.BufferGeometry
-                const hasMorphAttribs = geo.morphAttributes && Object.keys(geo.morphAttributes).length > 0
-                const hasMorphDict = !!node.morphTargetDictionary
-                const hasMorphInfluences = !!node.morphTargetInfluences
-                console.log(`[ShapeKeys] Mesh #${meshCount}: "${node.name}", hasMorphAttribs: ${hasMorphAttribs}, hasMorphDict: ${hasMorphDict}, hasMorphInfluences: ${hasMorphInfluences}`)
+          if (!mounted) return
+          console.log('Loading shape keys from Bibliarch Maybe.fbx...')
 
-                if (node.morphTargetDictionary && node.morphTargetInfluences) {
-                  const meshName = node.name
-                  const targetMesh = workingMeshes.get(meshName)
+          console.log('[ShapeKeys] FBX loaded, traversing meshes...')
+          let meshCount = 0
+          for (const skNode of shapeKeysResult.meshes) {
+            meshCount++
+            const hasMorphManager = !!skNode.morphTargetManager
+            const morphCount = hasMorphManager ? skNode.morphTargetManager!.numTargets : 0
+            console.log(`[ShapeKeys] Mesh #${meshCount}: "${skNode.name}", hasMorphManager: ${hasMorphManager}, morphCount: ${morphCount}`)
 
-                  if (targetMesh) {
-                    // Transfer morph target data
-                    const geometry = targetMesh.geometry as THREE.BufferGeometry
-                    const sourceGeometry = node.geometry as THREE.BufferGeometry
+            if (skNode.morphTargetManager && skNode.morphTargetManager.numTargets > 0) {
+              const meshName = skNode.name
+              const targetMesh = workingMeshes.get(meshName)
+              const mtm = skNode.morphTargetManager
 
-                    // Copy morph attributes
-                    if (sourceGeometry.morphAttributes.position) {
-                      geometry.morphAttributes.position = sourceGeometry.morphAttributes.position
-                    }
-                    if (sourceGeometry.morphAttributes.normal) {
-                      geometry.morphAttributes.normal = sourceGeometry.morphAttributes.normal
-                    }
+              if (targetMesh) {
+                // Transfer morph target manager to the working mesh
+                targetMesh.morphTargetManager = mtm
 
-                    // Copy morph target dictionary and influences
-                    targetMesh.morphTargetDictionary = { ...node.morphTargetDictionary }
-                    targetMesh.morphTargetInfluences = new Array(node.morphTargetInfluences.length).fill(0)
+                const transferredCount = mtm.numTargets
+                console.log(`Transferred ${transferredCount} shape keys to ${meshName}`)
 
-                    // Update geometry morph targets count
-                    geometry.morphTargetsRelative = sourceGeometry.morphTargetsRelative
-
-                    console.log(`Transferred ${Object.keys(node.morphTargetDictionary).length} shape keys to ${meshName}`)
-
-                    // Collect morph targets for UI
-                    Object.keys(node.morphTargetDictionary).forEach((targetName) => {
-                      const index = node.morphTargetDictionary![targetName]
-                      morphTargets.push({ meshName, targetName, index })
-                    })
-                  } else {
-                    // No matching mesh in FBX, but still collect the morph targets for UI
-                    console.log(`[ShapeKeys] No matching FBX mesh for ${meshName}, adding morph targets directly`)
-                    Object.keys(node.morphTargetDictionary).forEach((targetName) => {
-                      const index = node.morphTargetDictionary![targetName]
-                      morphTargets.push({ meshName, targetName, index })
-                    })
-                  }
+                // Collect morph targets for UI
+                for (let i = 0; i < mtm.numTargets; i++) {
+                  const target = mtm.getTarget(i)
+                  morphTargets.push({ meshName, targetName: target.name, index: i })
+                }
+              } else {
+                // No matching mesh, but still collect the morph targets for UI
+                console.log(`[ShapeKeys] No matching FBX mesh for ${meshName}, adding morph targets directly`)
+                for (let i = 0; i < mtm.numTargets; i++) {
+                  const target = mtm.getTarget(i)
+                  morphTargets.push({ meshName, targetName: target.name, index: i })
                 }
               }
-            })
-            console.log(`[ShapeKeys] Total meshes in FBX: ${meshCount}`)
-
-            console.log(`Shape keys transferred. Total morph targets: ${morphTargets.length}`)
-
-            // Debug: log mesh names vs visibleAssets to diagnose refresh visibility bug
-            console.log('[Viewer3D] Model loaded. meshMap keys:', [...meshMapRef.current.keys()])
-            console.log('[Viewer3D] visibleAssetsRef:', visibleAssetsRef.current)
-            const debugVisibleSet = new Set(visibleAssetsRef.current)
-            meshMapRef.current.forEach((mesh, name) => {
-              const shouldBeVisible = name.toLowerCase() === 'body' || debugVisibleSet.has(name)
-              console.log(`[Viewer3D] mesh="${name}" visible=${mesh.visible} shouldBe=${shouldBeVisible} frustumCulled=${mesh.frustumCulled} hasMaterial=${!!mesh.material} hasGeometry=${!!mesh.geometry}`)
-            })
-
-            setLoading(false)
-            setModelReady(true)
-
-            // Initialize spring bones for hair
-            const springBones = new SpringBoneSystem()
-            // Add all hair-related bones with springy physics
-            // Stiffness: 0.3 = moderate spring, Damping: 0.7 = moderate bounce
-            springBones.addBones(fbx, [
-              'hair', 'pigtail', 'ponytail', 'braid', 'bangs', 'ahoge', 'bun', 'strand'
-            ], 0.25, 0.7)
-            springBonesRef.current = springBones
-
-            if (onMeshesLoaded) {
-              onMeshesLoaded(meshes)
             }
 
-            if (onMorphTargetsLoaded && morphTargets.length > 0) {
-              onMorphTargetsLoaded(morphTargets)
-            }
-          },
-          undefined,
-          (error) => {
-            if (!mounted) return
-            console.error('Error loading shape keys model:', error)
-            // Still continue with working model, just without shape keys
-            setLoading(false)
-            setModelReady(true)
-            if (onMeshesLoaded) {
-              onMeshesLoaded(meshes)
-            }
+            // Dispose the shape keys meshes — we only needed the morph data
+            skNode.dispose()
           }
-        )
-      },
-      (progress) => {
-        console.log('Loading:', (progress.loaded / progress.total * 100).toFixed(0) + '%')
-      },
-      (error) => {
-        console.error('Error loading model:', error)
+          // Also dispose shape keys transform nodes and skeletons
+          for (const tnode of shapeKeysResult.transformNodes) {
+            tnode.dispose()
+          }
+          for (const skel of shapeKeysResult.skeletons) {
+            skel.dispose()
+          }
+          for (const ag of shapeKeysResult.animationGroups) {
+            ag.dispose()
+          }
+
+          console.log(`[ShapeKeys] Total meshes in FBX: ${meshCount}`)
+          console.log(`Shape keys transferred. Total morph targets: ${morphTargets.length}`)
+
+          // Debug: log mesh names vs visibleAssets to diagnose refresh visibility bug
+          console.log('[Viewer3D] Model loaded. meshMap keys:', [...meshMapRef.current.keys()])
+          console.log('[Viewer3D] visibleAssetsRef:', visibleAssetsRef.current)
+          const debugVisibleSet = new Set(visibleAssetsRef.current)
+          meshMapRef.current.forEach((mesh, name) => {
+            const shouldBeVisible = name.toLowerCase() === 'body' || debugVisibleSet.has(name)
+            console.log(`[Viewer3D] mesh="${name}" visible=${mesh.isEnabled()} shouldBe=${shouldBeVisible} hasMaterial=${!!mesh.material}`)
+          })
+
+          setLoading(false)
+          setModelReady(true)
+
+          // Initialize spring bones for hair
+          const springBones = new SpringBoneSystem()
+          // Add all hair-related bones with springy physics
+          // Stiffness: 0.3 = moderate spring, Damping: 0.7 = moderate bounce
+          springBones.addBones(fbxRoot, [
+            'hair', 'pigtail', 'ponytail', 'braid', 'bangs', 'ahoge', 'bun', 'strand'
+          ], 0.25, 0.7)
+          springBonesRef.current = springBones
+
+          if (onMeshesLoaded) {
+            onMeshesLoaded(meshes)
+          }
+
+          if (onMorphTargetsLoaded && morphTargets.length > 0) {
+            onMorphTargetsLoaded(morphTargets)
+          }
+
+        } catch (shapeKeysError) {
+          if (!mounted) return
+          console.error('Error loading shape keys model:', shapeKeysError)
+          // Still continue with working model, just without shape keys
+          setLoading(false)
+          setModelReady(true)
+          if (onMeshesLoaded) {
+            onMeshesLoaded(meshes)
+          }
+        }
+
+      } catch (loadError) {
+        console.error('Error loading model:', loadError)
         setError('Failed to load 3D model')
         setLoading(false)
       }
-    )
+    }
+
+    loadModel()
 
     const handleResize = () => {
-      const width = canvas.clientWidth
-      const height = canvas.clientHeight
-      camera.aspect = width / height
-      camera.updateProjectionMatrix()
-      renderer.setSize(width, height)
+      engine.resize()
     }
 
     window.addEventListener('resize', handleResize)
 
-    let animationId: number
-    const animate = () => {
-      animationId = requestAnimationFrame(animate)
+    // Initialize time tracking
+    lastTimeRef.current = performance.now()
 
-      // Update animation mixer
-      const delta = clockRef.current.getDelta()
-      if (mixerRef.current) {
-        mixerRef.current.update(delta)
-      }
+    // Render loop
+    engine.runRenderLoop(() => {
+      // Calculate delta time
+      const now = performance.now()
+      const delta = (now - lastTimeRef.current) / 1000 // Convert to seconds
+      lastTimeRef.current = now
 
       // Update spring bones for hair physics
       if (springBonesRef.current && springBonesRef.current.count > 0) {
@@ -493,49 +512,89 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
         }
       }
 
-      // Apply visibility every frame from ref — no effect timing issues
-      if (meshMapRef.current.size > 0) {
-        const visibleSet = new Set(visibleAssetsRef.current)
-        meshMapRef.current.forEach((mesh, name) => {
-          const lowerName = name.toLowerCase()
-          // Body and eyes are always visible
-          const isEyeMesh = lowerName.includes('eye') || name === 'Eyes' || name === 'Eyes_3'
-          const isVisible = lowerName === 'body' || isEyeMesh || visibleSet.has(name)
-          mesh.visible = isVisible
-        })
-      }
-
-      controls.update()
-      renderer.render(scene, camera)
-    }
-    animate()
+      scene.render()
+    })
 
     return () => {
       mounted = false
       window.removeEventListener('resize', handleResize)
-      cancelAnimationFrame(animationId)
-      if (mixerRef.current) {
-        mixerRef.current.stopAllAction()
+      engine.stopRenderLoop()
+      if (currentAnimGroupRef.current) {
+        currentAnimGroupRef.current.stop()
       }
       if (springBonesRef.current) {
         springBonesRef.current.clear()
       }
-      renderer.dispose()
-      controls.dispose()
+      scene.dispose()
+      engine.dispose()
     }
   }, [])
 
-  // Animation/Pose control effect - simplified, no manual bone reset
+  // Mesh visibility effect — runs when visibleAssets prop changes
   useEffect(() => {
-    if (!modelReady || !mixerRef.current || !sceneObjectsRef.current) return
+    if (!modelReady || meshMapRef.current.size === 0) return
 
-    const mixer = mixerRef.current
+    const visibleSet = new Set(visibleAssets)
+    // DEBUG: show all mesh names and which ones are in visibleAssets
+    // Build a set that matches both "Model::Foo Bar" and "Foo_Bar" formats
+    const visibleSetClean = new Set<string>()
+    visibleAssets.forEach(a => {
+      visibleSetClean.add(a)
+      visibleSetClean.add(a.replace('Model::', ''))
+      visibleSetClean.add(a.replace(/_/g, ' '))
+      visibleSetClean.add('Model::' + a.replace(/_/g, ' '))
+    })
+
+    const hairDebug: string[] = []
+    meshMapRef.current.forEach((mesh, name) => {
+      const lowerName = name.toLowerCase()
+      const nameNoPrefix = name.replace('Model::', '')
+      const isEyeMesh = lowerName.includes('eye') || nameNoPrefix === 'Eyes' || nameNoPrefix === 'Eyes_3'
+      const isBaseMesh = lowerName.includes('body') ||
+        lowerName === 'plane072' || lowerName.includes('skin') ||
+        lowerName.includes('base')
+      const inSet = visibleSetClean.has(name) || visibleSetClean.has(nameNoPrefix)
+      const shouldShow = isBaseMesh || isEyeMesh || inSet
+
+      mesh.setEnabled(shouldShow)
+      mesh.isVisible = shouldShow
+
+      // Force-enable entire parent chain
+      if (shouldShow) {
+        let p: any = mesh.parent
+        while (p) {
+          if (typeof p.setEnabled === 'function') p.setEnabled(true)
+          if ('isVisible' in p) p.isVisible = true
+          p = p.parent
+        }
+      }
+
+      // Log hair meshes for debugging
+      const isHairKw = ['hair', 'bangs', 'ahoge', 'pigtail', 'ponytail', 'bun', 'braid']
+      if (isHairKw.some(k => lowerName.includes(k))) {
+        // Build parent chain string
+        const parents: string[] = []
+        let pp: any = mesh.parent
+        while (pp) {
+          parents.push(`${pp.name}(en=${pp.isEnabled?.() ?? '?'})`)
+          pp = pp.parent
+        }
+        hairDebug.push(`${nameNoPrefix}: show=${shouldShow} en=${mesh.isEnabled()} vis=${mesh.isVisible} verts=${mesh.getTotalVertices()} parents=[${parents.join(' > ')}]`)
+      }
+    })
+  }, [visibleAssets, modelReady])
+
+  // Animation/Pose control effect - load animation FBX and play
+  useEffect(() => {
+    if (!modelReady || !sceneRef.current || !sceneObjectsRef.current) return
+
+    const scene = sceneRef.current
 
     // No pose selected - just stop any playing animation
     if (!selectedPose) {
-      if (currentActionRef.current) {
-        currentActionRef.current.fadeOut(0.3)
-        currentActionRef.current = null
+      if (currentAnimGroupRef.current) {
+        currentAnimGroupRef.current.stop()
+        currentAnimGroupRef.current = null
       }
       return
     }
@@ -554,39 +613,57 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
 
     console.log('Loading animation:', animPath)
 
-    const animLoader = new FBXLoader()
-    animLoader.load(
-      animPath,
-      (animFbx) => {
-        if (animFbx.animations.length === 0) {
+    // Parse path into directory and filename for SceneLoader
+    const lastSlash = animPath.lastIndexOf('/')
+    const animDir = animPath.substring(0, lastSlash + 1)
+    const animFile = animPath.substring(lastSlash + 1)
+
+    const loadAnimation = async () => {
+      try {
+        const animResult = await SceneLoader.ImportMeshAsync('', animDir, animFile, scene)
+
+        if (animResult.animationGroups.length === 0) {
           console.warn('No animations in file')
+          // Dispose loaded meshes since we only need animations
+          for (const m of animResult.meshes) m.dispose()
+          for (const t of animResult.transformNodes) t.dispose()
+          for (const s of animResult.skeletons) s.dispose()
           return
         }
 
-        // Fade out current animation if any
-        if (currentActionRef.current) {
-          currentActionRef.current.fadeOut(0.3)
+        // Stop current animation if any
+        if (currentAnimGroupRef.current) {
+          currentAnimGroupRef.current.stop()
         }
 
-        // Play the animation clip
-        const clip = animFbx.animations[0]
-        console.log(`Playing animation: "${clip.name}" with ${clip.tracks.length} tracks`)
+        // Play the first animation group
+        const animGroup = animResult.animationGroups[0]
+        console.log(`Playing animation: "${animGroup.name}" with ${animGroup.targetedAnimations.length} tracks`)
 
-        const action = mixer.clipAction(clip)
-        action.reset()
-        action.fadeIn(0.3)
-        action.play()
-        currentActionRef.current = action
-      },
-      undefined,
-      (error) => {
-        console.error('Failed to load animation:', error)
+        // If we have a skeleton, retarget the animation to it
+        if (skeletonRef.current) {
+          animGroup.start(true, 1.0) // loop = true, speed = 1.0
+        } else {
+          animGroup.start(true, 1.0)
+        }
+
+        currentAnimGroupRef.current = animGroup
+
+        // Dispose loaded meshes since we only need animations
+        for (const m of animResult.meshes) m.dispose()
+        for (const t of animResult.transformNodes) t.dispose()
+        for (const s of animResult.skeletons) s.dispose()
+
+      } catch (animError) {
+        console.error('Failed to load animation:', animError)
       }
-    )
+    }
+
+    loadAnimation()
 
     return () => {
-      if (currentActionRef.current) {
-        currentActionRef.current.fadeOut(0.3)
+      if (currentAnimGroupRef.current) {
+        currentAnimGroupRef.current.stop()
       }
     }
   }, [selectedPose, modelReady])
@@ -599,10 +676,14 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
       const [meshName, targetName] = key.split(':')
       const mesh = skinnedMeshMapRef.current.get(meshName)
 
-      if (mesh && mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
-        const index = mesh.morphTargetDictionary[targetName]
-        if (index !== undefined) {
-          mesh.morphTargetInfluences[index] = value
+      if (mesh && mesh.morphTargetManager) {
+        const mtm = mesh.morphTargetManager
+        for (let i = 0; i < mtm.numTargets; i++) {
+          const target = mtm.getTarget(i)
+          if (target.name === targetName) {
+            target.influence = value
+            break
+          }
         }
       }
     })
@@ -617,7 +698,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
 
     const wrapper = sceneObjectsRef.current
     // Find the metarig (fbx) inside the wrapper
-    const metarig = wrapper.getObjectByName('Character Rig')
+    const metarig = sceneRef.current ? sceneRef.current.getTransformNodeByName('Character Rig') : null
     if (metarig) {
       console.log('Height scale effect: scaling to', heightScale, 'metarig found:', !!metarig)
 
@@ -625,18 +706,18 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
       const currentRotation = metarig.rotation.y
 
       // Scale entire model uniformly
-      metarig.scale.setScalar(0.01 * heightScale)
+      metarig.scaling.setAll(0.01 * heightScale)
 
       // Ensure rotation is preserved
       metarig.rotation.y = currentRotation
 
-      // No bone counter-scale — just counter-scale hair meshes directly
+      // No bone counter-scale -- just counter-scale hair meshes directly
       const counterScale = 1 / heightScale
       const HAIR_KW = ['hair', 'pigtail', 'ponytail', 'bob', 'bangs', 'bun', 'braids', 'luke', 'ahoge']
       meshMapRef.current.forEach((mesh, name) => {
         const lower = name.toLowerCase()
         if (HAIR_KW.some(kw => lower.includes(kw))) {
-          mesh.scale.setScalar(counterScale)
+          mesh.scaling.setAll(counterScale)
         }
       })
 
@@ -647,18 +728,28 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
 
   // Camera animation effect
   useEffect(() => {
-    if (!cameraRef.current || !controlsRef.current) return
+    if (!cameraRef.current) return
 
     const camera = cameraRef.current
-    const controls = controlsRef.current
 
     const sectionKey = currentSection || 'DEFAULT'
     const targetPos = CAMERA_POSITIONS[sectionKey]
 
     if (targetPos) {
-      const startPos = camera.position.clone()
-      const startTarget = controls.target.clone()
+      // Capture current camera state
+      const startAlpha = camera.alpha
+      const startBeta = camera.beta
+      const startRadius = camera.radius
+      const startTarget = camera.target.clone()
       const startFov = camera.fov
+
+      // Compute target camera parameters from the Three.js-style position + target
+      // Convert Cartesian position to spherical coordinates relative to target
+      const diff = targetPos.position.subtract(targetPos.target)
+      const targetRadius = diff.length()
+      const targetAlpha = Math.atan2(diff.z, diff.x)
+      const targetBeta = Math.acos(diff.y / targetRadius)
+      const targetFov = targetPos.fov * (Math.PI / 180)
 
       const duration = 800
       const startTime = Date.now()
@@ -671,13 +762,11 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
           ? 4 * progress * progress * progress
           : 1 - Math.pow(-2 * progress + 2, 3) / 2
 
-        camera.position.lerpVectors(startPos, targetPos.position, eased)
-        controls.target.lerpVectors(startTarget, targetPos.target, eased)
-
-        camera.fov = startFov + (targetPos.fov - startFov) * eased
-        camera.updateProjectionMatrix()
-
-        controls.update()
+        camera.alpha = startAlpha + (targetAlpha - startAlpha) * eased
+        camera.beta = startBeta + (targetBeta - startBeta) * eased
+        camera.radius = startRadius + (targetRadius - startRadius) * eased
+        camera.target = Vector3.Lerp(startTarget, targetPos.target, eased)
+        camera.fov = startFov + (targetFov - startFov) * eased
 
         if (progress < 1) {
           requestAnimationFrame(animateCamera)
@@ -696,9 +785,10 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
   // Hair undertone change effect - loads new texture
   const currentUndertoneRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!modelReady || !textureLoaderRef.current) return
+    if (!modelReady || !sceneRef.current) return
     if (hairUndertone === currentUndertoneRef.current) return
 
+    const scene = sceneRef.current
     const texturePath = getUndertoneTexturePath(hairUndertone)
     const undertone = getUndertone(hairUndertone)
     console.log('Hair undertone changed:', hairUndertone, '->', texturePath)
@@ -706,29 +796,25 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     setCurrentHairTexture(undertone?.name || 'Warm')
 
     // Load the new texture
-    textureLoaderRef.current.load(
-      texturePath,
-      (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace
-        tex.needsUpdate = true
-        hairTextureRef.current = tex
+    const tex = new Texture(texturePath, scene, false, false, Texture.TRILINEAR_SAMPLINGMODE, () => {
+      hairTextureRef.current = tex
 
-        // Update all hair materials with new texture
-        meshMapRef.current.forEach((mesh) => {
-          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-          mats.forEach((mat) => {
-            if ((mat as any)._isHairMesh && mat instanceof THREE.MeshToonMaterial) {
-              mat.map = tex
-              mat.needsUpdate = true
-            }
-          })
-        })
+      // Update all hair materials with new texture
+      meshMapRef.current.forEach((mesh) => {
+        const mat = mesh.material as any
+        if (mat && (mat as any)._isHairMesh) {
+          // For ShaderMaterial, set the texture uniform
+          if (typeof mat.setTexture === 'function') {
+            mat.setTexture('uMap', tex)
+            mat.setFloat('uHasMap', 1.0)
+          }
+        }
+      })
 
-        console.log('Hair texture updated to', undertone?.name)
-      },
-      undefined,
-      (err) => console.error('Failed to load hair texture:', err)
-    )
+      console.log('Hair texture updated to', undertone?.name)
+    }, (message, exception) => {
+      console.error('Failed to load hair texture:', message, exception)
+    })
   }, [hairUndertone, modelReady])
 
   // Hair color change effect - updates tint
@@ -740,13 +826,13 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
 
     // Update all hair materials with new tint color
     meshMapRef.current.forEach((mesh) => {
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-      mats.forEach((mat) => {
-        if ((mat as any)._isHairMesh && mat instanceof THREE.MeshToonMaterial) {
-          mat.color.set(hairColor)
-          mat.needsUpdate = true
-        }
-      })
+      const mat = mesh.material as any
+      if (mat && mat._isHairMesh) {
+        const hexColor = hairColor.startsWith('#') ? hairColor : `#${hairColor}`
+        const color = Color3.FromHexString(hexColor)
+        mat.diffuseColor = color
+        mat._toonColor = color
+      }
     })
   }, [hairColor, modelReady])
 
@@ -755,25 +841,29 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     if (meshMapRef.current.size === 0) return
 
     meshMapRef.current.forEach((mesh, name) => {
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      const mat = mesh.material as any
+      if (!mat) return
 
-      mats.forEach((mat) => {
-        if (!(mat as any)._isToonMaterial) return
+      if (!mat._isToonMaterial) return
 
-        // For skin meshes, use skinTone
-        if ((mat as any)._isSkinMesh) {
-          if (skinTone && mat instanceof THREE.MeshToonMaterial) {
-            mat.color.set(skinTone)
-          }
-          return
+      // For skin meshes, use skinTone
+      if (mat._isSkinMesh) {
+        if (skinTone) {
+          const hexColor = skinTone.startsWith('#') ? skinTone : `#${skinTone}`
+          const c = Color3.FromHexString(hexColor)
+          mat.diffuseColor = c
+          mat._toonColor = c
         }
+        return
+      }
 
-        // For other meshes, use meshColors
-        const color = meshColors?.[name]
-        if (color) {
-          setToonMaterialColor(mat, color)
-        }
-      })
+      // For other meshes, use meshColors
+      const color = meshColors?.[name]
+      if (color) {
+        const c = Color3.FromHexString(color.startsWith('#') ? color : `#${color}`)
+        mat.diffuseColor = c
+        mat._toonColor = c
+      }
     })
   }, [meshColors, skinTone, modelReady])
 
@@ -810,6 +900,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
           Undertone: {currentHairTexture}
         </div>
       )}
+
     </div>
   )
 }

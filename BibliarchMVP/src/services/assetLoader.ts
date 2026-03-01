@@ -1,125 +1,79 @@
 'use client'
 
-import * as THREE from 'three'
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import {
+  TransformNode,
+  Texture,
+  Mesh,
+  Scene,
+  SceneLoader,
+  StandardMaterial,
+  MeshBuilder,
+  Color3,
+  Vector3,
+} from '@babylonjs/core'
+import '@babylonjs/loaders'
 
 // Cache for loaded models
-const modelCache = new Map<string, THREE.Object3D>()
-const textureCache = new Map<string, THREE.Texture>()
-
-// Loaders (shared instances)
-let fbxLoader: FBXLoader | null = null
-let gltfLoader: GLTFLoader | null = null
-let textureLoader: THREE.TextureLoader | null = null
-
-function getFBXLoader(): FBXLoader {
-  if (!fbxLoader) {
-    fbxLoader = new FBXLoader()
-  }
-  return fbxLoader
-}
-
-function getGLTFLoader(): GLTFLoader {
-  if (!gltfLoader) {
-    gltfLoader = new GLTFLoader()
-  }
-  return gltfLoader
-}
-
-function getTextureLoader(): THREE.TextureLoader {
-  if (!textureLoader) {
-    textureLoader = new THREE.TextureLoader()
-  }
-  return textureLoader
-}
+const modelCache = new Map<string, TransformNode>()
+const textureCache = new Map<string, Texture>()
 
 export interface LoadedModel {
-  scene: THREE.Object3D
-  animations?: THREE.AnimationClip[]
-}
-
-/**
- * Load an FBX model
- */
-export async function loadFBXModel(url: string, useCache = true): Promise<LoadedModel> {
-  if (useCache && modelCache.has(url)) {
-    const cached = modelCache.get(url)!
-    return { scene: cached.clone(), animations: [] }
-  }
-
-  return new Promise((resolve, reject) => {
-    getFBXLoader().load(
-      url,
-      (object) => {
-        if (useCache) {
-          modelCache.set(url, object.clone())
-        }
-        resolve({
-          scene: object,
-          animations: object.animations || []
-        })
-      },
-      undefined,
-      (error) => {
-        console.error('Error loading FBX:', error)
-        reject(error)
-      }
-    )
-  })
+  root: TransformNode
+  animationGroups?: any[]
 }
 
 /**
  * Load a GLTF/GLB model
  */
-export async function loadGLTFModel(url: string, useCache = true): Promise<LoadedModel> {
+export async function loadGLTFModel(url: string, scene: Scene, useCache = true): Promise<LoadedModel> {
   if (useCache && modelCache.has(url)) {
     const cached = modelCache.get(url)!
-    return { scene: cached.clone(), animations: [] }
+    return { root: cached.clone(`${cached.name}-clone`, null)!, animationGroups: [] }
   }
 
-  return new Promise((resolve, reject) => {
-    getGLTFLoader().load(
-      url,
-      (gltf) => {
-        if (useCache) {
-          modelCache.set(url, gltf.scene.clone())
-        }
-        resolve({
-          scene: gltf.scene,
-          animations: gltf.animations || []
-        })
-      },
-      undefined,
-      (error) => {
-        console.error('Error loading GLTF:', error)
-        reject(error)
-      }
-    )
-  })
+  // Split url into directory and filename
+  const lastSlash = url.lastIndexOf('/')
+  const directory = url.substring(0, lastSlash + 1)
+  const filename = url.substring(lastSlash + 1)
+
+  const result = await SceneLoader.ImportMeshAsync('', directory, filename, scene)
+
+  const root = new TransformNode('model-root', scene)
+  for (const mesh of result.meshes) {
+    if (!mesh.parent || mesh.parent.name === '__root__') {
+      mesh.parent = root
+    }
+  }
+
+  if (useCache) {
+    modelCache.set(url, root)
+  }
+
+  return {
+    root,
+    animationGroups: result.animationGroups || [],
+  }
 }
 
 /**
  * Load a texture
  */
-export async function loadTexture(url: string, useCache = true): Promise<THREE.Texture> {
+export async function loadTexture(url: string, scene: Scene, useCache = true): Promise<Texture> {
   if (useCache && textureCache.has(url)) {
     return textureCache.get(url)!
   }
 
   return new Promise((resolve, reject) => {
-    getTextureLoader().load(
-      url,
-      (texture) => {
+    const texture = new Texture(url, scene, false, true, Texture.TRILINEAR_SAMPLINGMODE,
+      () => {
         if (useCache) {
           textureCache.set(url, texture)
         }
         resolve(texture)
       },
-      undefined,
-      (error) => {
-        console.error('Error loading texture:', error)
-        reject(error)
+      (msg, err) => {
+        console.error('Error loading texture:', msg)
+        reject(err || new Error(msg || 'Texture load failed'))
       }
     )
   })
@@ -128,30 +82,28 @@ export async function loadTexture(url: string, useCache = true): Promise<THREE.T
 /**
  * Load a model based on file extension
  */
-export async function loadModel(url: string, useCache = true): Promise<LoadedModel> {
+export async function loadModel(url: string, scene: Scene, useCache = true): Promise<LoadedModel> {
   const extension = url.split('.').pop()?.toLowerCase()
 
   switch (extension) {
-    case 'fbx':
-      return loadFBXModel(url, useCache)
     case 'glb':
     case 'gltf':
-      return loadGLTFModel(url, useCache)
+      return loadGLTFModel(url, scene, useCache)
     default:
-      throw new Error(`Unsupported model format: ${extension}`)
+      throw new Error(`Unsupported model format: ${extension}. Convert FBX to GLB.`)
   }
 }
 
 /**
  * Preload multiple models
  */
-export async function preloadModels(urls: string[]): Promise<Map<string, LoadedModel>> {
+export async function preloadModels(urls: string[], scene: Scene): Promise<Map<string, LoadedModel>> {
   const results = new Map<string, LoadedModel>()
 
   await Promise.all(
     urls.map(async (url) => {
       try {
-        const model = await loadModel(url)
+        const model = await loadModel(url, scene)
         results.set(url, model)
       } catch (error) {
         console.warn(`Failed to preload model: ${url}`, error)
@@ -166,17 +118,11 @@ export async function preloadModels(urls: string[]): Promise<Map<string, LoadedM
  * Clear the model cache
  */
 export function clearModelCache(): void {
-  modelCache.forEach((model) => {
-    model.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) {
-        obj.geometry?.dispose()
-        if (Array.isArray(obj.material)) {
-          obj.material.forEach((m) => m.dispose())
-        } else {
-          obj.material?.dispose()
-        }
-      }
+  modelCache.forEach((root) => {
+    root.getChildMeshes().forEach((mesh) => {
+      mesh.dispose()
     })
+    root.dispose()
   })
   modelCache.clear()
 }
@@ -202,162 +148,169 @@ export function clearAllCaches(): void {
 // Built-in primitive geometries for world building
 export const WorldPrimitives = {
   // Buildings
-  createHouse: (color: string): THREE.Mesh => {
-    const group = new THREE.Group()
+  createHouse: (color: string, scene: Scene): Mesh => {
+    const mat = new StandardMaterial('house-mat', scene)
+    mat.diffuseColor = Color3.FromHexString(color)
+    mat.specularColor = Color3.Black()
 
-    // Base
-    const baseGeometry = new THREE.BoxGeometry(4, 3, 4)
-    const baseMaterial = new THREE.MeshStandardMaterial({ color })
-    const base = new THREE.Mesh(baseGeometry, baseMaterial)
+    const base = MeshBuilder.CreateBox('house', { width: 4, height: 3, depth: 4 }, scene)
     base.position.y = 1.5
-    base.castShadow = true
-    base.receiveShadow = true
-    group.add(base)
-
-    // Roof
-    const roofGeometry = new THREE.ConeGeometry(3.5, 2, 4)
-    const roofMaterial = new THREE.MeshStandardMaterial({ color: '#8B4513' })
-    const roof = new THREE.Mesh(roofGeometry, roofMaterial)
-    roof.position.y = 4
-    roof.rotation.y = Math.PI / 4
-    roof.castShadow = true
-    group.add(roof)
-
-    // Return as single mesh (simplified)
-    const mesh = new THREE.Mesh(baseGeometry, baseMaterial)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-    return mesh
+    base.material = mat
+    return base
   },
 
-  createShop: (color: string): THREE.Mesh => {
-    const geometry = new THREE.BoxGeometry(5, 3, 4)
-    const material = new THREE.MeshStandardMaterial({ color })
-    const mesh = new THREE.Mesh(geometry, material)
+  createShop: (color: string, scene: Scene): Mesh => {
+    const mat = new StandardMaterial('shop-mat', scene)
+    mat.diffuseColor = Color3.FromHexString(color)
+    mat.specularColor = Color3.Black()
+
+    const mesh = MeshBuilder.CreateBox('shop', { width: 5, height: 3, depth: 4 }, scene)
     mesh.position.y = 1.5
-    mesh.castShadow = true
-    mesh.receiveShadow = true
+    mesh.material = mat
     return mesh
   },
 
-  createTower: (color: string): THREE.Mesh => {
-    const geometry = new THREE.CylinderGeometry(1.5, 2, 8, 8)
-    const material = new THREE.MeshStandardMaterial({ color })
-    const mesh = new THREE.Mesh(geometry, material)
+  createTower: (color: string, scene: Scene): Mesh => {
+    const mat = new StandardMaterial('tower-mat', scene)
+    mat.diffuseColor = Color3.FromHexString(color)
+    mat.specularColor = Color3.Black()
+
+    const mesh = MeshBuilder.CreateCylinder('tower', {
+      diameterTop: 3, diameterBottom: 4, height: 8, tessellation: 8
+    }, scene)
     mesh.position.y = 4
-    mesh.castShadow = true
-    mesh.receiveShadow = true
+    mesh.material = mat
     return mesh
   },
 
-  createBarn: (color: string): THREE.Mesh => {
-    const geometry = new THREE.BoxGeometry(6, 4, 8)
-    const material = new THREE.MeshStandardMaterial({ color })
-    const mesh = new THREE.Mesh(geometry, material)
+  createBarn: (color: string, scene: Scene): Mesh => {
+    const mat = new StandardMaterial('barn-mat', scene)
+    mat.diffuseColor = Color3.FromHexString(color)
+    mat.specularColor = Color3.Black()
+
+    const mesh = MeshBuilder.CreateBox('barn', { width: 6, height: 4, depth: 8 }, scene)
     mesh.position.y = 2
-    mesh.castShadow = true
-    mesh.receiveShadow = true
+    mesh.material = mat
     return mesh
   },
 
   // Decorations
-  createTree: (color: string): THREE.Group => {
-    const group = new THREE.Group()
+  createTree: (color: string, scene: Scene): TransformNode => {
+    const group = new TransformNode('tree', scene)
 
-    // Trunk
-    const trunkGeometry = new THREE.CylinderGeometry(0.2, 0.3, 1.5, 8)
-    const trunkMaterial = new THREE.MeshStandardMaterial({ color: '#8B4513' })
-    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial)
+    const trunkMat = new StandardMaterial('trunk-mat', scene)
+    trunkMat.diffuseColor = Color3.FromHexString('#8B4513')
+    trunkMat.specularColor = Color3.Black()
+
+    const trunk = MeshBuilder.CreateCylinder('trunk', {
+      diameterTop: 0.4, diameterBottom: 0.6, height: 1.5, tessellation: 8
+    }, scene)
     trunk.position.y = 0.75
-    trunk.castShadow = true
-    group.add(trunk)
+    trunk.material = trunkMat
+    trunk.parent = group
 
-    // Foliage
-    const foliageGeometry = new THREE.ConeGeometry(1.2, 2.5, 8)
-    const foliageMaterial = new THREE.MeshStandardMaterial({ color })
-    const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial)
+    const foliageMat = new StandardMaterial('foliage-mat', scene)
+    foliageMat.diffuseColor = Color3.FromHexString(color)
+    foliageMat.specularColor = Color3.Black()
+
+    const foliage = MeshBuilder.CreateCylinder('foliage', {
+      diameterTop: 0, diameterBottom: 2.4, height: 2.5, tessellation: 8
+    }, scene)
     foliage.position.y = 2.5
-    foliage.castShadow = true
-    group.add(foliage)
+    foliage.material = foliageMat
+    foliage.parent = group
 
     return group
   },
 
-  createRock: (color: string): THREE.Mesh => {
-    const geometry = new THREE.DodecahedronGeometry(0.8, 0)
-    const material = new THREE.MeshStandardMaterial({ color, flatShading: true })
-    const mesh = new THREE.Mesh(geometry, material)
+  createRock: (color: string, scene: Scene): Mesh => {
+    const mat = new StandardMaterial('rock-mat', scene)
+    mat.diffuseColor = Color3.FromHexString(color)
+    mat.specularColor = Color3.Black()
+
+    const mesh = MeshBuilder.CreateIcoSphere('rock', { radius: 0.8, subdivisions: 1, flat: true }, scene)
     mesh.position.y = 0.4
-    mesh.scale.set(1, 0.6, 1)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
+    mesh.scaling.set(1, 0.6, 1)
+    mesh.material = mat
     return mesh
   },
 
-  createBush: (color: string): THREE.Mesh => {
-    const geometry = new THREE.SphereGeometry(0.6, 8, 6)
-    const material = new THREE.MeshStandardMaterial({ color })
-    const mesh = new THREE.Mesh(geometry, material)
+  createBush: (color: string, scene: Scene): Mesh => {
+    const mat = new StandardMaterial('bush-mat', scene)
+    mat.diffuseColor = Color3.FromHexString(color)
+    mat.specularColor = Color3.Black()
+
+    const mesh = MeshBuilder.CreateSphere('bush', { diameter: 1.2, segments: 8 }, scene)
     mesh.position.y = 0.5
-    mesh.scale.set(1.2, 0.8, 1.2)
-    mesh.castShadow = true
+    mesh.scaling.set(1.2, 0.8, 1.2)
+    mesh.material = mat
     return mesh
   },
 
-  createLamp: (color: string): THREE.Group => {
-    const group = new THREE.Group()
+  createLamp: (color: string, scene: Scene): TransformNode => {
+    const group = new TransformNode('lamp', scene)
 
-    // Pole
-    const poleGeometry = new THREE.CylinderGeometry(0.08, 0.08, 3, 8)
-    const poleMaterial = new THREE.MeshStandardMaterial({ color: '#333333' })
-    const pole = new THREE.Mesh(poleGeometry, poleMaterial)
+    const poleMat = new StandardMaterial('pole-mat', scene)
+    poleMat.diffuseColor = Color3.FromHexString('#333333')
+    poleMat.specularColor = Color3.Black()
+
+    const pole = MeshBuilder.CreateCylinder('pole', {
+      diameter: 0.16, height: 3, tessellation: 8
+    }, scene)
     pole.position.y = 1.5
-    pole.castShadow = true
-    group.add(pole)
+    pole.material = poleMat
+    pole.parent = group
 
-    // Light
-    const lightGeometry = new THREE.SphereGeometry(0.25, 16, 16)
-    const lightMaterial = new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 0.5
-    })
-    const light = new THREE.Mesh(lightGeometry, lightMaterial)
+    const lightMat = new StandardMaterial('light-mat', scene)
+    lightMat.diffuseColor = Color3.FromHexString(color)
+    lightMat.emissiveColor = Color3.FromHexString(color)
+    lightMat.specularColor = Color3.Black()
+
+    const light = MeshBuilder.CreateSphere('light', { diameter: 0.5, segments: 16 }, scene)
     light.position.y = 3.2
-    group.add(light)
+    light.material = lightMat
+    light.parent = group
 
     return group
   },
 
   // Character placeholder (capsule shape)
-  createCharacterCapsule: (color: string, height = 1.8): THREE.Group => {
-    const group = new THREE.Group()
+  createCharacterCapsule: (color: string, scene: Scene, height = 1.8): TransformNode => {
+    const group = new TransformNode('character-capsule', scene)
+
+    const mat = new StandardMaterial('capsule-mat', scene)
+    mat.diffuseColor = Color3.FromHexString(color)
+    mat.specularColor = Color3.Black()
 
     // Body (cylinder)
     const bodyHeight = height * 0.5
     const radius = height * 0.15
-    const bodyGeometry = new THREE.CylinderGeometry(radius, radius, bodyHeight, 16)
-    const material = new THREE.MeshStandardMaterial({ color })
-    const body = new THREE.Mesh(bodyGeometry, material)
+    const body = MeshBuilder.CreateCylinder('body', {
+      diameter: radius * 2, height: bodyHeight, tessellation: 16
+    }, scene)
     body.position.y = height * 0.35
-    body.castShadow = true
-    group.add(body)
+    body.material = mat
+    body.parent = group
 
     // Head (sphere)
     const headRadius = radius * 1.2
-    const headGeometry = new THREE.SphereGeometry(headRadius, 16, 16)
-    const head = new THREE.Mesh(headGeometry, material)
+    const head = MeshBuilder.CreateSphere('head', { diameter: headRadius * 2, segments: 16 }, scene)
     head.position.y = height * 0.75
-    head.castShadow = true
-    group.add(head)
+    head.material = mat
+    head.parent = group
 
     // Direction indicator (small cone for facing)
-    const noseGeometry = new THREE.ConeGeometry(radius * 0.3, radius * 0.5, 8)
-    const noseMaterial = new THREE.MeshStandardMaterial({ color: '#ffffff' })
-    const nose = new THREE.Mesh(noseGeometry, noseMaterial)
+    const noseMat = new StandardMaterial('nose-mat', scene)
+    noseMat.diffuseColor = Color3.White()
+    noseMat.specularColor = Color3.Black()
+
+    const nose = MeshBuilder.CreateCylinder('nose', {
+      diameterTop: 0, diameterBottom: radius * 0.6, height: radius * 0.5, tessellation: 8
+    }, scene)
     nose.position.set(0, height * 0.75, headRadius)
     nose.rotation.x = Math.PI / 2
-    group.add(nose)
+    nose.material = noseMat
+    nose.parent = group
 
     return group
   }

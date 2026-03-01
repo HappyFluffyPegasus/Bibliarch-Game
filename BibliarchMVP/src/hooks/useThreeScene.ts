@@ -1,8 +1,18 @@
 'use client'
 
 import { useEffect, useRef, useCallback } from 'react'
-import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import {
+  Engine,
+  Scene,
+  ArcRotateCamera,
+  HemisphericLight,
+  DirectionalLight,
+  Vector3,
+  Color3,
+  Color4,
+  ShadowGenerator,
+  type Nullable,
+} from '@babylonjs/core'
 
 export interface ThreeSceneConfig {
   backgroundColor?: number | string
@@ -23,13 +33,11 @@ export interface ThreeSceneConfig {
   }
 }
 
-export interface ThreeSceneRefs {
-  scene: THREE.Scene | null
-  camera: THREE.PerspectiveCamera | null
-  renderer: THREE.WebGLRenderer | null
-  controls: OrbitControls | null
-  raycaster: THREE.Raycaster
-  mouse: THREE.Vector2
+export interface BabylonSceneRefs {
+  scene: Scene | null
+  camera: ArcRotateCamera | null
+  engine: Engine | null
+  shadowGenerator: ShadowGenerator | null
 }
 
 const DEFAULT_CONFIG: ThreeSceneConfig = {
@@ -43,193 +51,166 @@ const DEFAULT_CONFIG: ThreeSceneConfig = {
     dampingFactor: 0.05,
     maxPolarAngle: Math.PI / 2.1,
     minDistance: 5,
-    maxDistance: 30
+    maxDistance: 30,
   },
   lighting: {
     ambient: { color: 0xffffff, intensity: 0.5 },
-    directional: { color: 0xffffff, intensity: 0.8, position: [10, 20, 10], castShadow: true }
-  }
+    directional: { color: 0xffffff, intensity: 0.8, position: [10, 20, 10], castShadow: true },
+  },
+}
+
+function numToColor3(c: number | string | undefined): Color3 {
+  if (c === undefined) return new Color3(0.1, 0.1, 0.18)
+  if (typeof c === 'string') return Color3.FromHexString(c.startsWith('#') ? c : `#${c}`)
+  const hex = '#' + c.toString(16).padStart(6, '0')
+  return Color3.FromHexString(hex)
 }
 
 export function useThreeScene(
   containerRef: React.RefObject<HTMLDivElement | HTMLCanvasElement | null>,
   config: ThreeSceneConfig = {}
 ) {
-  const sceneRef = useRef<THREE.Scene | null>(null)
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
-  const controlsRef = useRef<OrbitControls | null>(null)
-  const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster())
-  const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2())
-  const animationFrameRef = useRef<number | null>(null)
+  const sceneRef = useRef<Scene | null>(null)
+  const cameraRef = useRef<ArcRotateCamera | null>(null)
+  const engineRef = useRef<Engine | null>(null)
+  const shadowGenRef = useRef<ShadowGenerator | null>(null)
   const onRenderRef = useRef<(() => void) | null>(null)
 
   const mergedConfig = { ...DEFAULT_CONFIG, ...config }
 
-  // Animation loop callback
   const setOnRender = useCallback((callback: (() => void) | null) => {
     onRenderRef.current = callback
   }, [])
 
-  // Initialize scene
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
     const isCanvas = container instanceof HTMLCanvasElement
-    const width = container.clientWidth
-    const height = container.clientHeight
+    const canvas = isCanvas ? container : document.createElement('canvas')
+
+    if (!isCanvas) {
+      canvas.style.width = '100%'
+      canvas.style.height = '100%'
+      ;(container as HTMLDivElement).appendChild(canvas)
+    }
+
+    // Engine
+    const engine = new Engine(canvas, true, {
+      preserveDrawingBuffer: true,
+      stencil: true,
+    })
+    engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio, 2))
+    engineRef.current = engine
 
     // Scene
-    const scene = new THREE.Scene()
-    const bgColor = typeof mergedConfig.backgroundColor === 'string'
-      ? new THREE.Color(mergedConfig.backgroundColor)
-      : new THREE.Color(mergedConfig.backgroundColor)
-    scene.background = bgColor
+    const scene = new Scene(engine)
+    const bgColor = numToColor3(mergedConfig.backgroundColor)
+    scene.clearColor = new Color4(bgColor.r, bgColor.g, bgColor.b, 1)
     sceneRef.current = scene
 
-    // Camera
-    const camera = new THREE.PerspectiveCamera(
-      mergedConfig.cameraFov,
-      width / height,
-      0.1,
-      1000
-    )
-    const [cx, cy, cz] = mergedConfig.cameraPosition!
-    camera.position.set(cx, cy, cz)
+    // Camera — ArcRotateCamera replaces OrbitControls
     const [tx, ty, tz] = mergedConfig.cameraTarget!
-    camera.lookAt(tx, ty, tz)
-    cameraRef.current = camera
+    const target = new Vector3(tx, ty, tz)
+    const [cx, cy, cz] = mergedConfig.cameraPosition!
+    const camPos = new Vector3(cx, cy, cz)
 
-    // Renderer
-    const rendererOptions: THREE.WebGLRendererParameters = { antialias: true }
-    if (isCanvas) {
-      rendererOptions.canvas = container
-    }
-    const renderer = new THREE.WebGLRenderer(rendererOptions)
-    renderer.setSize(width, height)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    if (mergedConfig.enableShadows) {
-      renderer.shadowMap.enabled = true
-      renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    }
-    if (!isCanvas) {
-      (container as HTMLDivElement).appendChild(renderer.domElement)
-    }
-    rendererRef.current = renderer
+    // Calculate alpha, beta, radius from position and target
+    const diff = camPos.subtract(target)
+    const radius = diff.length()
+    const beta = Math.acos(diff.y / radius)
+    const alpha = Math.atan2(diff.x, diff.z)
 
-    // Controls
-    const controls = new OrbitControls(camera, renderer.domElement)
+    const camera = new ArcRotateCamera('camera', alpha, beta, radius, target, scene)
+    camera.fov = (mergedConfig.cameraFov! * Math.PI) / 180
+    camera.minZ = 0.1
+    camera.maxZ = 1000
+    camera.attachControl(canvas, true)
+
     const orbitConfig = mergedConfig.orbitControlsConfig!
-    controls.enableDamping = orbitConfig.enableDamping ?? true
-    controls.dampingFactor = orbitConfig.dampingFactor ?? 0.05
     if (orbitConfig.maxPolarAngle !== undefined) {
-      controls.maxPolarAngle = orbitConfig.maxPolarAngle
+      camera.upperBetaLimit = orbitConfig.maxPolarAngle
     }
     if (orbitConfig.minDistance !== undefined) {
-      controls.minDistance = orbitConfig.minDistance
+      camera.lowerRadiusLimit = orbitConfig.minDistance
     }
     if (orbitConfig.maxDistance !== undefined) {
-      controls.maxDistance = orbitConfig.maxDistance
+      camera.upperRadiusLimit = orbitConfig.maxDistance
     }
-    controls.target.set(tx, ty, tz)
-    controlsRef.current = controls
+    // Damping / inertia
+    camera.inertia = orbitConfig.enableDamping ? (orbitConfig.dampingFactor ?? 0.05) : 0
+
+    cameraRef.current = camera
 
     // Lighting
     if (mergedConfig.lighting?.ambient) {
       const { color, intensity } = mergedConfig.lighting.ambient
-      const ambientLight = new THREE.AmbientLight(color, intensity)
-      scene.add(ambientLight)
+      const light = new HemisphericLight('ambientLight', new Vector3(0, 1, 0), scene)
+      light.diffuse = numToColor3(color)
+      light.intensity = intensity
     }
+
+    let shadowGen: ShadowGenerator | null = null
     if (mergedConfig.lighting?.directional) {
       const { color, intensity, position, castShadow } = mergedConfig.lighting.directional
-      const directionalLight = new THREE.DirectionalLight(color, intensity)
-      directionalLight.position.set(...position)
-      if (castShadow) {
-        directionalLight.castShadow = true
-        directionalLight.shadow.mapSize.width = 2048
-        directionalLight.shadow.mapSize.height = 2048
-        directionalLight.shadow.camera.near = 0.5
-        directionalLight.shadow.camera.far = 50
-        directionalLight.shadow.camera.left = -20
-        directionalLight.shadow.camera.right = 20
-        directionalLight.shadow.camera.top = 20
-        directionalLight.shadow.camera.bottom = -20
+      const light = new DirectionalLight('directionalLight', new Vector3(-position[0], -position[1], -position[2]).normalize(), scene)
+      light.position = new Vector3(position[0], position[1], position[2])
+      light.diffuse = numToColor3(color)
+      light.intensity = intensity
+
+      if (castShadow && mergedConfig.enableShadows) {
+        shadowGen = new ShadowGenerator(2048, light)
+        shadowGen.useBlurExponentialShadowMap = true
+        shadowGenRef.current = shadowGen
       }
-      scene.add(directionalLight)
     }
 
-    // Animation loop
-    function animate() {
-      animationFrameRef.current = requestAnimationFrame(animate)
-      controls.update()
+    // Render loop
+    scene.registerBeforeRender(() => {
       onRenderRef.current?.()
-      renderer.render(scene, camera)
-    }
-    animate()
+    })
 
-    // Resize handler
-    function handleResize() {
-      const currentContainer = containerRef.current
-      if (!currentContainer) return
-      const newWidth = currentContainer.clientWidth
-      const newHeight = currentContainer.clientHeight
-      camera.aspect = newWidth / newHeight
-      camera.updateProjectionMatrix()
-      renderer.setSize(newWidth, newHeight)
+    engine.runRenderLoop(() => {
+      scene.render()
+    })
+
+    // Resize
+    const handleResize = () => {
+      engine.resize()
     }
     window.addEventListener('resize', handleResize)
 
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize)
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
+      engine.stopRenderLoop()
+      scene.dispose()
+      engine.dispose()
+      if (!isCanvas && canvas.parentNode) {
+        canvas.parentNode.removeChild(canvas)
       }
-      controls.dispose()
-      renderer.dispose()
-      if (!isCanvas && renderer.domElement.parentNode) {
-        renderer.domElement.parentNode.removeChild(renderer.domElement)
-      }
-      // Dispose scene objects
-      scene.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.geometry?.dispose()
-          if (Array.isArray(object.material)) {
-            object.material.forEach((m) => m.dispose())
-          } else {
-            object.material?.dispose()
-          }
-        }
-      })
+      sceneRef.current = null
+      cameraRef.current = null
+      engineRef.current = null
+      shadowGenRef.current = null
     }
-  }, []) // Only run once on mount
-
-  // Update mouse position helper
-  const updateMouse = useCallback((event: MouseEvent, container: HTMLElement) => {
-    const rect = container.getBoundingClientRect()
-    mouseRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-    mouseRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
   }, [])
 
-  // Raycast helper
-  const raycast = useCallback((objects: THREE.Object3D[]): THREE.Intersection[] => {
-    if (!cameraRef.current) return []
-    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current)
-    return raycasterRef.current.intersectObjects(objects, true)
+  // Raycast helper — uses Babylon.js scene.pick
+  const raycast = useCallback((predicate?: (mesh: any) => boolean) => {
+    const scene = sceneRef.current
+    if (!scene) return null
+    return scene.pick(scene.pointerX, scene.pointerY, predicate)
   }, [])
 
   return {
     refs: {
       scene: sceneRef,
       camera: cameraRef,
-      renderer: rendererRef,
-      controls: controlsRef,
-      raycaster: raycasterRef,
-      mouse: mouseRef
+      engine: engineRef,
+      shadowGenerator: shadowGenRef,
     },
     setOnRender,
-    updateMouse,
-    raycast
+    raycast,
   }
 }

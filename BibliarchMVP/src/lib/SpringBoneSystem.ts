@@ -1,201 +1,185 @@
-import * as THREE from 'three'
+import {
+  Bone,
+  Skeleton,
+  Quaternion,
+  Vector3,
+  TransformNode,
+  type AbstractMesh,
+} from '@babylonjs/core'
 
 interface SpringBone {
-  bone: THREE.Bone
-  parentBone: THREE.Bone | null
-  initialLocalQuaternion: THREE.Quaternion
-  currentVelocity: THREE.Quaternion
+  bone: Bone
+  parentBone: Bone | null
+  initialLocalQuaternion: Quaternion
+  currentVelocity: Quaternion
   stiffness: number
   damping: number
 }
 
 export class SpringBoneSystem {
   private springBones: SpringBone[] = []
-  private tempQuat = new THREE.Quaternion()
-  private tempQuat2 = new THREE.Quaternion()
-  private tempEuler = new THREE.Euler()
+  private tempQuat = new Quaternion()
+  private tempQuat2 = new Quaternion()
 
   constructor() {}
 
   /**
-   * Add bones to the spring system
-   * @param root - The root object to search for bones
-   * @param bonePatterns - Array of patterns to match bone names (e.g., ['hair', 'pigtail'])
-   * @param stiffness - How quickly bones snap to target (0.1 = very loose, 0.9 = very stiff)
-   * @param damping - How quickly oscillation dies down (0.1 = very bouncy, 0.9 = no bounce)
+   * Add bones to the spring system from a skeleton
    */
-  addBones(
-    root: THREE.Object3D,
+  addBonesFromSkeleton(
+    skeleton: Skeleton,
     bonePatterns: string[],
     stiffness: number = 0.3,
     damping: number = 0.6
   ) {
-    root.traverse((node) => {
-      if (node instanceof THREE.Bone) {
-        const nameLower = node.name.toLowerCase()
-        const isSpringBone = bonePatterns.some(pattern =>
-          nameLower.includes(pattern.toLowerCase())
-        )
+    for (const bone of skeleton.bones) {
+      const nameLower = bone.name.toLowerCase()
+      const isSpringBone = bonePatterns.some(pattern =>
+        nameLower.includes(pattern.toLowerCase())
+      )
 
-        if (isSpringBone) {
-          // Find parent bone
-          let parentBone: THREE.Bone | null = null
-          let parent = node.parent
-          while (parent) {
-            if (parent instanceof THREE.Bone) {
-              parentBone = parent
-              break
-            }
-            parent = parent.parent
-          }
+      if (isSpringBone) {
+        const parentBone = bone.getParent()
 
-          this.springBones.push({
-            bone: node,
-            parentBone,
-            initialLocalQuaternion: node.quaternion.clone(),
-            currentVelocity: new THREE.Quaternion(0, 0, 0, 1),
-            stiffness,
-            damping
-          })
+        this.springBones.push({
+          bone,
+          parentBone: parentBone as Bone | null,
+          initialLocalQuaternion: bone.getRotationQuaternion().clone(),
+          currentVelocity: new Quaternion(0, 0, 0, 1),
+          stiffness,
+          damping,
+        })
 
-          console.log(`[SpringBone] Added: ${node.name}`)
-        }
+        console.log(`[SpringBone] Added: ${bone.name}`)
       }
-    })
+    }
 
     console.log(`[SpringBone] Total spring bones: ${this.springBones.length}`)
   }
 
   /**
+   * Add bones from a mesh hierarchy (for non-skeleton bones)
+   */
+  addBones(
+    root: TransformNode,
+    bonePatterns: string[],
+    stiffness: number = 0.3,
+    damping: number = 0.6
+  ) {
+    // Check if the root has a skeleton
+    const meshes = root.getChildMeshes(false)
+    for (const mesh of meshes) {
+      if ((mesh as any).skeleton) {
+        this.addBonesFromSkeleton((mesh as any).skeleton, bonePatterns, stiffness, damping)
+        return
+      }
+    }
+
+    // Fallback: traverse transform nodes looking for bone-like names
+    const traverse = (node: TransformNode) => {
+      const nameLower = node.name.toLowerCase()
+      const isSpringBone = bonePatterns.some(pattern =>
+        nameLower.includes(pattern.toLowerCase())
+      )
+
+      if (isSpringBone) {
+        // This path won't have Bone objects, but we can still track transform nodes
+        console.log(`[SpringBone] Found transform node: ${node.name} (no skeleton)`)
+      }
+
+      for (const child of node.getChildren()) {
+        if (child instanceof TransformNode) {
+          traverse(child)
+        }
+      }
+    }
+    traverse(root)
+  }
+
+  /**
    * Update spring bones - call this each frame after animation update
-   * @param deltaTime - Time since last frame in seconds
    */
   update(deltaTime: number) {
-    // Clamp delta to avoid instability
     const dt = Math.min(deltaTime, 0.05)
 
     for (const spring of this.springBones) {
       const { bone, initialLocalQuaternion, stiffness, damping } = spring
 
-      // Get the target quaternion (where the bone "wants" to be based on animation/rest)
-      // For now, we use the initial rest pose as target
-      // The bone's current quaternion is being driven by animation
-
-      // Store current animated quaternion as target
-      this.tempQuat.copy(bone.quaternion)
-
-      // Calculate spring force toward rest pose with slight lag
-      // This creates a "follow with delay" effect
+      // Get current rotation as target
+      this.tempQuat.copyFrom(bone.getRotationQuaternion())
 
       // Slerp current velocity toward target
-      spring.currentVelocity.slerp(this.tempQuat, stiffness * dt * 60)
+      Quaternion.SlerpToRef(spring.currentVelocity, this.tempQuat, stiffness * dt * 60, spring.currentVelocity)
 
-      // Apply damping
-      spring.currentVelocity.slerp(initialLocalQuaternion, (1 - damping) * dt * 10)
-
-      // Don't override animation completely - blend spring effect on top
-      // This is a simplified approach - just add some rotational lag
+      // Apply damping toward rest pose
+      Quaternion.SlerpToRef(spring.currentVelocity, initialLocalQuaternion, (1 - damping) * dt * 10, spring.currentVelocity)
     }
   }
 
   /**
    * Apply gravity/pendulum effect to hair bones
-   * Makes hair hang down naturally and swing
    */
   applyGravity(
-    root: THREE.Object3D,
+    root: TransformNode,
     gravityStrength: number = 0.02,
     deltaTime: number
   ) {
     const dt = Math.min(deltaTime, 0.05)
-    const gravity = new THREE.Vector3(0, -1, 0)
 
     for (const spring of this.springBones) {
-      const { bone, stiffness, damping } = spring
+      const { bone } = spring
 
-      // Get world position of bone
-      const worldPos = new THREE.Vector3()
-      bone.getWorldPosition(worldPos)
+      // Apply subtle gravity rotation
+      const gravX = 0 * dt
+      const gravZ = -gravityStrength * dt
 
-      // Get world position of parent
-      if (bone.parent) {
-        const parentWorldPos = new THREE.Vector3()
-        bone.parent.getWorldPosition(parentWorldPos)
-
-        // Direction from parent to bone
-        const boneDir = worldPos.clone().sub(parentWorldPos).normalize()
-
-        // Calculate how much the bone should rotate toward gravity
-        const gravityInfluence = gravity.clone().multiplyScalar(gravityStrength)
-
-        // Apply subtle rotation toward gravity
-        this.tempEuler.set(
-          gravityInfluence.z * dt,
-          0,
-          -gravityInfluence.x * dt
-        )
-        this.tempQuat.setFromEuler(this.tempEuler)
-
-        // Blend with current rotation
-        bone.quaternion.multiply(this.tempQuat)
-      }
+      const gravQuat = Quaternion.FromEulerAngles(gravZ, 0, -gravX)
+      const current = bone.getRotationQuaternion()
+      current.multiplyInPlace(gravQuat)
+      bone.setRotationQuaternion(current)
     }
   }
 
-  /**
-   * Reset all spring bones to their initial state
-   */
   reset() {
     for (const spring of this.springBones) {
-      spring.bone.quaternion.copy(spring.initialLocalQuaternion)
-      spring.currentVelocity.set(0, 0, 0, 1)
+      spring.bone.setRotationQuaternion(spring.initialLocalQuaternion.clone())
+      spring.currentVelocity = new Quaternion(0, 0, 0, 1)
     }
   }
 
-  /**
-   * Clear all spring bones
-   */
   clear() {
     this.springBones = []
   }
 
-  /**
-   * Get count of spring bones
-   */
   get count() {
     return this.springBones.length
   }
 }
 
 /**
- * Simpler approach: Secondary motion using velocity-based lag
- * This creates a "follow with delay" effect without complex physics
+ * Simpler secondary motion using velocity-based lag
  */
 export class SimpleSpringBones {
   private bones: {
-    bone: THREE.Bone
-    prevWorldQuat: THREE.Quaternion
-    velocity: THREE.Vector3
+    bone: Bone
+    prevWorldQuat: Quaternion
+    velocity: Vector3
   }[] = []
 
-  addBones(root: THREE.Object3D, patterns: string[]) {
-    root.traverse((node) => {
-      if (node instanceof THREE.Bone) {
-        const nameLower = node.name.toLowerCase()
-        if (patterns.some(p => nameLower.includes(p.toLowerCase()))) {
-          // Get initial world quaternion
-          const worldQuat = new THREE.Quaternion()
-          node.getWorldQuaternion(worldQuat)
+  addBonesFromSkeleton(skeleton: Skeleton, patterns: string[]) {
+    for (const bone of skeleton.bones) {
+      const nameLower = bone.name.toLowerCase()
+      if (patterns.some(p => nameLower.includes(p.toLowerCase()))) {
+        const worldQuat = bone.getRotationQuaternion().clone()
 
-          this.bones.push({
-            bone: node,
-            prevWorldQuat: worldQuat,
-            velocity: new THREE.Vector3()
-          })
-          console.log(`[SimpleSpring] Added: ${node.name}`)
-        }
+        this.bones.push({
+          bone,
+          prevWorldQuat: worldQuat,
+          velocity: Vector3.Zero(),
+        })
+        console.log(`[SimpleSpring] Added: ${bone.name}`)
       }
-    })
+    }
     console.log(`[SimpleSpring] Total: ${this.bones.length} bones`)
   }
 
@@ -205,36 +189,31 @@ export class SimpleSpringBones {
     for (const entry of this.bones) {
       const { bone, prevWorldQuat, velocity } = entry
 
-      // Get current world quaternion from animation
-      const currentWorldQuat = new THREE.Quaternion()
-      bone.getWorldQuaternion(currentWorldQuat)
+      const currentWorldQuat = bone.getRotationQuaternion().clone()
 
       // Calculate angular difference
-      const diff = new THREE.Quaternion()
-      diff.copy(prevWorldQuat).invert().multiply(currentWorldQuat)
+      const diff = prevWorldQuat.conjugate().multiply(currentWorldQuat)
 
       // Convert to axis-angle for velocity
-      const axis = new THREE.Vector3()
       const angle = 2 * Math.acos(Math.min(1, Math.abs(diff.w)))
       if (angle > 0.001) {
-        axis.set(diff.x, diff.y, diff.z).normalize()
-
-        // Add to velocity (spring force)
-        velocity.addScaledVector(axis, angle * stiffness)
+        const axis = new Vector3(diff.x, diff.y, diff.z).normalize()
+        velocity.addInPlace(axis.scale(angle * stiffness))
       }
 
       // Apply damping
-      velocity.multiplyScalar(damping)
+      velocity.scaleInPlace(damping)
 
       // Apply velocity as additional rotation
       if (velocity.length() > 0.001) {
-        const additionalRot = new THREE.Quaternion()
-        additionalRot.setFromAxisAngle(velocity.clone().normalize(), velocity.length() * dt)
-        bone.quaternion.multiply(additionalRot)
+        const additionalRot = Quaternion.RotationAxis(velocity.clone().normalize(), velocity.length() * dt)
+        const current = bone.getRotationQuaternion()
+        current.multiplyInPlace(additionalRot)
+        bone.setRotationQuaternion(current)
       }
 
       // Store for next frame
-      bone.getWorldQuaternion(prevWorldQuat)
+      entry.prevWorldQuat = bone.getRotationQuaternion().clone()
     }
   }
 

@@ -9,11 +9,21 @@
  * - Digit keys → numeric input override
  * - Ctrl → snap to grid (0.25 default)
  * - Enter/LMB → confirm; Esc/RMB → cancel
- * - Fast path: update BufferGeometry.attributes.position directly during drag
+ * - Fast path: update VertexData positions directly during drag
  */
 
 import { useRef, useCallback, useState } from 'react'
-import * as THREE from 'three'
+import {
+  Vector2,
+  Vector3,
+  Matrix,
+  Plane,
+  Camera,
+  Ray,
+  Mesh,
+  VertexBuffer,
+  VertexData,
+} from '@babylonjs/core'
 import { ItemVertex, ItemFace, CustomItem } from '@/types/items'
 import { computeFaceNormal, extrudeFace } from '@/utils/itemMeshUtils'
 import { insetFace, bevelEdges, loopCut, subdivide, recalculateNormals } from '@/lib/items/meshOperations'
@@ -35,7 +45,7 @@ export type TransformState =
 export type AxisConstraint = null | 'x' | 'y' | 'z' | 'xy' | 'xz' | 'yz'
 
 export interface KnifePoint {
-  position: THREE.Vector3
+  position: Vector3
   faceIndex: number
 }
 
@@ -68,10 +78,10 @@ export interface UseItemTransformReturn {
 
   // Interaction handlers
   handleMouseMove: (
-    mouseNDC: THREE.Vector2,
-    camera: THREE.Camera,
+    mouseNDC: Vector2,
+    camera: Camera,
     vertexToBuffer: Map<number, number[]>,
-    geometry: THREE.BufferGeometry | null
+    mesh: Mesh | null
   ) => void
   handleConfirm: () => void
   handleCancel: () => void
@@ -93,7 +103,7 @@ export function useItemTransform(
   selectedEdgesRef: React.RefObject<number[]>,
   editModeRef: React.RefObject<string>,
   history: UseItemHistoryReturn,
-  getCentroid: (vertices: ItemVertex[]) => THREE.Vector3 | null,
+  getCentroid: (vertices: ItemVertex[]) => Vector3 | null,
   getSelectedVertexIndices: (mode: string, faces: ItemFace[]) => Set<number>,
 ): UseItemTransformReturn {
   const [state, setState] = useState<TransformState>('idle')
@@ -106,11 +116,11 @@ export function useItemTransform(
   // Snapshot of vertex positions before transform (for cancel/fast-path delta)
   const snapshotRef = useRef<Map<number, [number, number, number]>>(new Map())
   // The world-space pivot for rotation/scale
-  const pivotRef = useRef<THREE.Vector3>(new THREE.Vector3())
+  const pivotRef = useRef<Vector3>(new Vector3())
   // The plane used for mouse projection
-  const planeRef = useRef<THREE.Plane>(new THREE.Plane())
+  const planeRef = useRef<Plane>(new Plane(0, 0, 1, 0))
   // Starting mouse world position (for delta calc)
-  const startWorldRef = useRef<THREE.Vector3>(new THREE.Vector3())
+  const startWorldRef = useRef<Vector3>(new Vector3())
   // Current axis for state ref
   const axisRef = useRef<AxisConstraint>(null)
   const numericRef = useRef('')
@@ -118,7 +128,7 @@ export function useItemTransform(
   // For bevel: segments count
   const bevelSegmentsRef = useRef(1)
   // For extrude: the face normal
-  const extrudeNormalRef = useRef<THREE.Vector3>(new THREE.Vector3())
+  const extrudeNormalRef = useRef<Vector3>(new Vector3())
   // For scale: initial distance from pivot to mouse
   const scaleStartDistRef = useRef(1)
 
@@ -138,26 +148,34 @@ export function useItemTransform(
     snapshotRef.current = snap
   }, [itemRef])
 
-  const setupProjectionPlane = useCallback((pivot: THREE.Vector3, camera: THREE.Camera) => {
+  const setupProjectionPlane = useCallback((pivot: Vector3, camera: Camera) => {
     // Plane perpendicular to camera at pivot
-    const camDir = new THREE.Vector3()
-    camera.getWorldDirection(camDir)
-    planeRef.current.setFromNormalAndCoplanarPoint(camDir, pivot)
-    pivotRef.current.copy(pivot)
+    const camDir = camera.getForwardRay().direction
+    planeRef.current = Plane.FromPositionAndNormal(pivot, camDir)
+    pivotRef.current.copyFrom(pivot)
   }, [])
 
   const projectMouseToWorld = useCallback((
-    mouseNDC: THREE.Vector2,
-    camera: THREE.Camera
-  ): THREE.Vector3 | null => {
-    const raycaster = new THREE.Raycaster()
-    raycaster.setFromCamera(mouseNDC, camera)
-    const target = new THREE.Vector3()
-    const hit = raycaster.ray.intersectPlane(planeRef.current, target)
-    return hit ? target : null
+    mouseNDC: Vector2,
+    camera: Camera
+  ): Vector3 | null => {
+    // Create a ray from camera through the NDC point
+    const scene = camera.getScene()
+    if (!scene) return null
+
+    // Convert NDC (-1..1) to screen coordinates
+    const engine = scene.getEngine()
+    const screenX = (mouseNDC.x + 1) * 0.5 * engine.getRenderWidth()
+    const screenY = (-mouseNDC.y + 1) * 0.5 * engine.getRenderHeight()
+
+    const ray = scene.createPickingRay(screenX, screenY, Matrix.Identity(), camera)
+    const distance = ray.intersectsPlane(planeRef.current)
+    if (distance === null || distance < 0) return null
+
+    return ray.origin.add(ray.direction.scale(distance))
   }, [])
 
-  const applyAxisConstraint = useCallback((delta: THREE.Vector3, constraint: AxisConstraint): THREE.Vector3 => {
+  const applyAxisConstraint = useCallback((delta: Vector3, constraint: AxisConstraint): Vector3 => {
     const result = delta.clone()
     if (constraint === 'x') { result.y = 0; result.z = 0 }
     else if (constraint === 'y') { result.x = 0; result.z = 0 }
@@ -172,7 +190,7 @@ export function useItemTransform(
     return Math.round(value / SNAP_INCREMENT) * SNAP_INCREMENT
   }, [])
 
-  const updateHeader = useCallback((mode: TransformState, currentAxis: AxisConstraint, numeric: string, delta?: THREE.Vector3) => {
+  const updateHeader = useCallback((mode: TransformState, currentAxis: AxisConstraint, numeric: string, delta?: Vector3) => {
     const modeLabel = mode.charAt(0).toUpperCase() + mode.slice(1)
     const axisLabel = currentAxis ? ` ${currentAxis.toUpperCase()}` : ''
     const numLabel = numeric ? `: ${numeric}` : delta ? `: ${delta.x.toFixed(3)}, ${delta.y.toFixed(3)}, ${delta.z.toFixed(3)}` : ''
@@ -211,7 +229,7 @@ export function useItemTransform(
     // Need pivot for rotation
     const centroid = getCentroid(item.vertices)
     if (!centroid) return false
-    pivotRef.current.copy(centroid)
+    pivotRef.current.copyFrom(centroid)
 
     setState('rotate')
     stateRef.current = 'rotate'
@@ -234,7 +252,7 @@ export function useItemTransform(
 
     const centroid = getCentroid(item.vertices)
     if (!centroid) return false
-    pivotRef.current.copy(centroid)
+    pivotRef.current.copyFrom(centroid)
     scaleStartDistRef.current = 1
 
     setState('scale')
@@ -364,10 +382,10 @@ export function useItemTransform(
   // ── Mouse move handler ──────────────────────────────────
 
   const handleMouseMove = useCallback((
-    mouseNDC: THREE.Vector2,
-    camera: THREE.Camera,
+    mouseNDC: Vector2,
+    camera: Camera,
     vertexToBuffer: Map<number, number[]>,
-    geometry: THREE.BufferGeometry | null
+    mesh: Mesh | null
   ) => {
     const currentState = stateRef.current
     if (currentState === 'idle' || currentState === 'loop-cut' || currentState === 'knife') return
@@ -376,12 +394,12 @@ export function useItemTransform(
     if (!item) return
 
     // Setup plane on first move after start
-    if (!startWorldRef.current.lengthSq()) {
+    if (startWorldRef.current.lengthSquared() === 0) {
       const centroid = getCentroid(item.vertices)
       if (centroid) {
         setupProjectionPlane(centroid, camera)
         const projected = projectMouseToWorld(mouseNDC, camera)
-        if (projected) startWorldRef.current.copy(projected)
+        if (projected) startWorldRef.current.copyFrom(projected)
       }
       return
     }
@@ -393,15 +411,15 @@ export function useItemTransform(
     const numeric = numericRef.current
 
     if (currentState === 'grab' || currentState === 'extrude') {
-      let delta: THREE.Vector3
+      let delta: Vector3
 
       if (currentState === 'extrude') {
         // Constrain to face normal
-        const normalDelta = worldPos.clone().sub(startWorldRef.current)
-        const dist = normalDelta.dot(extrudeNormalRef.current)
-        delta = extrudeNormalRef.current.clone().multiplyScalar(dist)
+        const normalDelta = worldPos.subtract(startWorldRef.current)
+        const dist = Vector3.Dot(normalDelta, extrudeNormalRef.current)
+        delta = extrudeNormalRef.current.scale(dist)
       } else {
-        delta = worldPos.clone().sub(startWorldRef.current)
+        delta = worldPos.subtract(startWorldRef.current)
         delta = applyAxisConstraint(delta, currentAxis)
       }
 
@@ -416,8 +434,8 @@ export function useItemTransform(
         }
       }
 
-      // Fast-path: update BufferGeometry directly
-      const posAttr = geometry?.getAttribute('position') as THREE.BufferAttribute | null
+      // Fast-path: update mesh positions directly
+      const positions = mesh?.getVerticesData(VertexBuffer.PositionKind)
 
       for (const [vi, origPos] of snapshotRef.current) {
         const newPos: [number, number, number] = [
@@ -431,25 +449,33 @@ export function useItemTransform(
           item.vertices[vi] = { position: newPos }
         }
 
-        // Update BufferGeometry (fast path — no React re-render)
-        if (posAttr && vertexToBuffer.has(vi)) {
+        // Update mesh positions (fast path — no React re-render)
+        if (positions && vertexToBuffer.has(vi)) {
           for (const bufIdx of vertexToBuffer.get(vi)!) {
-            posAttr.setXYZ(bufIdx, newPos[0], newPos[1], newPos[2])
+            positions[bufIdx * 3] = newPos[0]
+            positions[bufIdx * 3 + 1] = newPos[1]
+            positions[bufIdx * 3 + 2] = newPos[2]
           }
         }
       }
 
-      if (posAttr) {
-        posAttr.needsUpdate = true
-        geometry?.computeVertexNormals()
+      if (positions && mesh) {
+        mesh.updateVerticesData(VertexBuffer.PositionKind, positions)
+        // Recompute normals
+        const indices = mesh.getIndices()
+        if (indices) {
+          const normals: number[] = []
+          VertexData.ComputeNormals(positions, indices, normals)
+          mesh.updateVerticesData(VertexBuffer.NormalKind, normals)
+        }
       }
 
       updateHeader(currentState, currentAxis, numeric, delta)
     } else if (currentState === 'rotate') {
       // Screen-space rotation: angle between start→pivot→current
       const pivot = pivotRef.current
-      const startDir = startWorldRef.current.clone().sub(pivot)
-      const currentDir = worldPos.clone().sub(pivot)
+      const startDir = startWorldRef.current.subtract(pivot)
+      const currentDir = worldPos.subtract(pivot)
 
       let angle: number
       if (numeric) {
@@ -460,44 +486,51 @@ export function useItemTransform(
       }
 
       // Determine rotation axis
-      let rotAxis = new THREE.Vector3(0, 1, 0) // default Y
+      let rotAxis = new Vector3(0, 1, 0) // default Y
       if (currentAxis === 'x') rotAxis.set(1, 0, 0)
       else if (currentAxis === 'z') rotAxis.set(0, 0, 1)
 
-      const rotMatrix = new THREE.Matrix4().makeRotationAxis(rotAxis, angle)
+      const rotMatrix = Matrix.RotationAxis(rotAxis, angle)
+
+      const positions = mesh?.getVerticesData(VertexBuffer.PositionKind)
 
       for (const [vi, origPos] of snapshotRef.current) {
-        const point = new THREE.Vector3(origPos[0], origPos[1], origPos[2])
-        point.sub(pivot)
-        point.applyMatrix4(rotMatrix)
-        point.add(pivot)
+        const point = new Vector3(origPos[0], origPos[1], origPos[2])
+        point.subtractInPlace(pivot)
+        const rotated = Vector3.TransformCoordinates(point, rotMatrix)
+        rotated.addInPlace(pivot)
 
-        const newPos: [number, number, number] = [point.x, point.y, point.z]
+        const newPos: [number, number, number] = [rotated.x, rotated.y, rotated.z]
 
         if (item.vertices[vi]) {
           item.vertices[vi] = { position: newPos }
         }
 
-        const posAttr = geometry?.getAttribute('position') as THREE.BufferAttribute | null
-        if (posAttr && vertexToBuffer.has(vi)) {
+        if (positions && vertexToBuffer.has(vi)) {
           for (const bufIdx of vertexToBuffer.get(vi)!) {
-            posAttr.setXYZ(bufIdx, newPos[0], newPos[1], newPos[2])
+            positions[bufIdx * 3] = newPos[0]
+            positions[bufIdx * 3 + 1] = newPos[1]
+            positions[bufIdx * 3 + 2] = newPos[2]
           }
         }
       }
 
-      const posAttr = geometry?.getAttribute('position') as THREE.BufferAttribute | null
-      if (posAttr) {
-        posAttr.needsUpdate = true
-        geometry?.computeVertexNormals()
+      if (positions && mesh) {
+        mesh.updateVerticesData(VertexBuffer.PositionKind, positions)
+        const indices = mesh.getIndices()
+        if (indices) {
+          const normals: number[] = []
+          VertexData.ComputeNormals(positions, indices, normals)
+          mesh.updateVerticesData(VertexBuffer.NormalKind, normals)
+        }
       }
 
       const angleDeg = (angle * 180 / Math.PI).toFixed(1)
-      updateHeader('rotate', currentAxis, numeric || angleDeg + '°')
+      updateHeader('rotate', currentAxis, numeric || angleDeg + '\u00B0')
     } else if (currentState === 'scale') {
       const pivot = pivotRef.current
-      const startDist = startWorldRef.current.clone().sub(pivot).length()
-      const currentDist = worldPos.clone().sub(pivot).length()
+      const startDist = Vector3.Distance(startWorldRef.current, pivot)
+      const currentDist = Vector3.Distance(worldPos, pivot)
 
       let scaleFactor: number
       if (numeric) {
@@ -512,6 +545,8 @@ export function useItemTransform(
       else if (currentAxis === 'y') { sx = 1; sz = 1 }
       else if (currentAxis === 'z') { sx = 1; sy = 1 }
 
+      const positions = mesh?.getVerticesData(VertexBuffer.PositionKind)
+
       for (const [vi, origPos] of snapshotRef.current) {
         const newPos: [number, number, number] = [
           pivot.x + (origPos[0] - pivot.x) * sx,
@@ -523,24 +558,29 @@ export function useItemTransform(
           item.vertices[vi] = { position: newPos }
         }
 
-        const posAttr = geometry?.getAttribute('position') as THREE.BufferAttribute | null
-        if (posAttr && vertexToBuffer.has(vi)) {
+        if (positions && vertexToBuffer.has(vi)) {
           for (const bufIdx of vertexToBuffer.get(vi)!) {
-            posAttr.setXYZ(bufIdx, newPos[0], newPos[1], newPos[2])
+            positions[bufIdx * 3] = newPos[0]
+            positions[bufIdx * 3 + 1] = newPos[1]
+            positions[bufIdx * 3 + 2] = newPos[2]
           }
         }
       }
 
-      const posAttr = geometry?.getAttribute('position') as THREE.BufferAttribute | null
-      if (posAttr) {
-        posAttr.needsUpdate = true
-        geometry?.computeVertexNormals()
+      if (positions && mesh) {
+        mesh.updateVerticesData(VertexBuffer.PositionKind, positions)
+        const indices = mesh.getIndices()
+        if (indices) {
+          const normals: number[] = []
+          VertexData.ComputeNormals(positions, indices, normals)
+          mesh.updateVerticesData(VertexBuffer.NormalKind, normals)
+        }
       }
 
       updateHeader('scale', currentAxis, numeric || scaleFactor.toFixed(3))
     } else if (currentState === 'inset') {
       // Distance from start controls inset amount
-      const delta = worldPos.clone().sub(startWorldRef.current)
+      const delta = worldPos.subtract(startWorldRef.current)
       const amount = Math.max(0, Math.min(0.99, delta.length()))
 
       // Re-inset from original

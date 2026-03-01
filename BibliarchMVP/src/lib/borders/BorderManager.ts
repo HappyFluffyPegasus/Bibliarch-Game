@@ -1,108 +1,118 @@
-import * as THREE from 'three'
+import {
+  Mesh,
+  MeshBuilder,
+  Vector3,
+  Color3,
+  Color4,
+  StandardMaterial,
+  TransformNode,
+  Scene,
+  DynamicTexture,
+  Sprite,
+  SpriteManager,
+  VertexData,
+  LinesMesh,
+} from '@babylonjs/core'
 import { PolygonBorder, TerrainData } from '@/types/world'
 
-/**
- * Manages rendering of polygon borders in the 3D scene.
- * Follows the ObjectManager pattern: owns a THREE.Group, has sync/dispose.
- */
 export class BorderManager {
-  private group: THREE.Group
-  private borderMeshes: Map<string, THREE.Group> = new Map()
+  private parent: TransformNode
+  private borderMeshes: Map<string, TransformNode> = new Map()
   private highlightedId: string | null = null
+  private scene: Scene
 
-  constructor() {
-    this.group = new THREE.Group()
-    this.group.name = 'polygon-borders'
+  constructor(scene: Scene) {
+    this.scene = scene
+    this.parent = new TransformNode('polygon-borders', scene)
   }
 
-  getGroup(): THREE.Group {
-    return this.group
+  getParent(): TransformNode {
+    return this.parent
   }
 
-  /** Full rebuild of all border visualizations */
   syncBorders(borders: PolygonBorder[], terrain: TerrainData): void {
     this.disposeAll()
 
     for (const border of borders) {
       if (border.vertices.length < 3) continue
       const borderGroup = this.createBorderMesh(border, terrain)
-      borderGroup.userData.borderId = border.id
+      borderGroup.metadata = { borderId: border.id }
       this.borderMeshes.set(border.id, borderGroup)
-      this.group.add(borderGroup)
     }
   }
 
-  /** Render a preview group for in-progress border drawing (line + fill + vertex dots) */
   renderPreview(
     vertices: { x: number; z: number }[],
     cursorPos: { x: number; z: number } | null,
     terrain: TerrainData,
     color: string
-  ): THREE.Group | null {
+  ): TransformNode | null {
     if (vertices.length === 0) return null
 
-    const previewGroup = new THREE.Group()
-    previewGroup.name = 'border-preview'
-    const threeColor = new THREE.Color(color)
+    const previewGroup = new TransformNode('border-preview', this.scene)
+    const threeColor = Color3.FromHexString(color)
 
     const allVerts = [...vertices]
     if (cursorPos) allVerts.push(cursorPos)
 
-    const points: THREE.Vector3[] = allVerts.map(v => {
+    const points: Vector3[] = allVerts.map(v => {
       const y = this.getTerrainHeight(v.x, v.z, terrain) + 1.5
-      return new THREE.Vector3(v.x, y, v.z)
+      return new Vector3(v.x, y, v.z)
     })
 
     // Dashed preview line
-    const lineGeo = new THREE.BufferGeometry().setFromPoints(points)
-    const lineMat = new THREE.LineDashedMaterial({
-      color: threeColor,
-      dashSize: 2,
-      gapSize: 1,
-      opacity: 0.8,
-      transparent: true,
-      depthTest: false,
-    })
-    const line = new THREE.Line(lineGeo, lineMat)
-    line.computeLineDistances()
-    line.renderOrder = 20
-    previewGroup.add(line)
-
-    // Vertex dots (small spheres)
-    const dotGeo = new THREE.SphereGeometry(0.5, 8, 8)
-    const dotMat = new THREE.MeshBasicMaterial({ color: threeColor, depthTest: false })
-    for (const pt of points) {
-      const dot = new THREE.Mesh(dotGeo, dotMat)
-      dot.position.copy(pt)
-      dot.renderOrder = 21
-      previewGroup.add(dot)
+    if (points.length >= 2) {
+      const colors: Color4[] = points.map(() => new Color4(threeColor.r, threeColor.g, threeColor.b, 0.8))
+      const line = MeshBuilder.CreateLines('preview-line', {
+        points,
+        colors,
+      }, this.scene)
+      line.renderingGroupId = 2
+      line.parent = previewGroup
     }
 
-    // Filled semi-transparent polygon when 3+ placed vertices
+    // Vertex dots
+    for (const pt of points) {
+      const dot = MeshBuilder.CreateSphere('dot', { diameter: 1, segments: 8 }, this.scene)
+      const dotMat = new StandardMaterial('dot-mat', this.scene)
+      dotMat.diffuseColor = threeColor
+      dotMat.disableLighting = true
+      dot.material = dotMat
+      dot.position = pt
+      dot.renderingGroupId = 2
+      dot.parent = previewGroup
+    }
+
+    // Filled polygon when 3+ vertices
     if (vertices.length >= 3) {
-      const shape = new THREE.Shape()
-      shape.moveTo(vertices[0].x, vertices[0].z)
-      for (let i = 1; i < vertices.length; i++) {
-        shape.lineTo(vertices[i].x, vertices[i].z)
-      }
-      shape.closePath()
-
-      const fillGeo = new THREE.ShapeGeometry(shape)
-      fillGeo.rotateX(-Math.PI / 2)
-
       const avgY = points.slice(0, vertices.length).reduce((s, v) => s + v.y, 0) / vertices.length
-      const fillMat = new THREE.MeshBasicMaterial({
-        color: threeColor,
-        transparent: true,
-        opacity: 0.15,
-        side: THREE.DoubleSide,
-        depthTest: false,
-        depthWrite: false,
-      })
-      const fillMesh = new THREE.Mesh(fillGeo, fillMat)
-      fillMesh.position.y = avgY
-      fillMesh.renderOrder = 19
-      previewGroup.add(fillMesh)
+
+      // Create a ground-like mesh for the fill
+      const fillMat = new StandardMaterial('fill-mat', this.scene)
+      fillMat.diffuseColor = threeColor
+      fillMat.alpha = 0.15
+      fillMat.backFaceCulling = false
+      fillMat.disableLighting = true
+
+      // Simple triangle fan from first vertex
+      const positions: number[] = []
+      const indices: number[] = []
+      for (let i = 0; i < vertices.length; i++) {
+        positions.push(vertices[i].x, avgY, vertices[i].z)
+      }
+      for (let i = 1; i < vertices.length - 1; i++) {
+        indices.push(0, i, i + 1)
+      }
+
+      const fillMesh = new Mesh('fill', this.scene)
+      const vertexData = new VertexData()
+      vertexData.positions = positions
+      vertexData.indices = indices
+      VertexData.ComputeNormals(positions, indices, vertexData.normals = [])
+      vertexData.applyToMesh(fillMesh)
+      fillMesh.material = fillMat
+      fillMesh.renderingGroupId = 1
+      fillMesh.parent = previewGroup
     }
 
     return previewGroup
@@ -110,34 +120,9 @@ export class BorderManager {
 
   setHighlighted(borderId: string | null): void {
     if (this.highlightedId === borderId) return
-
-    // Reset previous highlight
-    if (this.highlightedId) {
-      const prev = this.borderMeshes.get(this.highlightedId)
-      if (prev) {
-        prev.traverse(child => {
-          if (child instanceof THREE.Line) {
-            const mat = child.material as THREE.LineBasicMaterial
-            mat.linewidth = 1
-          }
-        })
-      }
-    }
-
     this.highlightedId = borderId
-
-    // Apply new highlight
-    if (borderId) {
-      const group = this.borderMeshes.get(borderId)
-      if (group) {
-        group.traverse(child => {
-          if (child instanceof THREE.Line) {
-            const mat = child.material as THREE.LineBasicMaterial
-            mat.linewidth = 3
-          }
-        })
-      }
-    }
+    // Highlighting via line width isn't directly supported in Babylon.js WebGL
+    // Could use glow layer or different material for highlighting
   }
 
   dispose(): void {
@@ -145,117 +130,91 @@ export class BorderManager {
   }
 
   private disposeAll(): void {
-    for (const [, group] of this.borderMeshes) {
-      group.traverse(child => {
-        if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose()
-        if ((child as THREE.Mesh).material) {
-          const mat = (child as THREE.Mesh).material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material).dispose()
-        }
-      })
-      this.group.remove(group)
+    for (const [, node] of this.borderMeshes) {
+      node.dispose()
     }
     this.borderMeshes.clear()
     this.highlightedId = null
   }
 
-  private createBorderMesh(border: PolygonBorder, terrain: TerrainData): THREE.Group {
-    const group = new THREE.Group()
-    const color = new THREE.Color(border.color)
+  private createBorderMesh(border: PolygonBorder, terrain: TerrainData): TransformNode {
+    const group = new TransformNode(`border-${border.id}`, this.scene)
+    group.parent = this.parent
+    const color = Color3.FromHexString(border.color)
 
-    // Build vertices projected to terrain
     const verts = border.vertices.map(v => {
       const y = this.getTerrainHeight(v.x, v.z, terrain) + 0.5
-      return new THREE.Vector3(v.x, y, v.z)
+      return new Vector3(v.x, y, v.z)
     })
 
     // Outline
     const outlinePoints = [...verts, verts[0].clone()]
-    const outlineGeo = new THREE.BufferGeometry().setFromPoints(outlinePoints)
-    let outlineMat: THREE.Material
-    if (border.style === 'dashed') {
-      outlineMat = new THREE.LineDashedMaterial({
-        color,
-        dashSize: 3,
-        gapSize: 1.5,
-        opacity: 0.9,
-        transparent: true,
-      })
-    } else if (border.style === 'dotted') {
-      outlineMat = new THREE.LineDashedMaterial({
-        color,
-        dashSize: 0.5,
-        gapSize: 1,
-        opacity: 0.9,
-        transparent: true,
-      })
-    } else {
-      outlineMat = new THREE.LineBasicMaterial({
-        color,
-        opacity: 0.9,
-        transparent: true,
-      })
-    }
-    const outlineLine = new THREE.Line(outlineGeo, outlineMat)
-    outlineLine.computeLineDistances()
-    outlineLine.renderOrder = 11
-    group.add(outlineLine)
+    const outlineColors = outlinePoints.map(() => new Color4(color.r, color.g, color.b, 0.9))
+
+    const outlineLine = MeshBuilder.CreateLines(`outline-${border.id}`, {
+      points: outlinePoints,
+      colors: outlineColors,
+    }, this.scene)
+    outlineLine.renderingGroupId = 1
+    outlineLine.parent = group
 
     // Semi-transparent fill
     if (border.fillOpacity > 0) {
-      const shape = new THREE.Shape()
-      // Use 2D projection (XZ plane) for the shape
-      shape.moveTo(border.vertices[0].x, border.vertices[0].z)
-      for (let i = 1; i < border.vertices.length; i++) {
-        shape.lineTo(border.vertices[i].x, border.vertices[i].z)
-      }
-      shape.closePath()
-
-      const fillGeo = new THREE.ShapeGeometry(shape)
-      // Rotate from XY to XZ plane
-      fillGeo.rotateX(-Math.PI / 2)
-
       const avgY = verts.reduce((sum, v) => sum + v.y, 0) / verts.length
-      const fillMat = new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: border.fillOpacity,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      })
-      const fillMesh = new THREE.Mesh(fillGeo, fillMat)
-      fillMesh.position.y = avgY - 0.1
-      fillMesh.renderOrder = 10
-      group.add(fillMesh)
+
+      const fillMat = new StandardMaterial(`fill-mat-${border.id}`, this.scene)
+      fillMat.diffuseColor = color
+      fillMat.alpha = border.fillOpacity
+      fillMat.backFaceCulling = false
+      fillMat.disableLighting = true
+
+      const positions: number[] = []
+      const indices: number[] = []
+      for (let i = 0; i < border.vertices.length; i++) {
+        positions.push(border.vertices[i].x, avgY - 0.1, border.vertices[i].z)
+      }
+      for (let i = 1; i < border.vertices.length - 1; i++) {
+        indices.push(0, i, i + 1)
+      }
+
+      const fillMesh = new Mesh(`fill-${border.id}`, this.scene)
+      const vertexData = new VertexData()
+      vertexData.positions = positions
+      vertexData.indices = indices
+      VertexData.ComputeNormals(positions, indices, vertexData.normals = [])
+      vertexData.applyToMesh(fillMesh)
+      fillMesh.material = fillMat
+      fillMesh.renderingGroupId = 1
+      fillMesh.parent = group
     }
 
-    // Label at centroid
+    // Label at centroid using DynamicTexture
     const cx = border.vertices.reduce((s, v) => s + v.x, 0) / border.vertices.length
     const cz = border.vertices.reduce((s, v) => s + v.z, 0) / border.vertices.length
     const cy = this.getTerrainHeight(cx, cz, terrain) + 5
 
-    const canvas = document.createElement('canvas')
-    canvas.width = 256
-    canvas.height = 64
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      ctx.fillStyle = `#${color.getHexString()}`
-      ctx.font = 'bold 28px sans-serif'
-      ctx.textAlign = 'center'
-      ctx.fillText(border.name, 128, 40)
+    const textureSize = 256
+    const texture = new DynamicTexture(`label-tex-${border.id}`, { width: textureSize, height: 64 }, this.scene)
+    texture.hasAlpha = true
+    const ctx2d = texture.getContext() as unknown as CanvasRenderingContext2D
+    ctx2d.clearRect(0, 0, textureSize, 64)
+    ctx2d.fillStyle = `#${color.toHexString().slice(1)}`
+    ctx2d.font = 'bold 28px sans-serif'
+    ctx2d.textAlign = 'center'
+    ctx2d.fillText(border.name, textureSize / 2, 40)
+    texture.update()
 
-      const texture = new THREE.CanvasTexture(canvas)
-      const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.85 })
-      const sprite = new THREE.Sprite(labelMat)
-      sprite.position.set(cx, cy, cz)
-
-      // Scale based on border extent
-      const extentX = Math.max(...border.vertices.map(v => v.x)) - Math.min(...border.vertices.map(v => v.x))
-      const scale = Math.max(10, extentX * 0.4)
-      sprite.scale.set(scale, scale * 0.25, 1)
-      group.add(sprite)
-    }
+    const labelPlane = MeshBuilder.CreatePlane(`label-${border.id}`, { width: 10, height: 2.5 }, this.scene)
+    const labelMat = new StandardMaterial(`label-mat-${border.id}`, this.scene)
+    labelMat.diffuseTexture = texture
+    labelMat.opacityTexture = texture
+    labelMat.disableLighting = true
+    labelMat.backFaceCulling = false
+    labelPlane.material = labelMat
+    labelPlane.position = new Vector3(cx, cy, cz)
+    labelPlane.billboardMode = Mesh.BILLBOARDMODE_ALL
+    labelPlane.renderingGroupId = 2
+    labelPlane.parent = group
 
     return group
   }

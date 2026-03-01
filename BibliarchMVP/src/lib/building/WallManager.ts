@@ -1,59 +1,66 @@
-import * as THREE from 'three'
+import {
+  Mesh,
+  MeshBuilder,
+  Vector3,
+  Color3,
+  Color4,
+  StandardMaterial,
+  TransformNode,
+  Scene,
+  DynamicTexture,
+  VertexData,
+} from '@babylonjs/core'
 import { BuildingData, WallSegment, WallOpening, FloorTile, DetectedRoom } from '@/types/world'
 import { splitWallAtOpening, getRoomCentroid } from './wallUtils'
 
 // Material colors
-const WALL_MATERIAL_COLORS: Record<string, number> = {
-  drywall: 0xeeeeee,
-  brick: 0xaa5533,
-  stone: 0x888888,
-  glass: 0x88ccee,
-  wood: 0xbb8844,
-  concrete: 0xaaaaaa,
+const WALL_MATERIAL_COLORS: Record<string, string> = {
+  drywall: '#eeeeee',
+  brick: '#aa5533',
+  stone: '#888888',
+  glass: '#88ccee',
+  wood: '#bb8844',
+  concrete: '#aaaaaa',
 }
 
-const FLOOR_MATERIAL_COLORS: Record<string, number> = {
-  wood: 0xcc9955,
-  tile: 0xdddddd,
-  carpet: 0x886655,
-  marble: 0xeeeedd,
-  concrete: 0xaaaaaa,
-  stone: 0x999988,
+const FLOOR_MATERIAL_COLORS: Record<string, string> = {
+  wood: '#cc9955',
+  tile: '#dddddd',
+  carpet: '#886655',
+  marble: '#eeeedd',
+  concrete: '#aaaaaa',
+  stone: '#999988',
 }
 
 /**
  * Manages rendering of building interiors: walls, floors, rooms, doors/windows.
  */
 export class WallManager {
-  private group: THREE.Group
-  private wallGroup: THREE.Group
-  private floorGroup: THREE.Group
-  private labelGroup: THREE.Group
-  private gridOverlay: THREE.Group
-  private ghostGroup: THREE.Group
+  private parent: TransformNode
+  private wallGroup: TransformNode
+  private floorGroup: TransformNode
+  private labelGroup: TransformNode
+  private gridOverlay: TransformNode
+  private ghostGroup: TransformNode
+  private scene: Scene
 
-  constructor() {
-    this.group = new THREE.Group()
-    this.group.name = 'building-interior'
-    this.wallGroup = new THREE.Group()
-    this.wallGroup.name = 'walls'
-    this.floorGroup = new THREE.Group()
-    this.floorGroup.name = 'floor-tiles'
-    this.labelGroup = new THREE.Group()
-    this.labelGroup.name = 'room-labels'
-    this.gridOverlay = new THREE.Group()
-    this.gridOverlay.name = 'building-grid'
-    this.ghostGroup = new THREE.Group()
-    this.ghostGroup.name = 'ghost-preview'
-    this.group.add(this.wallGroup)
-    this.group.add(this.floorGroup)
-    this.group.add(this.labelGroup)
-    this.group.add(this.gridOverlay)
-    this.group.add(this.ghostGroup)
+  constructor(scene: Scene) {
+    this.scene = scene
+    this.parent = new TransformNode('building-interior', scene)
+    this.wallGroup = new TransformNode('walls', scene)
+    this.wallGroup.parent = this.parent
+    this.floorGroup = new TransformNode('floor-tiles', scene)
+    this.floorGroup.parent = this.parent
+    this.labelGroup = new TransformNode('room-labels', scene)
+    this.labelGroup.parent = this.parent
+    this.gridOverlay = new TransformNode('building-grid', scene)
+    this.gridOverlay.parent = this.parent
+    this.ghostGroup = new TransformNode('ghost-preview', scene)
+    this.ghostGroup.parent = this.parent
   }
 
-  getGroup(): THREE.Group {
-    return this.group
+  getParent(): TransformNode {
+    return this.parent
   }
 
   /** Full rebuild for visible floor */
@@ -127,15 +134,17 @@ export class WallManager {
     const length = Math.hypot(dx, dz)
     if (length < 0.01) return
 
-    const color = WALL_MATERIAL_COLORS[material] || 0xcccccc
-    const geo = new THREE.BoxGeometry(length, height, 0.15)
-    const mat = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.4,
-      depthWrite: false,
-    })
-    const mesh = new THREE.Mesh(geo, mat)
+    const colorHex = WALL_MATERIAL_COLORS[material] || '#cccccc'
+    const mat = new StandardMaterial('ghost-wall-mat', this.scene)
+    mat.diffuseColor = Color3.FromHexString(colorHex)
+    mat.alpha = 0.4
+    mat.disableLighting = true
+    mat.backFaceCulling = false
+
+    const mesh = MeshBuilder.CreateBox('ghost-wall', {
+      width: length, height, depth: 0.15
+    }, this.scene)
+    mesh.material = mat
 
     // Position at midpoint
     mesh.position.set(
@@ -145,28 +154,20 @@ export class WallManager {
     )
     // Rotate to align with wall direction
     mesh.rotation.y = -Math.atan2(dz, dx)
-    mesh.renderOrder = 20
-
-    this.ghostGroup.add(mesh)
+    mesh.renderingGroupId = 2
+    mesh.parent = this.ghostGroup
   }
 
   clearGhost(): void {
-    while (this.ghostGroup.children.length > 0) {
-      const child = this.ghostGroup.children[0]
-      if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose()
-      if ((child as THREE.Mesh).material) ((child as THREE.Mesh).material as THREE.Material).dispose()
-      this.ghostGroup.remove(child)
-    }
+    this.clearChildMeshes(this.ghostGroup)
   }
 
   /** Highlight wall on hover (for place-door tool) */
   highlightWall(wall: WallSegment | null, floorY: number): void {
     // Remove existing highlight
-    const existing = this.wallGroup.getObjectByName('wall-highlight')
+    const existing = this.wallGroup.getChildMeshes(false).find(m => m.name === 'wall-highlight')
     if (existing) {
-      (existing as THREE.Mesh).geometry.dispose();
-      ((existing as THREE.Mesh).material as THREE.Material).dispose()
-      this.wallGroup.remove(existing)
+      existing.dispose()
     }
 
     if (!wall) return
@@ -176,49 +177,50 @@ export class WallManager {
     const length = Math.hypot(dx, dz)
     if (length < 0.01) return
 
-    const geo = new THREE.BoxGeometry(length, wall.height + 0.1, wall.thickness + 0.1)
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x44aaff,
-      transparent: true,
-      opacity: 0.3,
-      depthWrite: false,
-    })
-    const mesh = new THREE.Mesh(geo, mat)
-    mesh.name = 'wall-highlight'
+    const mat = new StandardMaterial('highlight-mat', this.scene)
+    mat.diffuseColor = Color3.FromHexString('#44aaff')
+    mat.alpha = 0.3
+    mat.disableLighting = true
+    mat.backFaceCulling = false
+
+    const mesh = MeshBuilder.CreateBox('wall-highlight', {
+      width: length, height: wall.height + 0.1, depth: wall.thickness + 0.1
+    }, this.scene)
+    mesh.material = mat
     mesh.position.set(
       (wall.startX + wall.endX) / 2,
       floorY + wall.height / 2,
       (wall.startZ + wall.endZ) / 2
     )
     mesh.rotation.y = -Math.atan2(dz, dx)
-    mesh.renderOrder = 21
-    this.wallGroup.add(mesh)
+    mesh.renderingGroupId = 2
+    mesh.parent = this.wallGroup
   }
 
   dispose(): void {
     this.clearAll()
+    this.parent.dispose()
   }
 
   private clearAll(): void {
-    this.clearGroup(this.wallGroup)
-    this.clearGroup(this.floorGroup)
-    this.clearGroup(this.labelGroup)
-    this.clearGroup(this.gridOverlay)
+    this.clearChildMeshes(this.wallGroup)
+    this.clearChildMeshes(this.floorGroup)
+    this.clearChildMeshes(this.labelGroup)
+    this.clearChildMeshes(this.gridOverlay)
     this.clearGhost()
   }
 
-  private clearGroup(group: THREE.Group): void {
-    while (group.children.length > 0) {
-      const child = group.children[0]
-      child.traverse(obj => {
-        if ((obj as THREE.Mesh).geometry) (obj as THREE.Mesh).geometry.dispose()
-        if ((obj as THREE.Mesh).material) {
-          const mat = (obj as THREE.Mesh).material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material).dispose()
-        }
-      })
-      group.remove(child)
+  private clearChildMeshes(node: TransformNode): void {
+    const children = node.getChildMeshes(false)
+    for (const child of children) {
+      child.dispose()
+    }
+    // Also dispose TransformNode children
+    const childNodes = node.getChildren()
+    for (const child of childNodes) {
+      if (child instanceof TransformNode && !(child instanceof Mesh)) {
+        child.dispose()
+      }
     }
   }
 
@@ -228,10 +230,15 @@ export class WallManager {
     const length = Math.hypot(dx, dz)
     if (length < 0.01) return
 
-    const color = WALL_MATERIAL_COLORS[wall.material] || 0xcccccc
-    const geo = new THREE.BoxGeometry(length, wall.height, wall.thickness)
-    const mat = new THREE.MeshLambertMaterial({ color })
-    const mesh = new THREE.Mesh(geo, mat)
+    const colorHex = WALL_MATERIAL_COLORS[wall.material] || '#cccccc'
+    const mat = new StandardMaterial(`wall-mat-${wall.id}`, this.scene)
+    mat.diffuseColor = Color3.FromHexString(colorHex)
+    mat.specularColor = Color3.Black()
+
+    const mesh = MeshBuilder.CreateBox(`wall-${wall.id}`, {
+      width: length, height: wall.height, depth: wall.thickness
+    }, this.scene)
+    mesh.material = mat
 
     mesh.position.set(
       (wall.startX + wall.endX) / 2,
@@ -239,9 +246,8 @@ export class WallManager {
       (wall.startZ + wall.endZ) / 2
     )
     mesh.rotation.y = -Math.atan2(dz, dx)
-    mesh.userData.wallId = wall.id
-
-    this.wallGroup.add(mesh)
+    mesh.metadata = { wallId: wall.id }
+    mesh.parent = this.wallGroup
   }
 
   private addGhostWall(wall: WallSegment, floorY: number): void {
@@ -250,21 +256,23 @@ export class WallManager {
     const length = Math.hypot(dx, dz)
     if (length < 0.01) return
 
-    const geo = new THREE.BoxGeometry(length, wall.height, wall.thickness)
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x888888,
-      transparent: true,
-      opacity: 0.15,
-      depthWrite: false,
-    })
-    const mesh = new THREE.Mesh(geo, mat)
+    const mat = new StandardMaterial('ghost-mat', this.scene)
+    mat.diffuseColor = Color3.FromHexString('#888888')
+    mat.alpha = 0.15
+    mat.disableLighting = true
+    mat.backFaceCulling = false
+
+    const mesh = MeshBuilder.CreateBox('ghost-wall', {
+      width: length, height: wall.height, depth: wall.thickness
+    }, this.scene)
+    mesh.material = mat
     mesh.position.set(
       (wall.startX + wall.endX) / 2,
       floorY + wall.height / 2,
       (wall.startZ + wall.endZ) / 2
     )
     mesh.rotation.y = -Math.atan2(dz, dx)
-    this.wallGroup.add(mesh)
+    mesh.parent = this.wallGroup
   }
 
   private addOpeningMesh(wall: WallSegment, opening: WallOpening, floorY: number): void {
@@ -280,101 +288,152 @@ export class WallManager {
 
     if (opening.type === 'door') {
       // Door frame (two vertical posts + header)
-      const frameColor = 0x664422
-      const postGeo = new THREE.BoxGeometry(0.05, opening.height, wall.thickness + 0.02)
-      const postMat = new THREE.MeshLambertMaterial({ color: frameColor })
+      const frameMat = new StandardMaterial('door-frame-mat', this.scene)
+      frameMat.diffuseColor = Color3.FromHexString('#664422')
+      frameMat.specularColor = Color3.Black()
 
-      const leftPost = new THREE.Mesh(postGeo, postMat)
-      const rightPost = new THREE.Mesh(postGeo, postMat.clone())
       const halfW = opening.width / 2
 
+      const leftPost = MeshBuilder.CreateBox('door-post-l', {
+        width: 0.05, height: opening.height, depth: wall.thickness + 0.02
+      }, this.scene)
+      leftPost.material = frameMat
       leftPost.position.set(cx - (dx / wLen) * halfW, floorY + opening.height / 2, cz - (dz / wLen) * halfW)
-      rightPost.position.set(cx + (dx / wLen) * halfW, floorY + opening.height / 2, cz + (dz / wLen) * halfW)
       leftPost.rotation.y = angle
-      rightPost.rotation.y = angle
+      leftPost.parent = this.wallGroup
 
-      const headerGeo = new THREE.BoxGeometry(opening.width, 0.08, wall.thickness + 0.02)
-      const header = new THREE.Mesh(headerGeo, postMat.clone())
+      const rightPost = MeshBuilder.CreateBox('door-post-r', {
+        width: 0.05, height: opening.height, depth: wall.thickness + 0.02
+      }, this.scene)
+      rightPost.material = frameMat.clone('door-frame-mat-r')
+      rightPost.position.set(cx + (dx / wLen) * halfW, floorY + opening.height / 2, cz + (dz / wLen) * halfW)
+      rightPost.rotation.y = angle
+      rightPost.parent = this.wallGroup
+
+      const header = MeshBuilder.CreateBox('door-header', {
+        width: opening.width, height: 0.08, depth: wall.thickness + 0.02
+      }, this.scene)
+      header.material = frameMat.clone('door-frame-mat-h')
       header.position.set(cx, floorY + opening.height, cz)
       header.rotation.y = angle
-
-      this.wallGroup.add(leftPost, rightPost, header)
+      header.parent = this.wallGroup
     } else if (opening.type === 'window') {
       // Window: sill + header + glass
-      const frameColor = 0x888888
-      const frameMat = new THREE.MeshLambertMaterial({ color: frameColor })
+      const frameMat = new StandardMaterial('window-frame-mat', this.scene)
+      frameMat.diffuseColor = Color3.FromHexString('#888888')
+      frameMat.specularColor = Color3.Black()
 
       // Sill
-      const sillGeo = new THREE.BoxGeometry(opening.width + 0.1, 0.05, wall.thickness + 0.05)
-      const sill = new THREE.Mesh(sillGeo, frameMat)
+      const sill = MeshBuilder.CreateBox('window-sill', {
+        width: opening.width + 0.1, height: 0.05, depth: wall.thickness + 0.05
+      }, this.scene)
+      sill.material = frameMat
       sill.position.set(cx, floorY + opening.sillHeight, cz)
       sill.rotation.y = angle
+      sill.parent = this.wallGroup
 
       // Header
-      const header = sill.clone()
-      header.position.y = floorY + opening.sillHeight + opening.height
+      const header = MeshBuilder.CreateBox('window-header', {
+        width: opening.width + 0.1, height: 0.05, depth: wall.thickness + 0.05
+      }, this.scene)
+      header.material = frameMat.clone('window-frame-mat-h')
+      header.position.set(cx, floorY + opening.sillHeight + opening.height, cz)
+      header.rotation.y = angle
+      header.parent = this.wallGroup
 
       // Glass pane
-      const glassGeo = new THREE.PlaneGeometry(opening.width, opening.height)
-      const glassMat = new THREE.MeshBasicMaterial({
-        color: 0x88bbdd,
-        transparent: true,
-        opacity: 0.3,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      })
-      const glass = new THREE.Mesh(glassGeo, glassMat)
+      const glassMat = new StandardMaterial('glass-mat', this.scene)
+      glassMat.diffuseColor = Color3.FromHexString('#88bbdd')
+      glassMat.alpha = 0.3
+      glassMat.backFaceCulling = false
+      glassMat.disableLighting = true
+
+      const glass = MeshBuilder.CreatePlane('window-glass', {
+        width: opening.width, height: opening.height
+      }, this.scene)
+      glass.material = glassMat
       glass.position.set(cx, floorY + opening.sillHeight + opening.height / 2, cz)
       glass.rotation.y = angle
-
-      this.wallGroup.add(sill, header, glass)
+      glass.parent = this.wallGroup
     }
   }
 
   private addFloorTileMesh(tile: FloorTile, cellSize: number, floorY: number): void {
-    const color = FLOOR_MATERIAL_COLORS[tile.material] || 0xcccccc
-    const geo = new THREE.PlaneGeometry(cellSize, cellSize)
-    geo.rotateX(-Math.PI / 2)
-    const mat = new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide })
-    const mesh = new THREE.Mesh(geo, mat)
+    const colorHex = FLOOR_MATERIAL_COLORS[tile.material] || '#cccccc'
+    const mat = new StandardMaterial('floor-tile-mat', this.scene)
+    mat.diffuseColor = Color3.FromHexString(colorHex)
+    mat.specularColor = Color3.Black()
+    mat.backFaceCulling = false
+
+    const mesh = MeshBuilder.CreateGround('floor-tile', {
+      width: cellSize, height: cellSize
+    }, this.scene)
+    mesh.material = mat
     mesh.position.set(
       tile.x * cellSize + cellSize / 2,
       floorY + 0.01,
       tile.z * cellSize + cellSize / 2
     )
-    mesh.renderOrder = 5
-    this.floorGroup.add(mesh)
+    mesh.renderingGroupId = 1
+    mesh.parent = this.floorGroup
   }
 
   private addRoomLabel(room: DetectedRoom, gridSize: number, cellSize: number, floorY: number): void {
     const centroid = getRoomCentroid(room, gridSize, cellSize)
 
-    const canvas = document.createElement('canvas')
-    canvas.width = 256
-    canvas.height = 64
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
+    const label = room.roomType ? `${room.name} (${room.roomType})` : room.name
 
+    const textureSize = 256
+    const texture = new DynamicTexture('room-label-tex', { width: textureSize, height: 64 }, this.scene)
+    texture.hasAlpha = true
+    const ctx = texture.getContext() as unknown as CanvasRenderingContext2D
+    ctx.clearRect(0, 0, textureSize, 64)
     ctx.fillStyle = '#88bbff'
     ctx.font = 'bold 22px sans-serif'
     ctx.textAlign = 'center'
-    const label = room.roomType ? `${room.name} (${room.roomType})` : room.name
     ctx.fillText(label, 128, 40)
+    texture.update()
 
-    const texture = new THREE.CanvasTexture(canvas)
-    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.7 })
-    const sprite = new THREE.Sprite(mat)
-    sprite.position.set(centroid.x, floorY + 1.5, centroid.z)
-    sprite.scale.set(4, 1, 1)
-    this.labelGroup.add(sprite)
+    const labelMat = new StandardMaterial('room-label-mat', this.scene)
+    labelMat.diffuseTexture = texture
+    labelMat.opacityTexture = texture
+    labelMat.disableLighting = true
+    labelMat.backFaceCulling = false
+
+    const labelPlane = MeshBuilder.CreatePlane('room-label', { width: 4, height: 1 }, this.scene)
+    labelPlane.material = labelMat
+    labelPlane.position.set(centroid.x, floorY + 1.5, centroid.z)
+    labelPlane.billboardMode = Mesh.BILLBOARDMODE_ALL
+    labelPlane.renderingGroupId = 2
+    labelPlane.parent = this.labelGroup
   }
 
   private createGridOverlay(data: BuildingData): void {
     const totalSize = data.gridSize * data.gridCellSize
-    const grid = new THREE.GridHelper(totalSize, data.gridSize, 0x444466, 0x333344)
-    grid.position.set(totalSize / 2, 0.02, totalSize / 2)
-    grid.material.opacity = 0.3
-    grid.material.transparent = true
-    this.gridOverlay.add(grid)
+    const gridLines: Vector3[] = []
+
+    // Create grid lines manually
+    for (let i = 0; i <= data.gridSize; i++) {
+      const pos = i * data.gridCellSize
+      // Horizontal lines
+      gridLines.push(new Vector3(0, 0.02, pos))
+      gridLines.push(new Vector3(totalSize, 0.02, pos))
+      // Vertical lines
+      gridLines.push(new Vector3(pos, 0.02, 0))
+      gridLines.push(new Vector3(pos, 0.02, totalSize))
+    }
+
+    // Draw lines in pairs
+    for (let i = 0; i < gridLines.length; i += 2) {
+      const colors = [
+        new Color4(0.2, 0.2, 0.27, 0.3),
+        new Color4(0.2, 0.2, 0.27, 0.3),
+      ]
+      const line = MeshBuilder.CreateLines(`grid-line-${i}`, {
+        points: [gridLines[i], gridLines[i + 1]],
+        colors,
+      }, this.scene)
+      line.parent = this.gridOverlay
+    }
   }
 }
