@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useVNStore } from "@/engine/vnEngine";
+import { useVNStore } from "@/engine/VNProvider";
 
 export function SaveLoadMenu() {
   const isSaveOpen = useVNStore((s) => s.isSaveMenuOpen);

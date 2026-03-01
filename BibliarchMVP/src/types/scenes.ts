@@ -4,6 +4,26 @@
  */
 
 // ============================================================
+// COMMON TYPES
+// ============================================================
+
+export type EasingType = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out'
+
+export type TransformGizmoMode = 'translate' | 'rotate' | 'scale'
+
+// ============================================================
+// CHARACTER ANIMATION STATE
+// ============================================================
+
+export interface CharacterAnimationState {
+  basePose: string | null       // Pose preset ID
+  emotion: string | null        // Emotion ID (morph targets)
+  emotionIntensity: number      // 0-1
+  clipAnimation: string | null  // Mixamo clip ID
+  clipLoop: boolean
+}
+
+// ============================================================
 // CHARACTER APPEARANCE DATA
 // ============================================================
 
@@ -53,6 +73,46 @@ export interface SceneCharacter {
   name: string
   position: [number, number, number]
   rotation: number  // Y-axis rotation in radians
+  animation?: CharacterAnimationState  // Current animation state
+}
+
+// ============================================================
+// KEYFRAMES
+// ============================================================
+
+/**
+ * Camera keyframe - position, rotation, FOV at a point in time
+ */
+export interface CameraKeyframe {
+  id: string
+  time: number  // Seconds from scene start
+  position: [number, number, number]
+  rotation: [number, number, number]  // Euler XYZ in radians
+  fov: number
+  easing: EasingType
+}
+
+/**
+ * Movement keyframe - character position/rotation at a point in time
+ */
+export interface MovementKeyframe {
+  id: string
+  characterId: string  // Which character this keyframe is for
+  time: number
+  position: [number, number, number]
+  rotation: number  // Y-axis rotation
+  easing: EasingType
+}
+
+/**
+ * Animation keyframe - character animation state at a point in time
+ */
+export interface AnimationKeyframe {
+  id: string
+  characterId: string
+  time: number
+  animation: CharacterAnimationState
+  easing: EasingType
 }
 
 // ============================================================
@@ -69,18 +129,19 @@ export interface DialogueLine {
 }
 
 // ============================================================
-// CAMERA KEYFRAMES
+// SCENE PROPS
 // ============================================================
 
-export type EasingType = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out'
+export type PropShape = 'cube' | 'sphere' | 'cylinder' | 'cone' | 'plane' | 'torus'
 
-export interface CameraKeyframe {
+export interface SceneProp {
   id: string
-  time: number  // Seconds from scene start
+  name: string
+  shape: PropShape
   position: [number, number, number]
-  rotation: [number, number, number]  // Euler XYZ in radians
-  fov: number
-  easing: EasingType
+  rotation: [number, number, number]
+  scale: [number, number, number]
+  color: string // hex color
 }
 
 // ============================================================
@@ -89,23 +150,35 @@ export interface CameraKeyframe {
 
 export interface Scene {
   id: string
+  storyId: string
   title: string
   characters: SceneCharacter[]
   dialogue: DialogueLine[]
   duration: number  // Total duration in seconds
 
-  // World backdrop (Phase 3)
+  // World backdrop
   locationId?: string  // Reference to WorldLocation.id
 
-  // Camera animation (Phase 4)
+  // Keyframe tracks
   cameraKeyframes?: CameraKeyframe[]
+  movementKeyframes?: MovementKeyframe[]
+  animationKeyframes?: AnimationKeyframe[]
+
+  // Props
+  props?: SceneProp[]
+
+  // Thumbnail
+  thumbnail?: string  // Base64 data URL
+
+  // Background music
+  backgroundMusic?: string // Preset name or URL
+
+  // Lighting preset
+  lightingPreset?: string
 
   // Timeline linking
   linkedTimelineEventId?: string
+
+  createdAt: Date
+  updatedAt: Date
 }
-
-// ============================================================
-// GIZMO/TRANSFORM STATE
-// ============================================================
-
-export type TransformGizmoMode = 'translate' | 'rotate' | 'scale'

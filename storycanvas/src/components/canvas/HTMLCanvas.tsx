@@ -393,6 +393,8 @@ export default function HTMLCanvas({
     originalNodes: Node[]  // Store original canvas nodes to restore on cancel
     originalConnections: Connection[]
   } | null>(null)
+  // Pending template to place on next canvas click (click-to-place behavior)
+  const [pendingTemplate, setPendingTemplate] = useState<CustomTemplate | null>(null)
 
   // Wrapper for onSave that skips saving when in template editor mode or when realtimeSave is disabled
   // When realtimeSave is false, saves only happen on navigation/manual button (parent handles via onStateChange)
@@ -1438,6 +1440,7 @@ export default function HTMLCanvas({
         }
       } else if (e.key === 'Escape') {
         e.preventDefault()
+        setPendingTemplate(null) // Cancel any pending template placement
         setSelectedId(null)
         setConnectingFrom(null) // Cancel any pending connections
         setTool('pan')
@@ -1591,6 +1594,18 @@ export default function HTMLCanvas({
       return
     }
 
+    // Handle pending template placement (click-to-place)
+    if (pendingTemplate) {
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const x = (e.clientX - rect.left) / zoom
+      const y = (e.clientY - rect.top) / zoom
+      const templateToPlace = pendingTemplate
+      setPendingTemplate(null)
+      placeTemplateOnCanvas(templateToPlace, x, y)
+      return
+    }
+
     // Select tool: deselect nodes when clicking empty canvas
     if (tool === 'select') {
       if (editingField) {
@@ -1669,7 +1684,7 @@ export default function HTMLCanvas({
     })
     setTool('select')  // Switch to select tool after creating node for immediate interaction
 
-  }, [tool, nodes, connections, saveToHistory, editingField, visibleNodeIds])
+  }, [tool, nodes, connections, saveToHistory, editingField, visibleNodeIds, pendingTemplate])
 
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
     // Blur any active text field when clicking on canvas background
@@ -3741,11 +3756,9 @@ export default function HTMLCanvas({
     saveTemplates(templates.filter(t => t.id !== templateId))
   }
 
-  const placeTemplateOnCanvas = async (template: CustomTemplate) => {
-    // Find position for new folder node
-    const scrollContainer = scrollContainerRef.current
-    const viewportCenterX = scrollContainer ? (scrollContainer.scrollLeft + scrollContainer.clientWidth / 2) / zoom : 400
-    const viewportCenterY = scrollContainer ? (scrollContainer.scrollTop + scrollContainer.clientHeight / 2) / zoom : 300
+  const placeTemplateOnCanvas = async (template: CustomTemplate, clickX: number, clickY: number) => {
+    const viewportCenterX = clickX
+    const viewportCenterY = clickY
 
     // Create a new folder node with the template's interior
     const folderId = `folder-${Date.now()}`
@@ -3810,8 +3823,20 @@ export default function HTMLCanvas({
 
     const updatedNodes = [...nodes, newNode]
     setNodes(updatedNodes)
+    setVisibleNodeIds([...visibleNodeIds, newNode.id])
     saveToHistory(updatedNodes, connections)
+
+    // Broadcast for real-time collaboration
+    if (onBroadcastChangeRef.current) {
+      onBroadcastChangeRef.current(updatedNodes, connections)
+    }
     handleSaveRef.current(updatedNodes, connections)
+
+    // Select the new node
+    flushSync(() => {
+      setSelectedIds([])
+      setSelectedId(newNode.id)
+    })
 
     // Save template interior nodes to the linked canvas
     // Always create the canvas record so it can be edited later
@@ -3832,22 +3857,36 @@ export default function HTMLCanvas({
         // Generate new unique IDs for the template nodes to avoid conflicts
         const idMapping: Record<string, string> = {}
         const canvasIdMapping: Record<string, string> = {}
-        const newTemplateNodes = template.nodes.map(node => {
+
+        // First pass: build the ID mapping for all nodes
+        template.nodes.forEach(node => {
           const newId = `${node.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
           idMapping[node.id] = newId
 
-          // Also generate new linkedCanvasId for folder/character/location nodes
-          let newLinkedCanvasId = node.linkedCanvasId
           if (node.linkedCanvasId && (node.type === 'folder' || node.type === 'character' || node.type === 'location' || node.type === 'event')) {
-            newLinkedCanvasId = `canvas-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-            canvasIdMapping[node.linkedCanvasId] = newLinkedCanvasId
+            canvasIdMapping[node.linkedCanvasId] = `canvas-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
           }
+        })
+
+        // Second pass: create new nodes with all references remapped
+        const newTemplateNodes = template.nodes.map(node => {
+          const newId = idMapping[node.id]
+          let newLinkedCanvasId = node.linkedCanvasId
+          if (node.linkedCanvasId && canvasIdMapping[node.linkedCanvasId]) {
+            newLinkedCanvasId = canvasIdMapping[node.linkedCanvasId]
+          }
+
+          // Remap parentId and childIds to use new IDs
+          const newParentId = node.parentId ? (idMapping[node.parentId] || node.parentId) : undefined
+          const newChildIds = node.childIds ? node.childIds.map(cid => idMapping[cid] || cid) : undefined
 
           // Normalize position to start near top-left
           return {
             ...node,
             id: newId,
             linkedCanvasId: newLinkedCanvasId,
+            parentId: newParentId,
+            childIds: newChildIds,
             x: node.x - offsetX,
             y: node.y - offsetY
           }
@@ -3885,10 +3924,11 @@ export default function HTMLCanvas({
       }
     }
 
-    // Wait for the save to complete before closing panel
-    await saveTemplateInterior()
-
+    // Close the panel immediately so the node is visible right away
     setShowTemplatePanel(false)
+
+    // Save interior in the background - don't block the UI
+    saveTemplateInterior()
   }
 
   const handleApplyTemplate = (templateNodes: Node[], templateConnections: Connection[]) => {
@@ -4338,7 +4378,9 @@ export default function HTMLCanvas({
               {templates.map(template => (
                 <button
                   key={template.id}
-                  onClick={() => placeTemplateOnCanvas(template)}
+                  onClick={() => {
+                    setPendingTemplate(template)
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault()
                     setTemplateContextMenu({ template, position: { x: e.clientX, y: e.clientY } })
@@ -5554,6 +5596,7 @@ export default function HTMLCanvas({
         <div
           ref={canvasRef}
           className={`canvas-grid relative ${
+            pendingTemplate ? 'cursor-crosshair' :
             tool === 'select' ? 'cursor-default' :
             tool === 'relationships' ? 'cursor-pointer' :
             'cursor-crosshair'
@@ -6109,6 +6152,8 @@ export default function HTMLCanvas({
                         const fileInput = document.createElement('input')
                         fileInput.type = 'file'
                         fileInput.accept = 'image/*'
+                        fileInput.style.display = 'none'
+                        document.body.appendChild(fileInput)
                         fileInput.onchange = (e) => {
                           const file = (e.target as HTMLInputElement).files?.[0]
                           if (file) {
@@ -6165,6 +6210,7 @@ export default function HTMLCanvas({
                             }
                             reader.readAsDataURL(file)
                           }
+                          document.body.removeChild(fileInput)
                         }
                         fileInput.click()
                       }}
@@ -6184,6 +6230,8 @@ export default function HTMLCanvas({
                         const fileInput = document.createElement('input')
                         fileInput.type = 'file'
                         fileInput.accept = 'image/*'
+                        fileInput.style.display = 'none'
+                        document.body.appendChild(fileInput)
                         fileInput.onchange = (e) => {
                           const file = (e.target as HTMLInputElement).files?.[0]
                           if (file) {
@@ -6240,6 +6288,7 @@ export default function HTMLCanvas({
                             }
                             reader.readAsDataURL(file)
                           }
+                          document.body.removeChild(fileInput)
                         }
                         fileInput.click()
                       }}
@@ -7422,7 +7471,59 @@ export default function HTMLCanvas({
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <Heart className="w-5 h-5 text-red-500" />
-                      <h3 className="font-semibold text-sm" style={{ color: getNodeBorderColor(node.type || 'text') }}>{node.text}</h3>
+                      <div
+                        key={`${node.id}-title`}
+                        contentEditable={editingField?.nodeId === node.id && editingField?.field === 'title'}
+                        suppressContentEditableWarning={true}
+                        onPaste={handlePlainTextPaste}
+                        data-content-type="title"
+                        className={`bg-transparent border-none outline-none font-semibold text-sm rounded px-1 ${(editingField?.nodeId === node.id && editingField?.field === 'title') ? 'cursor-text' : 'cursor-move'}`}
+                        style={{
+                          color: getNodeBorderColor(node.type || 'text'),
+                          caretColor: getNodeBorderColor(node.type || 'text'),
+                          userSelect: (editingField?.nodeId === node.id && editingField?.field === 'title') ? 'text' : 'none'
+                        }}
+                        onBlur={(e) => {
+                          const newText = e.currentTarget.textContent || ''
+                          const updatedNodes = nodes.map(n =>
+                            n.id === node.id ? { ...n, text: newText } : n
+                          )
+                          setNodes(updatedNodes)
+                          handleDelayedBlur(() => {
+                            saveToHistory(updatedNodes, connections)
+                            setEditingField(null)
+                            if (onSave) {
+                              handleSaveRef.current(updatedNodes, connections)
+                            }
+                          })
+                        }}
+                        onFocus={cancelDelayedBlur}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (editingField?.nodeId === node.id && editingField?.field === 'title') {
+                            e.preventDefault()
+                            e.currentTarget.focus()
+                          }
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation()
+                          const target = e.currentTarget
+                          if (editingField?.nodeId === node.id && editingField?.field === 'title') {
+                            target.focus()
+                          } else {
+                            setEditingField({ nodeId: node.id, field: 'title' })
+                            setTimeout(() => target.focus(), 0)
+                          }
+                        }}
+                        spellCheck={false}
+                        ref={(el) => {
+                          if (el && !(editingField?.nodeId === node.id && editingField?.field === 'title')) {
+                            if (el.textContent !== (node.text || '')) {
+                              el.textContent = node.text || ''
+                            }
+                          }
+                        }}
+                      />
                     </div>
                     <div className="text-xs" style={{ color: getTextColor(getNodeColor(node.type || 'text', node.color, node.id)) }}>
                       {selectedCharacters.length} character{selectedCharacters.length !== 1 ? 's' : ''}
@@ -7768,7 +7869,7 @@ export default function HTMLCanvas({
                       <div className="absolute inset-0 flex items-center justify-center text-muted-foreground bg-white rounded">
                         <div className="text-center p-4">
                           <Heart className="w-12 h-12 text-muted-foreground/50 mx-auto mb-2" />
-                          <p className="text-sm font-medium mb-1">Character Relationships</p>
+                          <p className="text-sm font-medium mb-1">{node.text || 'Character Relationships'}</p>
                           <p className="text-xs opacity-75">Double-click to add characters and map their relationships</p>
                         </div>
                       </div>
@@ -7955,6 +8056,8 @@ export default function HTMLCanvas({
                         const fileInput = document.createElement('input')
                         fileInput.type = 'file'
                         fileInput.accept = 'image/*'
+                        fileInput.style.display = 'none'
+                        document.body.appendChild(fileInput)
                         fileInput.onchange = (e) => {
                           const file = (e.target as HTMLInputElement).files?.[0]
                           if (file) {
@@ -7982,6 +8085,7 @@ export default function HTMLCanvas({
                             }
                             reader.readAsDataURL(file)
                           }
+                          document.body.removeChild(fileInput)
                         }
                         fileInput.click()
                       }}
@@ -8517,6 +8621,8 @@ export default function HTMLCanvas({
                                         const fileInput = document.createElement('input')
                                         fileInput.type = 'file'
                                         fileInput.accept = 'image/*'
+                                        fileInput.style.display = 'none'
+                                        document.body.appendChild(fileInput)
                                         fileInput.onchange = (e) => {
                                           const file = (e.target as HTMLInputElement).files?.[0]
                                           if (file) {
@@ -8544,6 +8650,7 @@ export default function HTMLCanvas({
                                             }
                                             reader.readAsDataURL(file)
                                           }
+                                          document.body.removeChild(fileInput)
                                         }
                                         fileInput.click()
                                       }}
@@ -9742,7 +9849,31 @@ export default function HTMLCanvas({
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-medium flex items-center gap-2">
                 <Heart className="w-5 h-5 text-red-500" />
-                {relationshipCanvasModal.node.text} - Relationship Editor
+                <input
+                  type="text"
+                  value={relationshipCanvasModal.node.text || ''}
+                  onChange={(e) => {
+                    const newText = e.target.value
+                    const updatedNodes = nodes.map(n =>
+                      n.id === relationshipCanvasModal.nodeId ? { ...n, text: newText } : n
+                    )
+                    setNodes(updatedNodes)
+                    setRelationshipCanvasModal(prev => prev ? {
+                      ...prev,
+                      node: { ...prev.node, text: newText }
+                    } : null)
+                  }}
+                  onBlur={() => {
+                    saveToHistory(nodes, connections)
+                    if (onSave) {
+                      handleSaveRef.current(nodes, connections)
+                    }
+                  }}
+                  className="bg-transparent border-none outline-none font-medium text-lg min-w-0"
+                  style={{ width: `${Math.max(8, (relationshipCanvasModal.node.text || '').length + 1)}ch` }}
+                  placeholder="Relationship Map"
+                />
+                <span className="text-muted-foreground">- Relationship Editor</span>
               </h3>
               <Button
                 variant="ghost"

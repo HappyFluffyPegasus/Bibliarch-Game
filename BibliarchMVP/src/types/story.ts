@@ -2,6 +2,7 @@ export interface Story {
   id: string
   title: string
   description: string
+  coverImage?: string
   createdAt: Date
   updatedAt: Date
 }

@@ -3,8 +3,9 @@ import { persist } from 'zustand/middleware'
 import { Story, CanvasData, MasterDoc } from '@/types/story'
 import { Character } from '@/types/character'
 import { TimelineEvent, TimelineTrack } from '@/types/timeline'
-import { Scene } from '@/types/scene'
+import { Scene } from '@/types/scenes'
 import { World, SerializedWorld, serializeWorld, deserializeWorld } from '@/types/world'
+import { CustomItem, SerializedCustomItem, serializeCustomItem, deserializeCustomItem } from '@/types/items'
 
 interface StoryState {
   // All stories
@@ -20,11 +21,14 @@ interface StoryState {
   timelineTracks: Record<string, TimelineTrack[]>
   scenes: Record<string, Scene[]>
   worlds: Record<string, World>
+  customItems: Record<string, CustomItem[]>
   masterDocs: Record<string, MasterDoc[]>
+  characterNoteLinks: Record<string, { characterId: string; noteNodeId: string }[]>
 
   // Actions - Stories
   createStory: (title: string, description?: string) => Story
   updateStory: (id: string, updates: Partial<Story>) => void
+  updateStoryCoverImage: (storyId: string, dataUrl: string) => void
   deleteStory: (id: string) => void
   setCurrentStory: (id: string | null) => void
 
@@ -52,13 +56,23 @@ interface StoryState {
   addScene: (storyId: string, scene: Scene) => void
   updateScene: (storyId: string, sceneId: string, updates: Partial<Scene>) => void
   deleteScene: (storyId: string, sceneId: string) => void
+  reorderScenes: (storyId: string, sceneIds: string[]) => void
 
   // Actions - World
   saveWorld: (storyId: string, world: World) => void
 
+  // Actions - Custom Items
+  addCustomItem: (storyId: string, item: CustomItem) => void
+  updateCustomItem: (storyId: string, item: CustomItem) => void
+  deleteCustomItem: (storyId: string, itemId: string) => void
+
   // Actions - Master Docs
   addMasterDoc: (storyId: string, doc: MasterDoc) => void
   deleteMasterDoc: (storyId: string, docId: string) => void
+
+  // Actions - Character ↔ Note Links
+  linkCharacterToNote: (storyId: string, characterId: string, noteNodeId: string) => void
+  unlinkCharacterFromNote: (storyId: string, characterId: string) => void
 }
 
 function generateId(): string {
@@ -76,7 +90,9 @@ export const useStoryStore = create<StoryState>()(
       timelineTracks: {},
       scenes: {},
       worlds: {},
+      customItems: {},
       masterDocs: {},
+      characterNoteLinks: {},
 
       // Story actions
       createStory: (title, description = '') => {
@@ -101,6 +117,14 @@ export const useStoryStore = create<StoryState>()(
         }))
       },
 
+      updateStoryCoverImage: (storyId, dataUrl) => {
+        set((state) => ({
+          stories: state.stories.map((s) =>
+            s.id === storyId ? { ...s, coverImage: dataUrl, updatedAt: new Date() } : s
+          ),
+        }))
+      },
+
       deleteStory: (id) => {
         set((state) => {
           const { [id]: _canvas, ...restCanvas } = state.canvasData
@@ -109,7 +133,9 @@ export const useStoryStore = create<StoryState>()(
           const { [id]: _tracks, ...restTracks } = state.timelineTracks
           const { [id]: _scenes, ...restScenes } = state.scenes
           const { [id]: _world, ...restWorlds } = state.worlds
+          const { [id]: _items, ...restItems } = state.customItems
           const { [id]: _docs, ...restDocs } = state.masterDocs
+          const { [id]: _links, ...restLinks } = state.characterNoteLinks
 
           return {
             stories: state.stories.filter((s) => s.id !== id),
@@ -120,7 +146,9 @@ export const useStoryStore = create<StoryState>()(
             timelineTracks: restTracks,
             scenes: restScenes,
             worlds: restWorlds,
+            customItems: restItems,
             masterDocs: restDocs,
+            characterNoteLinks: restLinks,
           }
         })
       },
@@ -292,12 +320,56 @@ export const useStoryStore = create<StoryState>()(
         }))
       },
 
+      reorderScenes: (storyId, sceneIds) => {
+        set((state) => {
+          const existing = state.scenes[storyId] || []
+          const byId = new Map(existing.map(s => [s.id, s]))
+          const reordered = sceneIds.map(id => byId.get(id)).filter(Boolean) as Scene[]
+          return {
+            scenes: {
+              ...state.scenes,
+              [storyId]: reordered,
+            },
+          }
+        })
+      },
+
       // World actions
       saveWorld: (storyId, world) => {
         set((state) => ({
           worlds: {
             ...state.worlds,
             [storyId]: world,
+          },
+        }))
+      },
+
+      // Custom Item actions
+      addCustomItem: (storyId, item) => {
+        set((state) => ({
+          customItems: {
+            ...state.customItems,
+            [storyId]: [...(state.customItems[storyId] || []), item],
+          },
+        }))
+      },
+
+      updateCustomItem: (storyId, item) => {
+        set((state) => ({
+          customItems: {
+            ...state.customItems,
+            [storyId]: (state.customItems[storyId] || []).map((i) =>
+              i.id === item.id ? { ...item, updatedAt: new Date() } : i
+            ),
+          },
+        }))
+      },
+
+      deleteCustomItem: (storyId, itemId) => {
+        set((state) => ({
+          customItems: {
+            ...state.customItems,
+            [storyId]: (state.customItems[storyId] || []).filter((i) => i.id !== itemId),
           },
         }))
       },
@@ -320,6 +392,32 @@ export const useStoryStore = create<StoryState>()(
           },
         }))
       },
+
+      // Character ↔ Note Link actions
+      linkCharacterToNote: (storyId, characterId, noteNodeId) => {
+        set((state) => {
+          const existing = state.characterNoteLinks[storyId] || []
+          // Remove any existing link for this character first
+          const filtered = existing.filter((l) => l.characterId !== characterId)
+          return {
+            characterNoteLinks: {
+              ...state.characterNoteLinks,
+              [storyId]: [...filtered, { characterId, noteNodeId }],
+            },
+          }
+        })
+      },
+
+      unlinkCharacterFromNote: (storyId, characterId) => {
+        set((state) => ({
+          characterNoteLinks: {
+            ...state.characterNoteLinks,
+            [storyId]: (state.characterNoteLinks[storyId] || []).filter(
+              (l) => l.characterId !== characterId
+            ),
+          },
+        }))
+      },
     }),
     {
       name: 'bibliarch-mvp-storage',
@@ -336,6 +434,18 @@ export const useStoryStore = create<StoryState>()(
               createdAt: new Date(s.createdAt),
               updatedAt: new Date(s.updatedAt),
             }))
+          }
+          // Deserialize custom items (date strings back to Dates)
+          if (data.state?.customItems) {
+            const deserialized: Record<string, CustomItem[]> = {}
+            for (const [key, val] of Object.entries(data.state.customItems as Record<string, SerializedCustomItem[]>)) {
+              try {
+                deserialized[key] = (val || []).map(deserializeCustomItem)
+              } catch {
+                // Skip corrupted item data
+              }
+            }
+            data.state.customItems = deserialized
           }
           // Deserialize worlds (convert plain arrays back to typed arrays)
           if (data.state?.worlds) {
@@ -354,6 +464,13 @@ export const useStoryStore = create<StoryState>()(
         setItem: (name, value) => {
           // Serialize worlds (convert typed arrays to plain arrays)
           const toSerialize = { ...value }
+          if (toSerialize.state?.customItems) {
+            const serializedItems: Record<string, SerializedCustomItem[]> = {}
+            for (const [key, val] of Object.entries(toSerialize.state.customItems as Record<string, CustomItem[]>)) {
+              serializedItems[key] = (val || []).map(serializeCustomItem)
+            }
+            toSerialize.state = { ...toSerialize.state, customItems: serializedItems as unknown as Record<string, CustomItem[]> }
+          }
           if (toSerialize.state?.worlds) {
             const serializedWorlds: Record<string, SerializedWorld> = {}
             for (const [key, val] of Object.entries(toSerialize.state.worlds as Record<string, World>)) {

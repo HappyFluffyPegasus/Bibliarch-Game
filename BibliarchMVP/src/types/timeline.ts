@@ -27,6 +27,7 @@ export interface TimelineTrack {
   name: string
   order: number
   color: string
+  parentEventId?: string
 }
 
 export interface TimelineEvent {

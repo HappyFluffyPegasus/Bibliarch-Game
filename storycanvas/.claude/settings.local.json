@@ -40,7 +40,8 @@
       "Bash(npm install:*)",
       "Bash(npm run:*)",
       "Bash(git diff:*)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(npx next build:*)"
     ],
     "deny": [],
     "ask": []

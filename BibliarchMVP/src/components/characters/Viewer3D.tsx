@@ -7,6 +7,7 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { createToonMaterial, setToonMaterialColor, createColoredShadowMaterial } from '@/lib/shaders/toonMaterial'
 import { getUndertoneTexturePath, getUndertone } from '@/lib/hairTextures'
+import { SpringBoneSystem } from '@/lib/SpringBoneSystem'
 
 type Section = 'BODY' | 'HAIR' | 'TOPS' | 'DRESSES' | 'PANTS' | 'SHOES' | 'ACCESSORIES' | 'EXPRESSIONS' | 'POSES' | null
 
@@ -89,6 +90,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
   const hairTextureRef = useRef<THREE.Texture | null>(null)
   const currentHairColorRef = useRef<string | null>(null)
   const textureLoaderRef = useRef<THREE.TextureLoader | null>(null)
+  const springBonesRef = useRef<SpringBoneSystem | null>(null)
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -422,6 +424,15 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
             setLoading(false)
             setModelReady(true)
 
+            // Initialize spring bones for hair
+            const springBones = new SpringBoneSystem()
+            // Add all hair-related bones with springy physics
+            // Stiffness: 0.3 = moderate spring, Damping: 0.7 = moderate bounce
+            springBones.addBones(fbx, [
+              'hair', 'pigtail', 'ponytail', 'braid', 'bangs', 'ahoge', 'bun', 'strand'
+            ], 0.25, 0.7)
+            springBonesRef.current = springBones
+
             if (onMeshesLoaded) {
               onMeshesLoaded(meshes)
             }
@@ -467,18 +478,20 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     const animate = () => {
       animationId = requestAnimationFrame(animate)
 
-      // DISABLED - bone movement causes collapse after rebind
-      // const delta = clockRef.current.getDelta()
-      // if (mixerRef.current) {
-      //   mixerRef.current.update(delta)
-      // }
-      // if (sceneObjectsRef.current && heightScaleRef.current !== 1.0) {
-      //   sceneObjectsRef.current.traverse((node) => {
-      //     if (node instanceof THREE.Bone && node.name === 'spine005') {
-      //       node.scale.setScalar(1 / heightScaleRef.current)
-      //     }
-      //   })
-      // }
+      // Update animation mixer
+      const delta = clockRef.current.getDelta()
+      if (mixerRef.current) {
+        mixerRef.current.update(delta)
+      }
+
+      // Update spring bones for hair physics
+      if (springBonesRef.current && springBonesRef.current.count > 0) {
+        springBonesRef.current.update(delta)
+        // Apply subtle gravity effect for natural hair hang
+        if (sceneObjectsRef.current) {
+          springBonesRef.current.applyGravity(sceneObjectsRef.current, 0.015, delta)
+        }
+      }
 
       // Apply visibility every frame from ref — no effect timing issues
       if (meshMapRef.current.size > 0) {
@@ -504,17 +517,79 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
       if (mixerRef.current) {
         mixerRef.current.stopAllAction()
       }
+      if (springBonesRef.current) {
+        springBonesRef.current.clear()
+      }
       renderer.dispose()
       controls.dispose()
     }
   }, [])
 
-  // DISABLED - pose/animation system moves bones and causes collapse after rebind
-  // Will need to re-capture bind pose AFTER rebind to fix this properly
-  // useEffect(() => {
-  //   if (!modelReady || !mixerRef.current || !sceneObjectsRef.current) return
-  //   ...
-  // }, [selectedPose, modelReady])
+  // Animation/Pose control effect - simplified, no manual bone reset
+  useEffect(() => {
+    if (!modelReady || !mixerRef.current || !sceneObjectsRef.current) return
+
+    const mixer = mixerRef.current
+
+    // No pose selected - just stop any playing animation
+    if (!selectedPose) {
+      if (currentActionRef.current) {
+        currentActionRef.current.fadeOut(0.3)
+        currentActionRef.current = null
+      }
+      return
+    }
+
+    // Map pose ID to animation file path
+    const poseToPath: Record<string, string> = {
+      'hip-hop': '/animations/Hip Hop Dancing (1).fbx',
+      'body-block': '/animations/Body Block.fbx'
+    }
+
+    const animPath = poseToPath[selectedPose]
+    if (!animPath) {
+      console.warn('Unknown pose:', selectedPose)
+      return
+    }
+
+    console.log('Loading animation:', animPath)
+
+    const animLoader = new FBXLoader()
+    animLoader.load(
+      animPath,
+      (animFbx) => {
+        if (animFbx.animations.length === 0) {
+          console.warn('No animations in file')
+          return
+        }
+
+        // Fade out current animation if any
+        if (currentActionRef.current) {
+          currentActionRef.current.fadeOut(0.3)
+        }
+
+        // Play the animation clip
+        const clip = animFbx.animations[0]
+        console.log(`Playing animation: "${clip.name}" with ${clip.tracks.length} tracks`)
+
+        const action = mixer.clipAction(clip)
+        action.reset()
+        action.fadeIn(0.3)
+        action.play()
+        currentActionRef.current = action
+      },
+      undefined,
+      (error) => {
+        console.error('Failed to load animation:', error)
+      }
+    )
+
+    return () => {
+      if (currentActionRef.current) {
+        currentActionRef.current.fadeOut(0.3)
+      }
+    }
+  }, [selectedPose, modelReady])
 
   // Morph target control effect
   useEffect(() => {

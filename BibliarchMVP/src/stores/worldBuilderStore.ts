@@ -12,6 +12,7 @@ import {
   LotZoning,
   RoadType,
   RoadWaypoint,
+  WorldObject,
 } from '@/types/world'
 
 // ============================================================
@@ -31,6 +32,7 @@ interface TerrainPaintCommand {
 interface ObjectPlaceCommand {
   type: 'object-place'
   objectId: string
+  objectSnapshot?: string // Set during undo for redo support
 }
 
 interface ObjectDeleteCommand {
@@ -49,9 +51,31 @@ interface ObjectTransformCommand {
   newScale: [number, number, number]
 }
 
+interface TerrainBulkCommand {
+  type: 'terrain-bulk'
+  oldHeights: Float32Array
+  oldMaterials: Uint8Array
+  newHeights: Float32Array
+  newMaterials: Uint8Array
+}
+
+interface ObjectDuplicateCommand {
+  type: 'object-duplicate'
+  objectIds: string[]
+  objectSnapshots?: string // Set during undo for redo support
+}
+
+interface ObjectPropertyCommand {
+  type: 'object-property'
+  objectId: string
+  oldProps: Partial<WorldObject>
+  newProps: Partial<WorldObject>
+}
+
 interface BorderCreateCommand {
   type: 'border-create'
   borderId: string
+  borderSnapshot?: string // Set during undo for redo support
 }
 
 interface BorderDeleteCommand {
@@ -63,6 +87,7 @@ interface WallPlaceCommand {
   type: 'wall-place'
   wallId: string
   floorLevel: number
+  wallSnapshot?: string // Set during undo for redo support
 }
 
 interface WallDeleteCommand {
@@ -75,19 +100,24 @@ interface OpeningPlaceCommand {
   type: 'opening-place'
   openingId: string
   floorLevel: number
+  openingSnapshot?: string // Set during undo for redo support
 }
 
 interface FurniturePlaceCommand {
   type: 'furniture-place'
   furnitureId: string
+  furnitureSnapshot?: string // Set during undo for redo support
 }
 
 type UndoCommand =
   | TerrainSculptCommand
   | TerrainPaintCommand
+  | TerrainBulkCommand
   | ObjectPlaceCommand
   | ObjectDeleteCommand
   | ObjectTransformCommand
+  | ObjectDuplicateCommand
+  | ObjectPropertyCommand
   | BorderCreateCommand
   | BorderDeleteCommand
   | WallPlaceCommand
@@ -99,9 +129,9 @@ type UndoCommand =
 // DOCK PANEL TYPES
 // ============================================================
 
-export type DockPanelId = 'explorer' | 'toolbox' | 'properties' | 'locations'
+export type DockPanelId = 'explorer' | 'toolbox' | 'properties' | 'locations' | 'output'
 
-export type DockSide = 'left' | 'right'
+export type DockSide = 'left' | 'right' | 'bottom'
 
 export interface DockPanelState {
   side: DockSide
@@ -111,10 +141,11 @@ export interface DockPanelState {
 }
 
 const DEFAULT_PANELS: Record<DockPanelId, DockPanelState> = {
-  toolbox:    { side: 'left',  visible: false, collapsed: false, order: 0 },
-  locations:  { side: 'left',  visible: false, collapsed: false, order: 1 },
-  explorer:   { side: 'right', visible: true,  collapsed: false, order: 0 },
-  properties: { side: 'right', visible: true,  collapsed: false, order: 1 },
+  explorer:   { side: 'left',  visible: true,  collapsed: false, order: 0 },
+  toolbox:    { side: 'left',  visible: false, collapsed: false, order: 1 },
+  locations:  { side: 'left',  visible: false, collapsed: false, order: 2 },
+  properties: { side: 'right', visible: true,  collapsed: false, order: 0 },
+  output:     { side: 'bottom', visible: false, collapsed: true,  order: 0 },
 }
 
 // ============================================================
@@ -200,6 +231,7 @@ interface WorldBuilderState {
   panels: Record<DockPanelId, DockPanelState>
   leftDockWidth: number
   rightDockWidth: number
+  bottomDockHeight: number
   isPlaytesting: boolean
 
   // Status
@@ -302,8 +334,10 @@ interface WorldBuilderState {
   setPanelCollapsed: (id: DockPanelId, collapsed: boolean) => void
   setLeftDockWidth: (w: number) => void
   setRightDockWidth: (w: number) => void
+  setBottomDockHeight: (h: number) => void
   setPlaytesting: (playing: boolean) => void
   resetPanelLayout: () => void
+  movePanelToSide: (id: DockPanelId, side: DockSide) => void
 
   // Status
   setCursorWorldPosition: (pos: [number, number, number] | null) => void
@@ -396,6 +430,7 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   panels: structuredClone(DEFAULT_PANELS),
   leftDockWidth: 260,
   rightDockWidth: 260,
+  bottomDockHeight: 200,
   isPlaytesting: false,
 
   cursorWorldPosition: null,
@@ -572,8 +607,19 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
     set((s) => ({ panels: { ...s.panels, [id]: { ...s.panels[id], collapsed } } })),
   setLeftDockWidth: (w) => set({ leftDockWidth: Math.max(200, Math.min(500, w)) }),
   setRightDockWidth: (w) => set({ rightDockWidth: Math.max(200, Math.min(500, w)) }),
+  setBottomDockHeight: (h) => set({ bottomDockHeight: Math.max(100, Math.min(400, h)) }),
   setPlaytesting: (playing) => set({ isPlaytesting: playing }),
-  resetPanelLayout: () => set({ panels: structuredClone(DEFAULT_PANELS), leftDockWidth: 260, rightDockWidth: 260 }),
+  resetPanelLayout: () => set({ panels: structuredClone(DEFAULT_PANELS), leftDockWidth: 260, rightDockWidth: 260, bottomDockHeight: 200 }),
+  movePanelToSide: (id, side) =>
+    set((s) => {
+      const panelsOnSide = Object.values(s.panels).filter(p => p.side === side)
+      return {
+        panels: {
+          ...s.panels,
+          [id]: { ...s.panels[id], side, visible: true, order: panelsOnSide.length },
+        },
+      }
+    }),
 
   // Status
   setCursorWorldPosition: (pos) => set({ cursorWorldPosition: pos }),

@@ -1,7 +1,7 @@
 "use client";
 
-import { CHARACTERS } from "@/data/characters";
-import { useVNStore } from "@/engine/vnEngine";
+import { useCharacters } from "@/engine/VNProvider";
+import { useVNStore } from "@/engine/VNProvider";
 
 interface DialogueBoxProps {
   characterId: string;
@@ -16,7 +16,8 @@ export function DialogueBox({
   expression,
   onAdvance,
 }: DialogueBoxProps) {
-  const character = CHARACTERS.find((c) => c.id === characterId);
+  const characters = useCharacters();
+  const character = characters.find((c) => c.id === characterId);
   const playerName = useVNStore((s) => s.gameState.playerName);
 
   const processedText = text.replace(/\{player\}/g, playerName);

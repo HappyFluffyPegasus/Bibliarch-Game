@@ -1,6 +1,32 @@
 // ============================================
-// LOVE ISLAND VN - Core Type Definitions
+// VN Library - Core Type Definitions
 // ============================================
+
+/** Configuration for a single visual novel in the library */
+export interface VNConfig {
+  id: string;
+  title: string;
+  subtitle?: string;
+  tagline?: string;
+  coverImage: string;
+  startEpisodeId: string;
+  episodes: Episode[];
+  characters: Character[];
+  theme?: VNTheme;
+  titleScreen?: TitleScreenConfig;
+}
+
+export interface VNTheme {
+  accentColor?: string;
+  accentColorSecondary?: string;
+  titleGradient?: string;
+}
+
+export interface TitleScreenConfig {
+  namePrompt?: string;
+  startButtonText?: string;
+  backgroundClasses?: string;
+}
 
 /** Character definition - add your characters here */
 export interface Character {

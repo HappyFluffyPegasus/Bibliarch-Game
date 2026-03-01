@@ -352,10 +352,15 @@ export interface ToonTerrainMaterialOptions {
   ambient?: number
 }
 
-export function createToonTerrainMaterial(options: ToonTerrainMaterialOptions = {}): THREE.Material {
-  // Use MeshBasicMaterial with vertex colors for reliability
-  return new THREE.MeshBasicMaterial({
-    vertexColors: true,
+export function createToonTerrainMaterial(options: ToonTerrainMaterialOptions = {}): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uLightDirection: { value: options.lightDirection ?? new THREE.Vector3(1, 1, 1).normalize() },
+      uSteps: { value: options.steps ?? 4 },
+      uAmbient: { value: options.ambient ?? 0.35 },
+    },
+    vertexShader: TOON_TERRAIN_VERTEX_SHADER,
+    fragmentShader: TOON_TERRAIN_FRAGMENT_SHADER,
     side: THREE.FrontSide,
   })
 }

@@ -283,7 +283,7 @@ export function PaletteSelector({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] sm:max-h-[90vh] overflow-hidden">
+      <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] sm:max-h-[90vh] overflow-hidden bg-slate-900 border-slate-700 text-white">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Palette className="w-5 h-5" />

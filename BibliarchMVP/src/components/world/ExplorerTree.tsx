@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useCallback, type MouseEvent } from "react"
-import { ChevronRight, ChevronDown, Flag, Building2, Home, Pentagon, X, LogIn } from "lucide-react"
+import { ChevronRight, ChevronDown, Flag, Building2, Home, Pentagon, X, LogIn, Mountain } from "lucide-react"
 import type { WorldObject, WorldNode, WorldLevel, PolygonBorder } from "@/types/world"
 import { OBJECT_CATALOG } from "@/lib/terrain/objectCatalog"
 import type { WorldObjectCategory } from "@/types/world"
@@ -13,11 +13,13 @@ interface ExplorerTreeProps {
   currentLevel: WorldLevel
   selectedObjectIds: string[]
   polygonBorders?: PolygonBorder[]
+  selectedExplorerItem?: string | null
   onSelectObject: (id: string, additive: boolean) => void
   onDeleteObject: (ids: string[]) => void
   onEnterRegion: (id: string) => void
   onDeleteBorder: (id: string) => void
   onDrawBorder: () => void
+  onSelectTerrain?: () => void
 }
 
 // ── Tree row component ────────────────────────────────────────
@@ -145,11 +147,13 @@ export default function ExplorerTree({
   currentLevel,
   selectedObjectIds,
   polygonBorders,
+  selectedExplorerItem,
   onSelectObject,
   onDeleteObject,
   onEnterRegion,
   onDeleteBorder,
   onDrawBorder,
+  onSelectTerrain,
 }: ExplorerTreeProps) {
   // Expand/collapse state
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
@@ -193,6 +197,17 @@ export default function ExplorerTree({
 
       {expanded.workspace && (
         <>
+          {/* ── Terrain entry ── */}
+          {currentLevel !== 'building' && (
+            <TreeRow
+              depth={1}
+              label="Terrain"
+              icon={<Mountain className="w-3 h-3 text-green-400/60" />}
+              selected={selectedExplorerItem === 'terrain'}
+              onClick={() => onSelectTerrain?.()}
+            />
+          )}
+
           {/* ── Regions folder ── */}
           {hasRegions && (
             <>
@@ -228,12 +243,6 @@ export default function ExplorerTree({
                       }
                     />
                   ))}
-                  <TreeRow
-                    depth={2}
-                    label={`Add ${childLevel === "country" ? "Country" : childLevel === "city" ? "City" : "Building"}...`}
-                    icon={<Pentagon className="w-3 h-3 text-gray-500" />}
-                    onClick={() => onDrawBorder()}
-                  />
                 </>
               )}
             </>
@@ -320,7 +329,7 @@ export default function ExplorerTree({
                             selected={isSelected}
                             colorDot={obj.color}
                             onClick={(e) =>
-                              onSelectObject(obj.id, e.shiftKey)
+                              onSelectObject(obj.id, e.shiftKey || e.ctrlKey || e.metaKey)
                             }
                             trailing={
                               <button

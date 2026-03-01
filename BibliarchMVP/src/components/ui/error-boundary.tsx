@@ -62,7 +62,7 @@ function DefaultErrorFallback({ error, retry }: { error: Error; retry: () => voi
             The canvas encountered an error: {error.message}
           </CardDescription>
         </CardHeader>
-        <Button onClick={retry} className="mt-4">
+        <Button onClick={retry} className="mt-4 bg-sky-500 text-white hover:bg-sky-600">
           <RefreshCw className="w-4 h-4 mr-2" />
           Try Again
         </Button>

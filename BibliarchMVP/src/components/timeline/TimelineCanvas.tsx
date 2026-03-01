@@ -99,15 +99,37 @@ export default function TimelineCanvas({
     const relativeY = e.clientY - rect.top + scrollTop - 30 // account for ruler
 
     // Calculate new order and track
-    const newOrder = Math.max(0, Math.round(relativeX / EVENT_WIDTH_BASE))
+    let newOrder = Math.max(0, Math.round(relativeX / EVENT_WIDTH_BASE))
     const newTrack = Math.max(0, Math.min(tracks.length - 1, Math.floor(relativeY / TRACK_HEIGHT)))
+
+    // Collision detection: check if any other event on the same track occupies this order
+    const otherEventsOnTrack = events.filter(
+      ev => ev.id !== draggedEvent && (ev.track ?? 0) === newTrack
+    )
+    const isCollision = otherEventsOnTrack.some(ev => ev.order === newOrder)
+
+    if (isCollision) {
+      // Find nearest non-colliding position
+      for (let offset = 1; offset <= 20; offset++) {
+        const after = newOrder + offset
+        const before = newOrder - offset
+        if (!otherEventsOnTrack.some(ev => ev.order === after)) {
+          newOrder = after
+          break
+        }
+        if (before >= 0 && !otherEventsOnTrack.some(ev => ev.order === before)) {
+          newOrder = before
+          break
+        }
+      }
+    }
 
     // Update the visual indicator for which track we're hovering over
     setDraggedOverTrack(newTrack)
 
     // Update event position
     onUpdateEvent(draggedEvent, { order: newOrder, track: newTrack })
-  }, [draggedEvent, zoom, tracks.length, onUpdateEvent, TRACK_HEIGHT, EVENT_WIDTH_BASE])
+  }, [draggedEvent, zoom, tracks.length, events, onUpdateEvent, TRACK_HEIGHT, EVENT_WIDTH_BASE])
 
   const handleEventDragEnd = useCallback(() => {
     setDraggedEvent(null)
@@ -127,9 +149,9 @@ export default function TimelineCanvas({
   }, [events, tracks])
 
   return (
-    <div className="h-full flex flex-col bg-background">
+    <div className="h-full flex flex-col bg-slate-900">
       {/* Toolbar */}
-      <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 border-b border-border bg-muted/30">
+      <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800">
         <div className="flex items-center gap-2">
           {/* Breadcrumbs */}
           {breadcrumbs.length > 0 && (
@@ -170,11 +192,11 @@ export default function TimelineCanvas({
             <Plus className="w-4 h-4 mr-1" />
             Add Track
           </Button>
-          <Button variant="default" size="sm" onClick={() => onCreateEvent(0)}>
+          <Button size="sm" onClick={() => onCreateEvent(0)} className="bg-sky-500 text-white hover:bg-sky-600">
             <Plus className="w-4 h-4 mr-1" />
             Add Event
           </Button>
-          <div className="flex items-center gap-1 border-l border-border pl-2 ml-2">
+          <div className="flex items-center gap-1 border-l border-slate-700 pl-2 ml-2">
             <Button variant="ghost" size="icon" onClick={handleZoomOut} disabled={zoom <= MIN_ZOOM}>
               <ZoomOut className="w-4 h-4" />
             </Button>
@@ -204,7 +226,7 @@ export default function TimelineCanvas({
         <div className="flex min-h-full">
           {/* Fixed track headers column */}
           <div
-            className="flex-shrink-0 bg-muted/50 border-r border-border sticky left-0 z-10"
+            className="flex-shrink-0 bg-slate-800 border-r border-slate-700 sticky left-0 z-10"
             style={{ width: TRACK_HEADER_WIDTH }}
           >
             {/* Header for timeline ruler */}
@@ -257,7 +279,7 @@ export default function TimelineCanvas({
               {Array.from({ length: Math.ceil(timelineWidth / (EVENT_WIDTH_BASE * zoom)) }).map((_, i) => (
                 <div
                   key={i}
-                  className="flex-shrink-0 border-l border-border/50 text-xs text-muted-foreground px-1"
+                  className="flex-shrink-0 border-l border-slate-700/50 text-xs text-muted-foreground px-1"
                   style={{ width: EVENT_WIDTH_BASE * zoom }}
                 >
                   {i}
@@ -280,6 +302,7 @@ export default function TimelineCanvas({
                 zoom={zoom}
                 eventWidthBase={EVENT_WIDTH_BASE}
                 isDragTarget={draggedEvent !== null && draggedOverTrack === trackIndex}
+                draggingEventId={draggedEvent}
               />
             ))}
           </div>

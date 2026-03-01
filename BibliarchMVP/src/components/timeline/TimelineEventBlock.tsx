@@ -7,6 +7,7 @@ interface TimelineEventBlockProps {
   event: TimelineEvent
   trackColor: string
   isSelected: boolean
+  isDragging?: boolean
   onSelect: () => void
   onDragStart: (e: React.MouseEvent) => void
   left: number
@@ -33,6 +34,7 @@ export default function TimelineEventBlock({
   event,
   trackColor,
   isSelected,
+  isDragging = false,
   onSelect,
   onDragStart,
   left,
@@ -53,9 +55,11 @@ export default function TimelineEventBlock({
   return (
     <div
       className={`absolute top-2 rounded-lg shadow-md border transition-all cursor-pointer group flex flex-col ${
-        isSelected
-          ? 'ring-2 ring-primary ring-offset-2 ring-offset-background z-20 border-black/20'
-          : 'hover:ring-1 hover:ring-primary/50 z-10 border-black/10'
+        isDragging
+          ? 'opacity-70 ring-2 ring-sky-400 z-50 shadow-lg border-sky-400/50'
+          : isSelected
+            ? 'ring-2 ring-primary ring-offset-2 ring-offset-background z-20 border-black/20'
+            : 'hover:ring-1 hover:ring-primary/50 z-10 border-black/10'
       }`}
       style={{
         left,

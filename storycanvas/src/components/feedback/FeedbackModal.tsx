@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createPortal } from 'react-dom'
 import { X, CheckCircle2, AlertCircle } from 'lucide-react'
 import { feedbackSchema, type FeedbackType } from '@/lib/feedback/types'
 
@@ -109,7 +108,7 @@ export default function FeedbackModal({ isOpen, onClose }: FeedbackModalProps) {
 
   if (!isOpen || !mounted) return null
 
-  return createPortal(
+  return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto my-auto relative">
         {isSuccess ? (
@@ -212,7 +211,6 @@ export default function FeedbackModal({ isOpen, onClose }: FeedbackModalProps) {
           </>
         )}
       </div>
-    </div>,
-    document.body
+    </div>
   )
 }

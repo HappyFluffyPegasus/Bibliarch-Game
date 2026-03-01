@@ -1,24 +1,25 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useVNStore } from "@/engine/vnEngine";
+import { useVNStore, useVNConfig } from "@/engine/VNProvider";
 
 export function TitleScreen() {
   const [playerName, setPlayerName] = useState("");
   const [showLoad, setShowLoad] = useState(false);
   const startGame = useVNStore((s) => s.startGame);
   const toggleLoadMenu = useVNStore((s) => s.toggleLoadMenu);
+  const config = useVNConfig();
 
   useEffect(() => {
     try {
       for (let i = 1; i <= 6; i++) {
-        if (localStorage.getItem(`love-island-vn-save-${i}`)) {
+        if (localStorage.getItem(`${config.id}-save-${i}`)) {
           setShowLoad(true);
           return;
         }
       }
     } catch {}
-  }, []);
+  }, [config.id]);
 
   const handleStart = () => {
     if (playerName.trim()) {
@@ -26,8 +27,16 @@ export function TitleScreen() {
     }
   };
 
+  const bgClasses =
+    config.titleScreen?.backgroundClasses ??
+    config.theme?.titleGradient ??
+    "bg-gradient-to-b from-pink-900 via-rose-950 to-black";
+
+  const namePrompt = config.titleScreen?.namePrompt ?? "What's your name?";
+  const startText = config.titleScreen?.startButtonText ?? "Start";
+
   return (
-    <div className="w-full h-screen flex flex-col items-center justify-center bg-gradient-to-b from-pink-900 via-rose-950 to-black relative overflow-hidden">
+    <div className={`w-full h-screen flex flex-col items-center justify-center ${bgClasses} relative overflow-hidden`}>
       {/* Animated background decoration */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-20 left-10 w-64 h-64 bg-pink-500/10 rounded-full blur-3xl animate-pulse" />
@@ -39,19 +48,23 @@ export function TitleScreen() {
         {/* Title */}
         <div className="space-y-2">
           <h1 className="text-6xl md:text-8xl font-black bg-gradient-to-r from-pink-400 via-rose-300 to-amber-300 bg-clip-text text-transparent drop-shadow-2xl">
-            LOVE ISLAND
+            {config.title}
           </h1>
-          <p className="text-xl md:text-2xl text-pink-200/60 tracking-[0.3em] uppercase font-light">
-            The Crossover
-          </p>
-          <p className="text-sm text-white/30 mt-4">
-            All your characters. One villa. Infinite drama.
-          </p>
+          {config.subtitle && (
+            <p className="text-xl md:text-2xl text-pink-200/60 tracking-[0.3em] uppercase font-light">
+              {config.subtitle}
+            </p>
+          )}
+          {config.tagline && (
+            <p className="text-sm text-white/30 mt-4">
+              {config.tagline}
+            </p>
+          )}
         </div>
 
         {/* Name input */}
         <div className="space-y-4">
-          <p className="text-pink-200/70 text-lg">What&apos;s your name, islander?</p>
+          <p className="text-pink-200/70 text-lg">{namePrompt}</p>
           <input
             type="text"
             value={playerName}
@@ -75,7 +88,7 @@ export function TitleScreen() {
                 transition-all duration-200 hover:scale-105 active:scale-95
                 shadow-lg shadow-pink-500/25"
             >
-              Step into the Villa
+              {startText}
             </button>
             {showLoad && (
               <button

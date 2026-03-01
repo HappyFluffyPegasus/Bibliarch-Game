@@ -12,16 +12,21 @@ import {
   Plus,
   Trash2,
   Shuffle,
-  RotateCcw
+  RotateCcw,
+  PersonStanding,
+  Link2,
+  Unlink2,
 } from "lucide-react"
 import dynamic from "next/dynamic"
 import { useStoryStore } from "@/stores/storyStore"
 import { HAIR_UNDERTONES } from "@/lib/hairTextures"
+import { AVAILABLE_POSES } from "@/utils/animationLoader"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import ColorWheel from "@/components/characters/ColorWheel"
 import TransformControls from "@/components/characters/TransformControls"
 import ItemThumbnail from "@/components/characters/ItemThumbnail"
+import { cn } from "@/lib/utils"
 
 // Dynamically import Viewer3D to avoid SSR issues with Three.js
 const Viewer3D = dynamic(
@@ -29,17 +34,17 @@ const Viewer3D = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="flex-1 flex items-center justify-center bg-gray-800">
+      <div className="flex-1 flex items-center justify-center bg-gradient-to-b from-slate-800 to-slate-900">
         <div className="text-center">
-          <div className="w-8 h-8 border-2 border-sky-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-400">Loading 3D viewer...</p>
+          <div className="w-10 h-10 border-3 border-sky-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-slate-200/60">Loading 3D viewer...</p>
         </div>
       </div>
     )
   }
 )
 
-type Category = 'HAIR' | 'TOPS' | 'DRESSES' | 'PANTS' | 'SHOES' | 'ACCESSORIES' | 'BODY' | null
+type Category = 'HAIR' | 'TOPS' | 'DRESSES' | 'PANTS' | 'SHOES' | 'ACCESSORIES' | 'BODY' | 'POSES' | null
 
 interface Transform {
   position: [number, number, number]
@@ -71,8 +76,8 @@ interface CharacterData {
   visibleAssets: string[]
   colors: CategoryColors
   transforms?: Record<string, Transform>
-  heightScale?: number // 0.8 to 1.2, default 1.0
-  morphTargets?: Record<string, number> // key: "meshName:targetName", value: 0-1
+  heightScale?: number
+  morphTargets?: Record<string, number>
 }
 
 const DEFAULT_COLORS: CategoryColors = {
@@ -91,10 +96,11 @@ const CATEGORIES = [
   { id: 'BODY' as const, icon: User, label: 'Body' },
   { id: 'HAIR' as const, icon: Scissors, label: 'Hair' },
   { id: 'TOPS' as const, icon: Shirt, label: 'Tops' },
-  { id: 'DRESSES' as const, icon: Triangle, label: 'Dresses' },
+  { id: 'DRESSES' as const, icon: Triangle, label: 'Dress' },
   { id: 'PANTS' as const, icon: Shirt, label: 'Pants' },
   { id: 'SHOES' as const, icon: Footprints, label: 'Shoes' },
-  { id: 'ACCESSORIES' as const, icon: Sparkles, label: 'Extras' }
+  { id: 'ACCESSORIES' as const, icon: Sparkles, label: 'Extra' },
+  { id: 'POSES' as const, icon: PersonStanding, label: 'Poses' }
 ]
 
 const SECTION_RULES: Array<{ category: Category; keywords: string[] }> = [
@@ -112,7 +118,7 @@ const HIDDEN_MESHES = ['Plane032_1', 'Plane023_1', 'Plane072', 'Plane072_1', 'Pl
 export function CharactersPage() {
   const params = useParams()
   const storyId = params.id as string
-  const { stories } = useStoryStore()
+  const { stories, characterNoteLinks, linkCharacterToNote, unlinkCharacterFromNote, getCanvasData, saveCanvasData } = useStoryStore()
   const story = stories.find((s) => s.id === storyId)
 
   const [characters, setCharacters] = useState<CharacterData[]>([])
@@ -123,6 +129,38 @@ export function CharactersPage() {
   const [availableMorphTargets, setAvailableMorphTargets] = useState<MorphTargetInfo[]>([])
   const [colorPickerOpen, setColorPickerOpen] = useState<string | null>(null)
   const [transformingMesh, setTransformingMesh] = useState<string | null>(null)
+  const [selectedPose, setSelectedPose] = useState<string | null>(null)
+  const [showLinkDialog, setShowLinkDialog] = useState<string | null>(null) // characterId to link
+
+  const storyLinks = characterNoteLinks[storyId] || []
+
+  const isCharacterLinked = (characterId: string) =>
+    storyLinks.some(l => l.characterId === characterId)
+
+  const handleLinkToNotes = (characterId: string, characterName: string) => {
+    // Create a character node in the notes main canvas
+    const mainCanvas = getCanvasData(storyId, 'main')
+    const nodeId = `char-link-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const existingNodes = mainCanvas?.nodes || []
+    const newNode = {
+      id: nodeId,
+      x: 600 + Math.random() * 200,
+      y: 100 + existingNodes.length * 80,
+      text: characterName,
+      width: 320,
+      height: 72,
+      type: 'character' as const,
+    }
+    saveCanvasData(storyId, 'main', [...existingNodes, newNode], mainCanvas?.connections || [])
+    linkCharacterToNote(storyId, characterId, nodeId)
+    setShowLinkDialog(null)
+  }
+
+  const handleUnlinkFromNotes = (characterId: string) => {
+    if (confirm('Unlink this character from Notes?')) {
+      unlinkCharacterFromNote(storyId, characterId)
+    }
+  }
 
   // Load characters and selected character from localStorage
   useEffect(() => {
@@ -131,7 +169,6 @@ export function CharactersPage() {
       try {
         const parsed = JSON.parse(saved)
         setCharacters(parsed)
-        // Restore selected character
         const savedSelectedId = localStorage.getItem(`bibliarch-selected-char-${storyId}`)
         if (savedSelectedId && parsed.some((c: CharacterData) => c.id === savedSelectedId)) {
           setSelectedCharacterId(savedSelectedId)
@@ -166,12 +203,9 @@ export function CharactersPage() {
 
   const categorizeMesh = useCallback((meshName: string): Category => {
     const lower = meshName.toLowerCase()
-    // Eyes are part of BODY
     if (meshName === 'Eyes' || meshName === 'Eyes_3' || lower === 'eyes') return 'BODY'
-    // Mouths and eyebrows are part of BODY
     if (lower.includes('mouth')) return 'BODY'
     if (lower.includes('brow')) return 'BODY'
-    // Hide the base body mesh from selection
     if (lower === 'body') return null
 
     for (const rule of SECTION_RULES) {
@@ -202,7 +236,6 @@ export function CharactersPage() {
     return 'Other'
   }, [categorizeMesh])
 
-  // Default body parts for new characters
   const DEFAULT_BODY_ASSETS = ['Eyes_3', 'Chill Brows', 'Closed Mouth']
 
   // Character management
@@ -216,6 +249,8 @@ export function CharactersPage() {
     setCharacters([...characters, newCharacter])
     setSelectedCharacterId(newCharacter.id)
     setCurrentCategory(null)
+    // Prompt to link to Notes
+    setShowLinkDialog(newCharacter.id)
   }
 
   const handleDeleteCharacter = (characterId: string) => {
@@ -249,19 +284,16 @@ export function CharactersPage() {
     }))
   }
 
-  // Body item selection - only ONE of each type (eyes, eyebrows, mouths)
   const selectBodyItem = (meshName: string, subcategory: string) => {
     if (!selectedCharacterId) return
 
     setCharacters(characters.map(char => {
       if (char.id !== selectedCharacterId) return char
 
-      // Get all items in this subcategory
       const subcategoryItems = availableMeshes.filter(mesh =>
         categorizeMesh(mesh) === 'BODY' && getSubcategory(mesh) === subcategory
       )
 
-      // Remove all items from this subcategory, then add the selected one
       const newAssets = char.visibleAssets.filter(asset => !subcategoryItems.includes(asset))
       newAssets.push(meshName)
 
@@ -269,7 +301,6 @@ export function CharactersPage() {
     }))
   }
 
-  // Get current selected item for a body subcategory
   const getSelectedBodyItem = (subcategory: string): string | null => {
     if (!selectedCharacter) return null
 
@@ -280,7 +311,6 @@ export function CharactersPage() {
     return selectedCharacter.visibleAssets.find(asset => subcategoryItems.includes(asset)) || null
   }
 
-  // Get items for a specific body subcategory
   const getBodySubcategoryItems = (subcategory: string): string[] => {
     return availableMeshes
       .filter(mesh => categorizeMesh(mesh) === 'BODY' && getSubcategory(mesh) === subcategory)
@@ -313,7 +343,6 @@ export function CharactersPage() {
     }))
   }
 
-  // Height scale management
   const handleHeightScaleChange = (scale: number) => {
     if (!selectedCharacterId) return
 
@@ -323,7 +352,6 @@ export function CharactersPage() {
     }))
   }
 
-  // Morph target (shape key) management
   const handleMorphTargetChange = (meshName: string, targetName: string, value: number) => {
     if (!selectedCharacterId) return
 
@@ -349,7 +377,6 @@ export function CharactersPage() {
     }))
   }
 
-  // Transform management
   const handleTransformChange = (meshName: string, transform: Transform) => {
     if (!selectedCharacterId) return
 
@@ -374,7 +401,6 @@ export function CharactersPage() {
     return selectedCharacter.transforms[meshName]
   }
 
-  // Get items for current category
   const getCategoryItems = (): string[] => {
     if (!currentCategory) return []
 
@@ -389,7 +415,6 @@ export function CharactersPage() {
     return filtered.sort((a, b) => a.localeCompare(b))
   }
 
-  // Get subcategories for current category
   const getSubcategories = (): string[] => {
     if (!currentCategory) return []
 
@@ -415,7 +440,6 @@ export function CharactersPage() {
     }
   }
 
-  // Compute per-mesh color map for 3D viewer
   const meshColors = useMemo(() => {
     if (!selectedCharacter) return {}
     const colors: Record<string, string> = {}
@@ -430,51 +454,59 @@ export function CharactersPage() {
   }, [availableMeshes, selectedCharacter?.colors, categorizeMesh, getSubcategory])
 
   return (
-    <div className="h-screen flex overflow-hidden bg-background text-foreground">
-      {/* Left Sidebar - Character List */}
-      <aside className="w-20 bg-card border-r border-border flex flex-col items-center py-4 gap-2">
-        <Button
+    <div className="h-screen flex overflow-hidden bg-gradient-to-br from-slate-900 to-slate-800">
+      {/* Far Left - Slim Character Avatar List (w-16) */}
+      <aside className="w-16 bg-slate-800/60 backdrop-blur-sm border-r border-slate-700/50 flex flex-col items-center py-4 gap-2 pt-20">
+        <button
           onClick={handleCreateCharacter}
           disabled={characters.length >= 20}
-          variant="outline"
-          size="sm"
-          className="w-14 h-14 flex flex-col items-center justify-center p-1"
+          className={cn(
+            "w-12 h-12 rounded-xl flex items-center justify-center",
+            "bg-gradient-to-br from-sky-500 to-blue-600",
+            "text-white shadow-lg shadow-sky-500/30",
+            "transition-all duration-200 hover:scale-105 active:scale-95",
+            "disabled:opacity-50 disabled:cursor-not-allowed"
+          )}
           title="Create New Character"
         >
-          <Plus size={20} />
-          <span className="text-[9px] mt-0.5">NEW</span>
-        </Button>
+          <Plus size={24} />
+        </button>
 
-        <div className="flex-1 overflow-y-auto flex flex-col items-center gap-2 py-2">
+        <div className="flex-1 overflow-y-auto flex flex-col items-center gap-2 py-2 scrollbar-thin">
           {characters.map((character) => (
-            <button
-              key={character.id}
-              onClick={() => setSelectedCharacterId(character.id)}
-              className={`w-14 h-14 rounded-lg flex items-center justify-center transition-all ${
-                selectedCharacterId === character.id
-                  ? 'bg-sky-500/20 border-2 border-sky-500'
-                  : 'bg-muted border-2 border-transparent hover:bg-muted/80'
-              }`}
-              title={character.name}
-            >
-              <User size={24} className={selectedCharacterId === character.id ? 'text-sky-500' : 'text-muted-foreground'} />
-            </button>
+            <div key={character.id} className="relative">
+              <button
+                onClick={() => setSelectedCharacterId(character.id)}
+                className={cn(
+                  "w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-200",
+                  selectedCharacterId === character.id
+                    ? "bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/30 scale-105"
+                    : "bg-slate-700/80 text-slate-200/60 hover:bg-slate-700 hover:shadow-md shadow-sky-500/10"
+                )}
+                title={character.name}
+              >
+                <User size={20} />
+              </button>
+              {isCharacterLinked(character.id) && (
+                <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center" title="Linked to Notes">
+                  <Link2 size={10} className="text-white" />
+                </div>
+              )}
+            </div>
           ))}
         </div>
 
         {selectedCharacter && (
-          <Button
+          <button
             onClick={() => handleDeleteCharacter(selectedCharacter.id)}
-            variant="ghost"
-            size="sm"
-            className="w-14 text-red-500 hover:text-red-400 hover:bg-red-500/10"
+            className="w-12 h-12 rounded-xl bg-slate-800/60 text-red-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200 flex items-center justify-center"
           >
-            <Trash2 size={16} />
-          </Button>
+            <Trash2 size={18} />
+          </button>
         )}
       </aside>
 
-      {/* Center - 3D Viewport */}
+      {/* Center - Expanded 3D Viewer (flex-1) */}
       <main className="flex-1 relative">
         <Viewer3D
           currentSection={currentCategory}
@@ -485,33 +517,53 @@ export function CharactersPage() {
           onMeshesLoaded={setAvailableMeshes}
           onMorphTargetsLoaded={setAvailableMorphTargets}
           morphTargetValues={selectedCharacter?.morphTargets}
+          selectedPose={selectedPose}
           heightScale={selectedCharacter?.heightScale ?? 1.0}
         />
 
         {/* Empty State */}
         {!selectedCharacter && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-800/80">
+          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-slate-800/90 to-slate-900/90 backdrop-blur-sm">
             <div className="text-center">
-              <User size={64} className="mx-auto mb-4 text-gray-500" />
-              <h2 className="text-xl font-semibold text-gray-300 mb-2">No Character Selected</h2>
-              <p className="text-gray-500">Click + to create a character</p>
+              <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-slate-700/80 shadow-lg shadow-sky-500/20 flex items-center justify-center">
+                <User size={48} className="text-slate-200/30" />
+              </div>
+              <h2 className="text-xl font-semibold text-slate-200 mb-2">No Character Selected</h2>
+              <p className="text-slate-200/60">Click + to create a character</p>
             </div>
           </div>
         )}
 
         {/* Character Name Input */}
         {selectedCharacter && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-card/90 backdrop-blur-sm rounded-lg px-4 py-2 border border-border">
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-white/90 backdrop-blur-sm rounded-2xl px-5 py-3 shadow-lg shadow-sky-500/20 border border-slate-700">
             <input
               type="text"
               value={selectedCharacter.name}
               onChange={(e) => handleUpdateCharacterName(selectedCharacter.id, e.target.value)}
-              className="bg-transparent text-foreground text-sm font-medium outline-none w-40"
+              className="bg-transparent text-slate-200 text-base font-medium outline-none w-44"
               placeholder="Character Name"
             />
-            <button className="text-muted-foreground hover:text-foreground">
-              <Shuffle size={14} />
+            <button className="text-slate-200/40 hover:text-sky-400 transition-colors">
+              <Shuffle size={16} />
             </button>
+            {isCharacterLinked(selectedCharacter.id) ? (
+              <button
+                onClick={() => handleUnlinkFromNotes(selectedCharacter.id)}
+                className="text-green-400 hover:text-red-400 transition-colors"
+                title="Unlink from Notes"
+              >
+                <Unlink2 size={16} />
+              </button>
+            ) : (
+              <button
+                onClick={() => handleLinkToNotes(selectedCharacter.id, selectedCharacter.name)}
+                className="text-slate-200/40 hover:text-sky-400 transition-colors"
+                title="Link to Notes"
+              >
+                <Link2 size={16} />
+              </button>
+            )}
           </div>
         )}
 
@@ -527,63 +579,73 @@ export function CharactersPage() {
         )}
       </main>
 
-      {/* Right Panel - Categories & Items */}
-      <aside className="w-80 bg-card border-l border-border flex">
-        {/* Category Tabs */}
-        <div className="w-16 bg-muted/50 flex flex-col items-center py-4 gap-1">
-          {CATEGORIES.map((cat) => {
-            const IconComponent = cat.icon
-            return (
-              <button
-                key={cat.id}
-                onClick={() => {
-                  if (!selectedCharacter) return
-                  setCurrentCategory(cat.id)
-                  setCurrentSubcategory(null)
-                }}
-                disabled={!selectedCharacter}
-                className={`w-12 h-12 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all ${
-                  currentCategory === cat.id
-                    ? 'bg-sky-500/20 text-sky-500'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                } ${!selectedCharacter ? 'opacity-50 cursor-not-allowed' : ''}`}
-                title={cat.label}
-              >
-                <IconComponent size={18} />
-                <span className="text-[8px] font-medium">{cat.label}</span>
-              </button>
-            )
-          })}
+      {/* Right Panel - Category Icons + Options (w-96) */}
+      <aside className="w-96 bg-slate-800/40 backdrop-blur-sm border-l border-slate-700/30 flex flex-col">
+        {/* Big Category Icon Grid */}
+        <div className="p-4 border-b border-slate-700/30">
+          <div className="grid grid-cols-4 gap-2">
+            {CATEGORIES.map((cat) => {
+              const IconComponent = cat.icon
+              const isSelected = currentCategory === cat.id
+              return (
+                <button
+                  key={cat.id}
+                  onClick={() => {
+                    if (!selectedCharacter) return
+                    setCurrentCategory(isSelected ? null : cat.id)
+                    setCurrentSubcategory(null)
+                  }}
+                  disabled={!selectedCharacter}
+                  className={cn(
+                    "aspect-square rounded-2xl flex flex-col items-center justify-center gap-1 p-2",
+                    "transition-all duration-200",
+                    isSelected
+                      ? "bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/30 scale-105"
+                      : "bg-slate-700/80 text-slate-200 hover:bg-slate-700 hover:shadow-md shadow-sky-500/10",
+                    !selectedCharacter && "opacity-50 cursor-not-allowed"
+                  )}
+                  title={cat.label}
+                >
+                  <IconComponent size={28} />
+                  <span className="text-[10px] font-medium">{cat.label}</span>
+                </button>
+              )
+            })}
+          </div>
         </div>
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-4">
+        {/* Scrollable Options Panel */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {!selectedCharacter ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <Shirt size={48} className="mx-auto mb-4 opacity-30" />
-              <p className="text-sm">Select a character to customize</p>
+            <div className="text-center py-12">
+              <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-slate-800/60 flex items-center justify-center">
+                <User size={40} className="text-slate-200/30" />
+              </div>
+              <p className="text-slate-200/60 text-sm">Create a character to start</p>
             </div>
           ) : !currentCategory ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <Sparkles size={48} className="mx-auto mb-4 opacity-30" />
-              <p className="text-sm">Select a category to start</p>
+            <div className="text-center py-12">
+              <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-slate-800/60 flex items-center justify-center">
+                <Sparkles size={40} className="text-sky-400/50" />
+              </div>
+              <p className="text-slate-200/60 text-sm">Select a category above</p>
             </div>
           ) : currentCategory === 'BODY' ? (
-            /* BODY Category - Gacha-style scroll selectors */
-            <div className="space-y-6">
-              {/* Skin Tone Color */}
-              <div className="p-3 bg-muted/50 rounded-lg">
+            /* BODY Category Options */
+            <div className="space-y-4">
+              {/* Skin Tone */}
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-foreground">Skin Tone</span>
+                  <span className="text-sm font-medium text-slate-200">Skin Tone</span>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setColorPickerOpen('body-skin')}
-                      className="w-8 h-8 rounded-lg border-2 border-border"
+                      className="w-10 h-10 rounded-xl border-2 border-slate-700/50 shadow-inner"
                       style={{ backgroundColor: selectedCharacter.colors.body.skinTone }}
                     />
                     <button
                       onClick={() => handleCategoryColorChange('body', 'skinTone', DEFAULT_COLORS.body.skinTone)}
-                      className="text-muted-foreground hover:text-foreground"
+                      className="w-8 h-8 rounded-lg bg-slate-700/80 text-slate-200/50 hover:text-sky-400 transition-colors flex items-center justify-center"
                       title="Reset color"
                     >
                       <RotateCcw size={14} />
@@ -593,16 +655,16 @@ export function CharactersPage() {
               </div>
 
               {/* Height Slider */}
-              <div className="p-3 bg-muted/50 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-foreground">Height</span>
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-sm font-medium text-slate-200">Height</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground w-12 text-right">
+                    <span className="text-xs text-slate-200/60 bg-slate-700/80 px-2 py-1 rounded-lg">
                       {Math.round((selectedCharacter.heightScale ?? 1.0) * 100)}%
                     </span>
                     <button
                       onClick={() => handleHeightScaleChange(1.0)}
-                      className="text-muted-foreground hover:text-foreground"
+                      className="w-8 h-8 rounded-lg bg-slate-700/80 text-slate-200/50 hover:text-sky-400 transition-colors flex items-center justify-center"
                       title="Reset height"
                     >
                       <RotateCcw size={14} />
@@ -617,39 +679,29 @@ export function CharactersPage() {
                   step={1}
                   className="w-full"
                 />
-                <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                <div className="flex justify-between text-[10px] text-slate-200/40 mt-2">
                   <span>Short</span>
                   <span>Tall</span>
                 </div>
               </div>
 
-              {/* Body Shape Keys */}
-              <div className="text-xs text-muted-foreground mb-2 p-2 bg-yellow-500/10 rounded">
-                Shape keys found: {availableMorphTargets.length}
-                {availableMorphTargets.length === 0 && (
-                  <div className="mt-1 text-yellow-600">
-                    No shape keys detected. Re-export GLB from Blender with "Shape Keys" enabled.
-                  </div>
-                )}
-              </div>
+              {/* Shape Keys */}
               {availableMorphTargets.length > 0 && (
-                <div className="p-3 bg-muted/50 rounded-lg">
+                <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-medium text-foreground">Body Shape</span>
+                    <span className="text-sm font-medium text-slate-200">Body Shape</span>
                     <button
                       onClick={handleResetAllMorphTargets}
-                      className="text-muted-foreground hover:text-foreground text-xs flex items-center gap-1"
-                      title="Reset all shape keys"
+                      className="text-xs text-slate-200/50 hover:text-sky-400 transition-colors flex items-center gap-1"
                     >
                       <RotateCcw size={12} />
-                      Reset All
+                      Reset
                     </button>
                   </div>
                   <div className="space-y-3">
                     {availableMorphTargets.map((target) => {
                       const key = `${target.meshName}:${target.targetName}`
                       const value = selectedCharacter.morphTargets?.[key] ?? 0
-                      // Clean up target name for display (remove mesh prefix if present)
                       const displayName = target.targetName
                         .replace(/^Key\s*/i, '')
                         .replace(/_/g, ' ')
@@ -658,10 +710,10 @@ export function CharactersPage() {
                       return (
                         <div key={key} className="space-y-1">
                           <div className="flex items-center justify-between">
-                            <span className="text-xs text-muted-foreground truncate flex-1 mr-2">
+                            <span className="text-xs text-slate-200/60 truncate flex-1 mr-2">
                               {displayName}
                             </span>
-                            <span className="text-[10px] text-muted-foreground w-8 text-right">
+                            <span className="text-[10px] text-slate-200/40 w-8 text-right">
                               {Math.round(value * 100)}%
                             </span>
                           </div>
@@ -681,20 +733,21 @@ export function CharactersPage() {
               )}
 
               {/* Eyes Selector */}
-              <div>
-                <h4 className="text-sm font-medium text-foreground mb-2">Eyes</h4>
-                <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                <h4 className="text-sm font-medium text-slate-200 mb-3">Eyes</h4>
+                <div className="grid grid-cols-4 gap-2">
                   {getBodySubcategoryItems('Eyes').map((meshName) => {
                     const isSelected = getSelectedBodyItem('Eyes') === meshName
                     return (
                       <button
                         key={meshName}
                         onClick={() => selectBodyItem(meshName, 'Eyes')}
-                        className={`flex-shrink-0 w-16 h-16 rounded-lg border-2 transition-all overflow-hidden ${
+                        className={cn(
+                          "aspect-square rounded-xl border-2 transition-all overflow-hidden",
                           isSelected
-                            ? 'border-sky-500 ring-2 ring-sky-500/50'
-                            : 'border-border hover:border-sky-500/50'
-                        }`}
+                            ? "border-sky-500 ring-2 ring-sky-500/30 scale-105"
+                            : "border-slate-700/50 hover:border-sky-500/50 bg-slate-700/50"
+                        )}
                         title={meshName}
                       >
                         <ItemThumbnail meshName={meshName} color={selectedCharacter.colors.body.eyeColor} />
@@ -705,20 +758,21 @@ export function CharactersPage() {
               </div>
 
               {/* Eyebrows Selector */}
-              <div>
-                <h4 className="text-sm font-medium text-foreground mb-2">Eyebrows</h4>
-                <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                <h4 className="text-sm font-medium text-slate-200 mb-3">Eyebrows</h4>
+                <div className="grid grid-cols-4 gap-2">
                   {getBodySubcategoryItems('Eyebrows').map((meshName) => {
                     const isSelected = getSelectedBodyItem('Eyebrows') === meshName
                     return (
                       <button
                         key={meshName}
                         onClick={() => selectBodyItem(meshName, 'Eyebrows')}
-                        className={`flex-shrink-0 w-16 h-16 rounded-lg border-2 transition-all overflow-hidden ${
+                        className={cn(
+                          "aspect-square rounded-xl border-2 transition-all overflow-hidden",
                           isSelected
-                            ? 'border-sky-500 ring-2 ring-sky-500/50'
-                            : 'border-border hover:border-sky-500/50'
-                        }`}
+                            ? "border-sky-500 ring-2 ring-sky-500/30 scale-105"
+                            : "border-slate-700/50 hover:border-sky-500/50 bg-slate-700/50"
+                        )}
                         title={meshName}
                       >
                         <ItemThumbnail meshName={meshName} color={selectedCharacter.colors.hair} />
@@ -729,20 +783,21 @@ export function CharactersPage() {
               </div>
 
               {/* Mouths Selector */}
-              <div>
-                <h4 className="text-sm font-medium text-foreground mb-2">Mouth</h4>
-                <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                <h4 className="text-sm font-medium text-slate-200 mb-3">Mouth</h4>
+                <div className="grid grid-cols-4 gap-2">
                   {getBodySubcategoryItems('Mouths').map((meshName) => {
                     const isSelected = getSelectedBodyItem('Mouths') === meshName
                     return (
                       <button
                         key={meshName}
                         onClick={() => selectBodyItem(meshName, 'Mouths')}
-                        className={`flex-shrink-0 w-16 h-16 rounded-lg border-2 transition-all overflow-hidden ${
+                        className={cn(
+                          "aspect-square rounded-xl border-2 transition-all overflow-hidden",
                           isSelected
-                            ? 'border-sky-500 ring-2 ring-sky-500/50'
-                            : 'border-border hover:border-sky-500/50'
-                        }`}
+                            ? "border-sky-500 ring-2 ring-sky-500/30 scale-105"
+                            : "border-slate-700/50 hover:border-sky-500/50 bg-slate-700/50"
+                        )}
                         title={meshName}
                       >
                         <ItemThumbnail meshName={meshName} color={selectedCharacter.colors.body.skinTone} />
@@ -752,19 +807,68 @@ export function CharactersPage() {
                 </div>
               </div>
             </div>
+          ) : currentCategory === 'POSES' ? (
+            /* POSES Category Options */
+            <div className="space-y-4">
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                <h4 className="text-sm font-medium text-slate-200 mb-3">Animation Poses</h4>
+                <div className="grid grid-cols-2 gap-2">
+                  {/* No Animation / T-Pose */}
+                  <button
+                    onClick={() => setSelectedPose(null)}
+                    className={cn(
+                      "p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2",
+                      !selectedPose
+                        ? "border-sky-500 bg-gradient-to-br from-sky-500/20 to-blue-600/20 ring-2 ring-sky-500/30"
+                        : "border-slate-700/50 bg-slate-700/50 hover:border-sky-500/50 hover:bg-slate-700"
+                    )}
+                  >
+                    <PersonStanding size={32} className="text-slate-200" />
+                    <span className="text-xs text-slate-200 font-medium">T-Pose</span>
+                  </button>
+
+                  {/* Available Animations */}
+                  {AVAILABLE_POSES.map((pose) => (
+                    <button
+                      key={pose.id}
+                      onClick={() => setSelectedPose(pose.id)}
+                      className={cn(
+                        "p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2",
+                        selectedPose === pose.id
+                          ? "border-sky-500 bg-gradient-to-br from-sky-500/20 to-blue-600/20 ring-2 ring-sky-500/30"
+                          : "border-slate-700/50 bg-slate-700/50 hover:border-sky-500/50 hover:bg-slate-700"
+                      )}
+                    >
+                      <PersonStanding size={32} className="text-slate-200" />
+                      <span className="text-xs text-slate-200 font-medium text-center">{pose.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {selectedPose && (
+                <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                  <div className="flex items-center gap-2 text-sm text-slate-200/60">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                    <span>Playing: {AVAILABLE_POSES.find(p => p.id === selectedPose)?.name}</span>
+                  </div>
+                </div>
+              )}
+            </div>
           ) : (
-            /* Other Categories - Grid layout with toggle */
+            /* Other Categories */
             <>
-              {/* Subcategory Filter */}
+              {/* Subcategory Filter Pills */}
               {getSubcategories().length > 1 && (
                 <div className="flex flex-wrap gap-2 mb-4">
                   <button
                     onClick={() => setCurrentSubcategory(null)}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                    className={cn(
+                      "px-4 py-2 rounded-full text-sm font-medium transition-all",
                       !currentSubcategory
-                        ? 'bg-sky-500 text-white'
-                        : 'bg-muted text-muted-foreground hover:bg-muted/80'
-                    }`}
+                        ? "bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/30"
+                        : "bg-slate-700/80 text-slate-200/70 hover:bg-slate-700 hover:shadow-sm"
+                    )}
                   >
                     All
                   </button>
@@ -772,11 +876,12 @@ export function CharactersPage() {
                     <button
                       key={subcat}
                       onClick={() => setCurrentSubcategory(currentSubcategory === subcat ? null : subcat)}
-                      className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                      className={cn(
+                        "px-4 py-2 rounded-full text-sm font-medium transition-all",
                         currentSubcategory === subcat
-                          ? 'bg-sky-500 text-white'
-                          : 'bg-muted text-muted-foreground hover:bg-muted/80'
-                      }`}
+                          ? "bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/30"
+                          : "bg-slate-700/80 text-slate-200/70 hover:bg-slate-700 hover:shadow-sm"
+                      )}
                     >
                       {subcat}
                     </button>
@@ -784,14 +889,14 @@ export function CharactersPage() {
                 </div>
               )}
 
-              {/* Color Picker */}
-              <div className="mb-4 p-3 bg-muted/50 rounded-lg">
+              {/* Color Picker Card */}
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Color:</span>
+                  <span className="text-sm font-medium text-slate-200">Color</span>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setColorPickerOpen(currentCategory?.toLowerCase() || null)}
-                      className="w-8 h-8 rounded-lg border-2 border-border"
+                      className="w-10 h-10 rounded-xl border-2 border-slate-700/50 shadow-inner"
                       style={{ backgroundColor: getCategoryColor(currentCategory, currentSubcategory) }}
                     />
                     <button
@@ -806,7 +911,7 @@ export function CharactersPage() {
                           }
                         }
                       }}
-                      className="text-muted-foreground hover:text-foreground"
+                      className="w-8 h-8 rounded-lg bg-slate-700/80 text-slate-200/50 hover:text-sky-400 transition-colors flex items-center justify-center"
                       title="Reset color"
                     >
                       <RotateCcw size={14} />
@@ -817,9 +922,9 @@ export function CharactersPage() {
 
               {/* Hair Undertone Picker */}
               {currentCategory === 'HAIR' && (
-                <div className="mb-4 p-3 bg-muted/50 rounded-lg">
-                  <span className="text-sm text-muted-foreground block mb-2">Undertone:</span>
-                  <div className="grid grid-cols-5 gap-1.5">
+                <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                  <span className="text-sm font-medium text-slate-200 block mb-3">Undertone</span>
+                  <div className="grid grid-cols-5 gap-2">
                     {HAIR_UNDERTONES.map((undertone) => (
                       <button
                         key={undertone.id}
@@ -831,11 +936,12 @@ export function CharactersPage() {
                           }
                           setCharacters(prev => prev.map(c => c.id === selectedCharacter.id ? updated : c))
                         }}
-                        className={`w-full aspect-square rounded-md border-2 transition-all ${
+                        className={cn(
+                          "aspect-square rounded-xl border-2 transition-all",
                           selectedCharacter?.colors.hairUndertone === undertone.id
-                            ? 'border-sky-500 ring-2 ring-sky-500/30'
-                            : 'border-border hover:border-muted-foreground'
-                        }`}
+                            ? "border-sky-500 ring-2 ring-sky-500/30 scale-105"
+                            : "border-slate-700/50 hover:border-sky-500/50"
+                        )}
                         style={{ backgroundColor: undertone.previewColor }}
                         title={undertone.name}
                       />
@@ -845,39 +951,74 @@ export function CharactersPage() {
               )}
 
               {/* Items Grid */}
-              <div className="grid grid-cols-3 gap-2">
-                {getCategoryItems().map((meshName) => {
-                  const isSelected = selectedCharacter.visibleAssets.includes(meshName)
-                  return (
-                    <button
-                      key={meshName}
-                      onClick={() => toggleAsset(meshName)}
-                      className={`aspect-square rounded-lg border-2 transition-all flex items-center justify-center text-xs font-medium ${
-                        isSelected
-                          ? 'border-sky-500 bg-sky-500/20'
-                          : 'border-border bg-muted hover:bg-muted/80'
-                      }`}
-                      title={meshName}
-                    >
-                      <span className="text-[10px] text-center px-1 truncate">{meshName}</span>
-                    </button>
-                  )
-                })}
-              </div>
-
-              {getCategoryItems().length === 0 && (
-                <div className="text-center py-8 text-muted-foreground">
-                  <p className="text-sm">No items in this category</p>
+              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+                <div className="grid grid-cols-3 gap-2">
+                  {getCategoryItems().map((meshName) => {
+                    const isSelected = selectedCharacter.visibleAssets.includes(meshName)
+                    return (
+                      <button
+                        key={meshName}
+                        onClick={() => toggleAsset(meshName)}
+                        className={cn(
+                          "aspect-square rounded-xl border-2 transition-all overflow-hidden",
+                          isSelected
+                            ? "border-sky-500 ring-2 ring-sky-500/30 scale-105"
+                            : "border-slate-700/50 bg-slate-700/50 hover:border-sky-500/50"
+                        )}
+                        title={meshName}
+                      >
+                        <ItemThumbnail
+                          meshName={meshName}
+                          color={getCategoryColor(currentCategory, currentSubcategory)}
+                        />
+                      </button>
+                    )
+                  })}
                 </div>
-              )}
+
+                {getCategoryItems().length === 0 && (
+                  <div className="text-center py-8 text-slate-200/40">
+                    <p className="text-sm">No items in this category</p>
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
       </aside>
 
+      {/* Link to Notes Dialog */}
+      {showLinkDialog && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 max-w-sm w-full mx-4 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-200 mb-2">Link to Notes?</h3>
+            <p className="text-sm text-slate-400 mb-5">
+              Would you like to add this character to the Notes tab as a character node?
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowLinkDialog(null)}
+                className="px-4 py-2 rounded-lg text-sm text-slate-300 hover:bg-slate-700 transition-colors"
+              >
+                Not now
+              </button>
+              <button
+                onClick={() => {
+                  const char = characters.find(c => c.id === showLinkDialog)
+                  if (char) handleLinkToNotes(char.id, char.name)
+                }}
+                className="px-4 py-2 rounded-lg text-sm bg-sky-500 text-white hover:bg-sky-600 transition-colors"
+              >
+                Yes, link to Notes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Color Picker Modal */}
       {colorPickerOpen && selectedCharacter && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="max-w-sm w-full mx-4">
             <ColorWheel
               currentColor={

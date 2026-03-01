@@ -10,7 +10,29 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(tree:*)",
-      "Bash(copy \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\CharacterCreator\\\\character-creator\\\\public\\\\models\\\\Neighbor Base V16.glb\" \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\BibliarchMVP\\\\public\\\\models\"\")"
+      "Bash(copy \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\CharacterCreator\\\\character-creator\\\\public\\\\models\\\\Neighbor Base V16.glb\" \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\BibliarchMVP\\\\public\\\\models\"\")",
+      "Bash(ls -la \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\BibliarchMVP\"\" | grep -E \"next.config)",
+      "Bash(tailwind \")",
+      "Bash(npm run dev:*)",
+      "Bash(curl:*)",
+      "Bash(node:*)",
+      "Bash(xargs:*)",
+      "Bash(ls:*)",
+      "Bash(dir \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\personal-archive\\\\public\\\\archive\" /s /b)",
+      "Bash(npx mammoth:*)",
+      "Bash(git checkout:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx next build)",
+      "Bash(head:*)",
+      "Bash(echo:*)",
+      "Bash(dir \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\personal-archive\\\\out\\\\stories\")",
+      "Bash(dir \"C:\\\\Users\\\\stell\\\\src\\\\stella\\\\love-island-vn\\\\story-notes\")",
+      "Bash(dir:*)",
+      "Bash(find:*)",
+      "Bash(git restore:*)",
+      "Bash(for f in episode*.ts)",
+      "Bash(done)",
+      "Bash(wc:*)"
     ]
   }
 }

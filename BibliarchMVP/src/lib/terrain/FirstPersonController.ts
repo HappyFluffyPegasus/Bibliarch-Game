@@ -39,6 +39,21 @@ export class FirstPersonController {
   // Mode change callback (walk ↔ fly)
   private _onSubModeChange: ((mode: 'walk' | 'fly') => void) | null = null
 
+  // Shift lock (Roblox-style cursor lock toggle)
+  private _shiftLocked = false
+  private _onShiftLockChange: ((locked: boolean) => void) | null = null
+
+  // Drag-to-look (trackpad / right-click drag)
+  private isDragLooking = false
+  private lastDragX = 0
+  private lastDragY = 0
+  private dragEuler = new THREE.Euler(0, 0, 0, 'YXZ')
+  private readonly DRAG_SENSITIVITY = 0.003
+  private handleMouseDownDrag: (e: MouseEvent) => void
+  private handleMouseMoveDrag: (e: MouseEvent) => void
+  private handleMouseUpDrag: (e: MouseEvent) => void
+  private handleContextMenu: (e: Event) => void
+
   // Internals (cached to avoid per-frame allocations)
   private direction = new THREE.Vector3()
   private moveVector = new THREE.Vector3()
@@ -53,6 +68,17 @@ export class FirstPersonController {
     this.domElement = domElement
     this.controls = new PointerLockControls(camera, domElement)
 
+    // Shift lock state is driven entirely by pointer lock events.
+    // This handles ESC, lock failures, and toggle correctly.
+    this.controls.addEventListener('lock', () => {
+      this._shiftLocked = true
+      this._onShiftLockChange?.(true)
+    })
+    this.controls.addEventListener('unlock', () => {
+      this._shiftLocked = false
+      this._onShiftLockChange?.(false)
+    })
+
     this.handleKeyDown = (e: KeyboardEvent) => {
       // Don't capture when in inputs
       if (
@@ -66,10 +92,22 @@ export class FirstPersonController {
         case 'KeyS': case 'ArrowDown': this.keys.backward = true; break
         case 'KeyA': case 'ArrowLeft': this.keys.left = true; break
         case 'KeyD': case 'ArrowRight': this.keys.right = true; break
-        case 'ShiftLeft': case 'ShiftRight': this.keys.down = true; break
+        case 'KeyQ': this.keys.down = true; break
+        case 'ShiftLeft': case 'ShiftRight':
+          if (this._subMode === 'fly') {
+            this.keys.down = true
+          } else if (!e.repeat) {
+            this.toggleShiftLock()
+          }
+          break
         case 'ControlLeft': case 'ControlRight': this.keys.sprint = true; break
         case 'Space': {
           e.preventDefault()
+          // Ignore key repeat events — only act on fresh presses
+          if (e.repeat) {
+            this.keys.up = true
+            break
+          }
           this.keys.up = true
 
           const now = performance.now()
@@ -96,9 +134,46 @@ export class FirstPersonController {
         case 'KeyA': case 'ArrowLeft': this.keys.left = false; break
         case 'KeyD': case 'ArrowRight': this.keys.right = false; break
         case 'Space': this.keys.up = false; break
+        case 'KeyQ': this.keys.down = false; break
         case 'ShiftLeft': case 'ShiftRight': this.keys.down = false; break
         case 'ControlLeft': case 'ControlRight': this.keys.sprint = false; break
       }
+    }
+
+    // ── Drag-to-look handlers (right-click / two-finger trackpad) ──
+
+    this.handleMouseDownDrag = (e: MouseEvent) => {
+      if (e.button === 2) {
+        this.isDragLooking = true
+        this.lastDragX = e.clientX
+        this.lastDragY = e.clientY
+      }
+    }
+
+    this.handleMouseMoveDrag = (e: MouseEvent) => {
+      if (!this.isDragLooking || this.controls.isLocked) return
+
+      const dx = e.clientX - this.lastDragX
+      const dy = e.clientY - this.lastDragY
+      this.lastDragX = e.clientX
+      this.lastDragY = e.clientY
+
+      // Rotate camera via euler angles (same method PointerLockControls uses)
+      this.dragEuler.setFromQuaternion(this.camera.quaternion)
+      this.dragEuler.y -= dx * this.DRAG_SENSITIVITY
+      this.dragEuler.x -= dy * this.DRAG_SENSITIVITY
+      this.dragEuler.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.dragEuler.x))
+      this.camera.quaternion.setFromEuler(this.dragEuler)
+    }
+
+    this.handleMouseUpDrag = (e: MouseEvent) => {
+      if (e.button === 2) {
+        this.isDragLooking = false
+      }
+    }
+
+    this.handleContextMenu = (e: Event) => {
+      e.preventDefault()
     }
   }
 
@@ -109,6 +184,26 @@ export class FirstPersonController {
       this.velocityY = 0
     }
     this._onSubModeChange?.(this._subMode)
+  }
+
+  private toggleShiftLock(): void {
+    if (this._shiftLocked) {
+      this.controls.unlock()
+    } else {
+      // Call requestPointerLock directly so we can catch the Promise rejection.
+      // PointerLockControls still detects lock via the pointerlockchange event.
+      const promise = this.domElement.requestPointerLock() as unknown as Promise<void> | void
+      if (promise && typeof (promise as Promise<void>).catch === 'function') {
+        (promise as Promise<void>).catch(() => { /* browser denied — no user gesture or other restriction */ })
+      }
+    }
+  }
+
+  /** Public reset for when exiting FP mode */
+  resetShiftLock(): void {
+    if (this._shiftLocked) {
+      this.controls.unlock()
+    }
   }
 
   get subMode() { return this._subMode }
@@ -125,12 +220,21 @@ export class FirstPersonController {
     this._onSubModeChange = cb
   }
 
+  get shiftLocked() { return this._shiftLocked }
+
+  set onShiftLockChange(cb: ((locked: boolean) => void) | null) {
+    this._onShiftLockChange = cb
+  }
+
   isLocked(): boolean {
     return this.controls.isLocked
   }
 
   lock(): void {
-    this.controls.lock()
+    const promise = this.domElement.requestPointerLock() as unknown as Promise<void> | void
+    if (promise && typeof (promise as Promise<void>).catch === 'function') {
+      (promise as Promise<void>).catch(() => {})
+    }
   }
 
   unlock(): void {
@@ -138,6 +242,14 @@ export class FirstPersonController {
     this.resetKeys()
     this.velocityY = 0
     this.jumpRequested = false
+  }
+
+  onLock(callback: () => void): void {
+    this.controls.addEventListener('lock', callback)
+  }
+
+  offLock(callback: () => void): void {
+    this.controls.removeEventListener('lock', callback)
   }
 
   onUnlock(callback: () => void): void {
@@ -148,15 +260,29 @@ export class FirstPersonController {
     this.controls.removeEventListener('unlock', callback)
   }
 
+  /** Returns true if the controller is in use (pointer locked or drag-looking) */
+  isEngaged(): boolean {
+    return this.controls.isLocked || this.isDragLooking
+  }
+
   bindEvents(): void {
     document.addEventListener('keydown', this.handleKeyDown)
     document.addEventListener('keyup', this.handleKeyUp)
+    this.domElement.addEventListener('mousedown', this.handleMouseDownDrag)
+    document.addEventListener('mousemove', this.handleMouseMoveDrag)
+    document.addEventListener('mouseup', this.handleMouseUpDrag)
+    this.domElement.addEventListener('contextmenu', this.handleContextMenu)
   }
 
   unbindEvents(): void {
     document.removeEventListener('keydown', this.handleKeyDown)
     document.removeEventListener('keyup', this.handleKeyUp)
+    this.domElement.removeEventListener('mousedown', this.handleMouseDownDrag)
+    document.removeEventListener('mousemove', this.handleMouseMoveDrag)
+    document.removeEventListener('mouseup', this.handleMouseUpDrag)
+    this.domElement.removeEventListener('contextmenu', this.handleContextMenu)
     this.resetKeys()
+    this.isDragLooking = false
   }
 
   private resetKeys(): void {
@@ -206,7 +332,6 @@ export class FirstPersonController {
 
   /** Called each frame. Moves camera based on key state and mode. */
   update(delta: number, terrain: TerrainData): void {
-    if (!this.controls.isLocked) return
 
     // Clamp delta to prevent physics explosion on lag spikes
     const dt = Math.min(delta, 0.1)

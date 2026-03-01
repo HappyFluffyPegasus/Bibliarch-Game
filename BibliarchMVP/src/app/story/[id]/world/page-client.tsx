@@ -56,6 +56,10 @@ import {
   MonitorUp,
   Box,
   Play,
+  Move,
+  Maximize2,
+  RotateCw,
+  UserRound,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -126,7 +130,12 @@ import { useStoryStore } from "@/stores/storyStore"
 import MiniMap from "@/components/world/MiniMap"
 import ExplorerTree from "@/components/world/ExplorerTree"
 import LevelBreadcrumb, { buildBreadcrumbSegments } from "@/components/world/LevelBreadcrumb"
-import { initChildTerrainFromParent, blendChildIntoParent, blendWithFeather } from "@/lib/terrain/terrainBlend"
+import RibbonBar, { type RibbonCallbacks } from "@/components/world/ribbon/RibbonBar"
+import PropertiesPanel from "@/components/world/properties/PropertiesPanel"
+import OutputPanel from "@/components/world/OutputPanel"
+import { useOutputStore } from "@/stores/outputStore"
+import { initChildTerrainFromParent, blendChildIntoParent, blendWithFeather, extractBoundsSnapshot, snapshotsEqual, propagateParentChangesToChild } from "@/lib/terrain/terrainBlend"
+import { NodeCache } from "@/lib/terrain/NodeCache"
 import {
   saveHierarchyMeta,
   loadHierarchyMeta,
@@ -341,6 +350,13 @@ export function WorldPage() {
   const [sunAngle, setSunAngle] = useState(160)
   const [sunElevation, setSunElevation] = useState(45)
 
+  // Environment
+  const [skyColor, setSkyColor] = useState('#87CEEB')
+  const [fogEnabled, setFogEnabled] = useState(true)
+  const [weatherType, setWeatherType] = useState<'clear' | 'rain' | 'snow' | 'fog' | 'cloudy'>('clear')
+  const [waterColor, setWaterColor] = useState('#2980b9')
+  const [showSkyPicker, setShowSkyPicker] = useState(false)
+
   // Cartography state
   const [cartographyGrid, setCartographyGrid] = useState<Uint8Array | null>(null)
   const [cartographySettings, setCartographySettings] = useState<CartographyGenerationSettings>({
@@ -363,6 +379,10 @@ export function WorldPage() {
   const [showEnvironment, setShowEnvironment] = useState(false)
   const [ribbonTab, setRibbonTab] = useState<'home' | 'terrain' | 'build' | 'environment' | 'view'>('home')
   const [toolboxSearch, setToolboxSearch] = useState("")
+  const [explorerSelection, setExplorerSelection] = useState<string | null>(null)
+  const [transformMode, setTransformMode] = useState<'translate' | 'scale' | 'rotate'>('translate')
+  const [cameraPreset, setCameraPreset] = useState<'top' | 'front' | 'side' | 'perspective' | null>(null)
+  const [cameraPresetCounter, setCameraPresetCounter] = useState(0)
 
   // Editor store
   const activeTool = useWorldBuilderStore((s) => s.activeTool)
@@ -485,6 +505,7 @@ export function WorldPage() {
   // Hierarchical world state
   const [hierarchicalWorld, setHierarchicalWorld] = useState<HierarchicalWorld | null>(null)
   const hwRef = useRef<HierarchicalWorld | null>(null)
+  const nodeCacheRef = useRef(new NodeCache(5))
   useEffect(() => { hwRef.current = hierarchicalWorld }, [hierarchicalWorld])
 
   // Region definition dialog state
@@ -671,6 +692,7 @@ export function WorldPage() {
         node.objects = w.objects
         node.cartographyData = buildCartographyData()
         node.locations = w.locations || []
+        node.environment = { sunAngle, sunElevation, skyColor, waterColor, fogEnabled, weatherType }
         node.updatedAt = new Date()
 
         // Save node data
@@ -683,7 +705,7 @@ export function WorldPage() {
         await saveHierarchyMeta(storyId, serializedHW)
       }
     }
-  }, [storyId, buildCartographyData, activeNodeId])
+  }, [storyId, buildCartographyData, activeNodeId, sunAngle, sunElevation, skyColor, waterColor, fogEnabled, weatherType])
 
   // Auto-save
   useEffect(() => {
@@ -703,8 +725,10 @@ export function WorldPage() {
     if (!world) return
     persistWorld(world).then(() => {
       setHasUnsavedChanges(false)
+      useOutputStore.getState().log('info', 'World saved successfully')
     }).catch((err) => {
       console.error("Save failed:", err)
+      useOutputStore.getState().log('error', `Save failed: ${err}`)
     })
   }, [world, persistWorld])
 
@@ -718,11 +742,20 @@ export function WorldPage() {
     // Save current node first
     await persistWorld(world)
 
+    // Cache current node before leaving
+    if (activeNodeId) {
+      const currentNode = hw.nodes[activeNodeId]
+      if (currentNode) {
+        nodeCacheRef.current.set(activeNodeId, serializeWorldNode(currentNode))
+      }
+    }
+
     const targetNode = hw.nodes[nodeId]
     if (!targetNode) return
 
-    // Load full node terrain data from IDB
-    const nodeData = await loadNodeData(storyId, nodeId)
+    // Check cache first, then IDB
+    const cached = nodeCacheRef.current.get(nodeId)
+    const nodeData = cached || await loadNodeData(storyId, nodeId)
     if (nodeData) {
       const fullNode = deserializeWorldNode(nodeData)
       hw.nodes[nodeId] = fullNode
@@ -730,6 +763,19 @@ export function WorldPage() {
     }
 
     const node = hw.nodes[nodeId]
+
+    // Propagate parent terrain changes if snapshot exists
+    if (node.parentBoundsSnapshot && node.boundsInParent && node.parentId) {
+      const parentNode = hw.nodes[node.parentId]
+      if (parentNode) {
+        const currentSnapshot = extractBoundsSnapshot(parentNode.terrain, node.boundsInParent)
+        if (!snapshotsEqual(node.parentBoundsSnapshot, currentSnapshot)) {
+          propagateParentChangesToChild(node.terrain, node.boundsInParent, node.parentBoundsSnapshot, parentNode.terrain)
+          node.parentBoundsSnapshot = currentSnapshot
+        }
+      }
+    }
+
     // Create flat World view of this node
     const nodeWorld: World = {
       id: hw.id,
@@ -745,6 +791,15 @@ export function WorldPage() {
 
     setWorld(nodeWorld)
     terrainRef.current = nodeWorld.terrain
+    // Load environment settings from node
+    if (node.environment) {
+      setSunAngle(node.environment.sunAngle)
+      setSunElevation(node.environment.sunElevation)
+      setSkyColor(node.environment.skyColor)
+      setWaterColor(node.environment.waterColor)
+      setFogEnabled(node.environment.fogEnabled)
+      setWeatherType(node.environment.weatherType)
+    }
     enterNode(nodeId, node.level)
     setHasUnsavedChanges(false)
   }, [world, storyId, persistWorld, enterNode])
@@ -757,7 +812,7 @@ export function WorldPage() {
     // Save current node first
     await persistWorld(world)
 
-    // Blend child terrain back into parent
+    // Blend child terrain back into parent and update snapshot
     if (activeNodeId) {
       const currentNode = hw.nodes[activeNodeId]
       const parentId = navigationStack[navigationStack.length - 1]
@@ -765,12 +820,23 @@ export function WorldPage() {
       if (currentNode && parentNode && currentNode.boundsInParent) {
         blendChildIntoParent(parentNode.terrain, currentNode.terrain, currentNode.boundsInParent)
         blendWithFeather(parentNode.terrain, currentNode.boundsInParent)
+        // Update snapshot so next enter detects further changes
+        currentNode.parentBoundsSnapshot = extractBoundsSnapshot(parentNode.terrain, currentNode.boundsInParent)
+      }
+    }
+
+    // Cache current node before leaving
+    if (activeNodeId) {
+      const currentNode = hw.nodes[activeNodeId]
+      if (currentNode) {
+        nodeCacheRef.current.set(activeNodeId, serializeWorldNode(currentNode))
       }
     }
 
     const parentId = navigationStack[navigationStack.length - 1]
-    // Load parent node
-    const parentData = await loadNodeData(storyId, parentId)
+    // Check cache first, then IDB
+    const cached = nodeCacheRef.current.get(parentId)
+    const parentData = cached || await loadNodeData(storyId, parentId)
     if (parentData) {
       const parentNode = deserializeWorldNode(parentData)
       hw.nodes[parentId] = parentNode
@@ -962,9 +1028,102 @@ export function WorldPage() {
         world.terrain.materials[cell.index] = cell.oldMaterial
       }
       setWorld({ ...world, terrain: { ...world.terrain, materials: new Uint8Array(world.terrain.materials) }, updatedAt: new Date() })
+    } else if (command.type === 'terrain-bulk') {
+      const newHeights = new Float32Array(world.terrain.heights.length)
+      newHeights.set(command.oldHeights)
+      const newMaterials = new Uint8Array(world.terrain.materials.length)
+      newMaterials.set(command.oldMaterials)
+      setWorld({ ...world, terrain: { ...world.terrain, heights: newHeights, materials: newMaterials }, updatedAt: new Date() })
+    } else if (command.type === 'object-place') {
+      const obj = world.objects.find(o => o.id === command.objectId)
+      if (obj) command.objectSnapshot = JSON.stringify(obj)
+      setWorld({ ...world, objects: world.objects.filter(o => o.id !== command.objectId), updatedAt: new Date() })
+    } else if (command.type === 'object-delete') {
+      const obj = JSON.parse(command.objectSnapshot) as WorldObject
+      setWorld({ ...world, objects: [...world.objects, obj], updatedAt: new Date() })
+    } else if (command.type === 'object-transform') {
+      setWorld({ ...world, objects: world.objects.map(o =>
+        o.id === command.objectId ? { ...o, position: command.oldPosition, rotation: command.oldRotation, scale: command.oldScale } : o
+      ), updatedAt: new Date() })
+    } else if (command.type === 'object-duplicate') {
+      const dupes = world.objects.filter(o => command.objectIds.includes(o.id))
+      if (dupes.length > 0) command.objectSnapshots = JSON.stringify(dupes)
+      setWorld({ ...world, objects: world.objects.filter(o => !command.objectIds.includes(o.id)), updatedAt: new Date() })
+      clearSelection()
+    } else if (command.type === 'object-property') {
+      setWorld({ ...world, objects: world.objects.map(o =>
+        o.id === command.objectId ? { ...o, ...command.oldProps } : o
+      ), updatedAt: new Date() })
+    } else if (command.type === 'border-create') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        if (node?.polygonBorders) {
+          const border = node.polygonBorders.find(b => b.id === command.borderId)
+          if (border) command.borderSnapshot = JSON.stringify(border)
+          node.polygonBorders = node.polygonBorders.filter(b => b.id !== command.borderId)
+          setHierarchicalWorld({ ...hw })
+        }
+      }
+    } else if (command.type === 'border-delete') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        if (node) {
+          const border = JSON.parse(command.borderSnapshot)
+          node.polygonBorders = [...(node.polygonBorders || []), border]
+          setHierarchicalWorld({ ...hw })
+        }
+      }
+    } else if (command.type === 'wall-place') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
+        if (floor) {
+          const wall = floor.walls.find(w => w.id === command.wallId)
+          if (wall) command.wallSnapshot = JSON.stringify(wall)
+          floor.walls = floor.walls.filter(w => w.id !== command.wallId)
+          setHierarchicalWorld({ ...hw })
+        }
+      }
+    } else if (command.type === 'wall-delete') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
+        if (floor) {
+          const wall = JSON.parse(command.wallSnapshot)
+          floor.walls = [...floor.walls, wall]
+          setHierarchicalWorld({ ...hw })
+        }
+      }
+    } else if (command.type === 'opening-place') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
+        if (floor) {
+          const opening = floor.openings.find(o => o.id === command.openingId)
+          if (opening) command.openingSnapshot = JSON.stringify(opening)
+          floor.openings = floor.openings.filter(o => o.id !== command.openingId)
+          setHierarchicalWorld({ ...hw })
+        }
+      }
+    } else if (command.type === 'furniture-place') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        if (node?.buildingData) {
+          const furn = node.buildingData.furniture.find(f => f.id === command.furnitureId)
+          if (furn) command.furnitureSnapshot = JSON.stringify(furn)
+          node.buildingData.furniture = node.buildingData.furniture.filter(f => f.id !== command.furnitureId)
+          setHierarchicalWorld({ ...hw })
+        }
+      }
     }
     setHasUnsavedChanges(true)
-  }, [world, storeUndo])
+  }, [world, storeUndo, activeNodeId, clearSelection])
 
   // Redo
   const handleRedo = useCallback(() => {
@@ -982,9 +1141,107 @@ export function WorldPage() {
         world.terrain.materials[cell.index] = cell.newMaterial
       }
       setWorld({ ...world, terrain: { ...world.terrain, materials: new Uint8Array(world.terrain.materials) }, updatedAt: new Date() })
+    } else if (command.type === 'terrain-bulk') {
+      const newHeights = new Float32Array(world.terrain.heights.length)
+      newHeights.set(command.newHeights)
+      const newMaterials = new Uint8Array(world.terrain.materials.length)
+      newMaterials.set(command.newMaterials)
+      setWorld({ ...world, terrain: { ...world.terrain, heights: newHeights, materials: newMaterials }, updatedAt: new Date() })
+    } else if (command.type === 'object-place') {
+      if (command.objectSnapshot) {
+        const obj = JSON.parse(command.objectSnapshot) as WorldObject
+        setWorld({ ...world, objects: [...world.objects, obj], updatedAt: new Date() })
+      }
+    } else if (command.type === 'object-delete') {
+      const obj = JSON.parse(command.objectSnapshot) as WorldObject
+      setWorld({ ...world, objects: world.objects.filter(o => o.id !== obj.id), updatedAt: new Date() })
+    } else if (command.type === 'object-transform') {
+      setWorld({ ...world, objects: world.objects.map(o =>
+        o.id === command.objectId ? { ...o, position: command.newPosition, rotation: command.newRotation, scale: command.newScale } : o
+      ), updatedAt: new Date() })
+    } else if (command.type === 'object-duplicate') {
+      if (command.objectSnapshots) {
+        const dupes = JSON.parse(command.objectSnapshots) as WorldObject[]
+        setWorld({ ...world, objects: [...world.objects, ...dupes], updatedAt: new Date() })
+      }
+    } else if (command.type === 'object-property') {
+      setWorld({ ...world, objects: world.objects.map(o =>
+        o.id === command.objectId ? { ...o, ...command.newProps } : o
+      ), updatedAt: new Date() })
+    } else if (command.type === 'border-create') {
+      if (command.borderSnapshot) {
+        const hw = hwRef.current
+        if (hw && activeNodeId) {
+          const node = hw.nodes[activeNodeId]
+          if (node) {
+            const border = JSON.parse(command.borderSnapshot)
+            node.polygonBorders = [...(node.polygonBorders || []), border]
+            setHierarchicalWorld({ ...hw })
+          }
+        }
+      }
+    } else if (command.type === 'border-delete') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        if (node?.polygonBorders) {
+          const border = JSON.parse(command.borderSnapshot)
+          node.polygonBorders = node.polygonBorders.filter(b => b.id !== border.id)
+          setHierarchicalWorld({ ...hw })
+        }
+      }
+    } else if (command.type === 'wall-place') {
+      if (command.wallSnapshot) {
+        const hw = hwRef.current
+        if (hw && activeNodeId) {
+          const node = hw.nodes[activeNodeId]
+          const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
+          if (floor) {
+            const wall = JSON.parse(command.wallSnapshot)
+            floor.walls = [...floor.walls, wall]
+            setHierarchicalWorld({ ...hw })
+          }
+        }
+      }
+    } else if (command.type === 'wall-delete') {
+      const hw = hwRef.current
+      if (hw && activeNodeId) {
+        const node = hw.nodes[activeNodeId]
+        const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
+        if (floor) {
+          const wall = JSON.parse(command.wallSnapshot)
+          floor.walls = floor.walls.filter(w => w.id !== wall.id)
+          setHierarchicalWorld({ ...hw })
+        }
+      }
+    } else if (command.type === 'opening-place') {
+      if (command.openingSnapshot) {
+        const hw = hwRef.current
+        if (hw && activeNodeId) {
+          const node = hw.nodes[activeNodeId]
+          const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
+          if (floor) {
+            const opening = JSON.parse(command.openingSnapshot)
+            floor.openings = [...floor.openings, opening]
+            setHierarchicalWorld({ ...hw })
+          }
+        }
+      }
+    } else if (command.type === 'furniture-place') {
+      if (command.furnitureSnapshot) {
+        const hw = hwRef.current
+        if (hw && activeNodeId) {
+          const node = hw.nodes[activeNodeId]
+          if (node?.buildingData) {
+            const furn = JSON.parse(command.furnitureSnapshot)
+            node.buildingData.furniture = [...node.buildingData.furniture, furn]
+            setHierarchicalWorld({ ...hw })
+          }
+        }
+      }
     }
     setHasUnsavedChanges(true)
-  }, [world, storeRedo])
+  }, [world, storeRedo, activeNodeId])
 
   // Camera position callback — writes to refs (cheap), bumps tick for minimap at low rate
   const lastCameraTickRef = useRef(0)
@@ -1008,45 +1265,61 @@ export function WorldPage() {
     setCursorGridPosition(gridPos)
   }, [setCursorWorldPosition, setCursorGridPosition])
 
-  // Reset terrain
+  // Reset land: blank slate — flat terrain at sea level, all materials reset to grass
   const handleResetTerrain = useCallback(() => {
     if (!world) return
-    if (!confirm("Reset terrain to flat land? This cannot be undone.")) return
+    if (!confirm("Reset land to a blank slate? All sculpting and painting will be lost.")) return
+    const oldHeights = new Float32Array(world.terrain.heights)
+    const oldMaterials = new Uint8Array(world.terrain.materials)
     const newTerrain = createTerrain(world.terrain.size, world.terrain.sizeZ)
-    // Set all heights to just above sea level so terrain is visible as land
-    const target = Math.min(1, newTerrain.seaLevel + 0.02)
-    for (let i = 0; i < newTerrain.heights.length; i++) {
-      newTerrain.heights[i] = target
-    }
+    pushUndo({
+      type: 'terrain-bulk',
+      oldHeights,
+      oldMaterials,
+      newHeights: new Float32Array(newTerrain.heights),
+      newMaterials: new Uint8Array(newTerrain.materials),
+    })
     setWorld({ ...world, terrain: newTerrain, updatedAt: new Date() })
     setHasUnsavedChanges(true)
-  }, [world])
+  }, [world, pushUndo])
 
-  // Level ground: flatten ALL terrain to just above sea level (raises underwater terrain too)
+  // Flatten all: make all land above water the same height (preserves water and materials)
   const handleFlattenToGround = useCallback(() => {
     if (!world) return
-    if (!confirm("Flatten all terrain to ground level? This cannot be undone.")) return
+    if (!confirm("Flatten all land above water to the same height? Underwater areas will be preserved.")) return
+    const oldHeights = new Float32Array(world.terrain.heights)
     const { seaLevel } = world.terrain
 
-    // Target: sea level + small offset so everything is visible as land
+    // Target height for land: just above sea level
     const target = Math.min(1, seaLevel + 0.02)
-    const newHeights = new Float32Array(world.terrain.heights.length)
+    const newHeights = new Float32Array(world.terrain.heights)
     for (let i = 0; i < newHeights.length; i++) {
-      newHeights[i] = target
+      // Only flatten cells that are above water — leave underwater cells as-is
+      if (newHeights[i] >= seaLevel) {
+        newHeights[i] = target
+      }
     }
+
+    pushUndo({
+      type: 'terrain-bulk',
+      oldHeights,
+      oldMaterials: new Uint8Array(world.terrain.materials),
+      newHeights: new Float32Array(newHeights),
+      newMaterials: new Uint8Array(world.terrain.materials),
+    })
 
     const newTerrain: TerrainData = {
       ...world.terrain,
       heights: newHeights,
-      materials: new Uint8Array(world.terrain.materials),
     }
     setWorld({ ...world, terrain: newTerrain, updatedAt: new Date() })
     setHasUnsavedChanges(true)
-  }, [world])
+  }, [world, pushUndo])
 
   // Smooth coastlines: blend land/water boundary into a gradual slope
   const handleSmoothCoastlines = useCallback(() => {
     if (!world) return
+    const oldHeights = new Float32Array(world.terrain.heights)
     const { heights, seaLevel, size, sizeZ } = world.terrain
     const total = size * sizeZ
     const newHeights = new Float32Array(heights)
@@ -1136,6 +1409,14 @@ export function WorldPage() {
       }
     }
 
+    pushUndo({
+      type: 'terrain-bulk',
+      oldHeights,
+      oldMaterials: new Uint8Array(world.terrain.materials),
+      newHeights: new Float32Array(newHeights),
+      newMaterials: new Uint8Array(world.terrain.materials),
+    })
+
     const newTerrain: TerrainData = {
       ...world.terrain,
       heights: newHeights,
@@ -1143,7 +1424,7 @@ export function WorldPage() {
     }
     setWorld({ ...world, terrain: newTerrain, updatedAt: new Date() })
     setHasUnsavedChanges(true)
-  }, [world])
+  }, [world, pushUndo])
 
   // Scale map
   const handleScaleMap = useCallback(() => {
@@ -1259,23 +1540,44 @@ export function WorldPage() {
       updatedAt: new Date(),
     }
     setWorld(updatedWorld)
+    pushUndo({ type: 'object-place', objectId: newObj.id })
     setHasUnsavedChanges(true)
-  }, [world])
+  }, [world, pushUndo])
 
   const handleObjectSelect = useCallback((objectId: string | null, additive: boolean) => {
+    setExplorerSelection(null)
     if (!objectId) {
       clearSelection()
       return
     }
     if (additive) {
-      addToSelection(objectId)
+      const store = useWorldBuilderStore.getState()
+      if (store.selectedObjectIds.includes(objectId)) {
+        store.removeFromSelection(objectId)
+      } else {
+        addToSelection(objectId)
+      }
     } else {
       selectObject(objectId)
     }
   }, [clearSelection, addToSelection, selectObject])
 
+  const dragStartSnapshotRef = useRef<{ objectId: string; position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] } | null>(null)
+
   const handleObjectMove = useCallback((objectId: string, newPos: [number, number, number]) => {
     if (!world) return
+    // Capture start position on first move of a drag
+    if (!dragStartSnapshotRef.current || dragStartSnapshotRef.current.objectId !== objectId) {
+      const existing = world.objects.find(o => o.id === objectId)
+      if (existing && !existing.locked) {
+        dragStartSnapshotRef.current = {
+          objectId,
+          position: [...existing.position] as [number, number, number],
+          rotation: [...existing.rotation] as [number, number, number],
+          scale: [...existing.scale] as [number, number, number],
+        }
+      }
+    }
     const updatedObjects = world.objects.map((obj) => {
       if (obj.id === objectId && !obj.locked) {
         return { ...obj, position: newPos }
@@ -1286,8 +1588,33 @@ export function WorldPage() {
     setHasUnsavedChanges(true)
   }, [world])
 
+  const handleObjectMoveEnd = useCallback((objectId: string, finalPos: [number, number, number]) => {
+    const snap = dragStartSnapshotRef.current
+    if (snap && snap.objectId === objectId) {
+      pushUndo({
+        type: 'object-transform',
+        objectId,
+        oldPosition: snap.position,
+        oldRotation: snap.rotation,
+        oldScale: snap.scale,
+        newPosition: finalPos,
+        newRotation: snap.rotation,
+        newScale: snap.scale,
+      })
+    }
+    dragStartSnapshotRef.current = null
+  }, [pushUndo])
+
   const handleObjectColorChange = useCallback((objectId: string, color: string) => {
     if (!world) return
+    const existing = world.objects.find(o => o.id === objectId)
+    if (!existing) return
+    pushUndo({
+      type: 'object-property',
+      objectId,
+      oldProps: { color: existing.color },
+      newProps: { color },
+    })
     const updatedObjects = world.objects.map((obj) => {
       if (obj.id === objectId) {
         return { ...obj, color }
@@ -1296,18 +1623,30 @@ export function WorldPage() {
     })
     setWorld({ ...world, objects: updatedObjects, updatedAt: new Date() })
     setHasUnsavedChanges(true)
-  }, [world])
+  }, [world, pushUndo])
 
   // Generic object property update
   const handleObjectUpdate = useCallback((objectId: string, updates: Partial<WorldObject>) => {
     if (!world) return
+    const existing = world.objects.find(o => o.id === objectId)
+    if (!existing) return
+    const oldProps: Partial<WorldObject> = {}
+    for (const key of Object.keys(updates) as (keyof WorldObject)[]) {
+      (oldProps as Record<string, unknown>)[key] = existing[key]
+    }
+    pushUndo({
+      type: 'object-property',
+      objectId,
+      oldProps,
+      newProps: updates,
+    })
     const updatedObjects = world.objects.map((obj) => {
       if (obj.id === objectId) return { ...obj, ...updates }
       return obj
     })
     setWorld({ ...world, objects: updatedObjects, updatedAt: new Date() })
     setHasUnsavedChanges(true)
-  }, [world])
+  }, [world, pushUndo])
 
   // Duplicate selected objects
   const handleDuplicateSelected = useCallback(() => {
@@ -1324,9 +1663,10 @@ export function WorldPage() {
       }))
     const newIds = duplicates.map((d) => d.id)
     setWorld({ ...world, objects: [...world.objects, ...duplicates], updatedAt: new Date() })
+    pushUndo({ type: 'object-duplicate', objectIds: newIds })
     useWorldBuilderStore.getState().setSelection(newIds)
     setHasUnsavedChanges(true)
-  }, [world])
+  }, [world, pushUndo])
 
   // Export heightmap as PNG
   const handleExportHeightmap = useCallback(() => {
@@ -1356,11 +1696,15 @@ export function WorldPage() {
     if (!world) return
     const ids = useWorldBuilderStore.getState().selectedObjectIds
     if (ids.length === 0) return
+    const deleted = world.objects.filter((obj) => ids.includes(obj.id))
+    for (const obj of deleted) {
+      pushUndo({ type: 'object-delete', objectSnapshot: JSON.stringify(obj) })
+    }
     const updatedObjects = world.objects.filter((obj) => !ids.includes(obj.id))
     setWorld({ ...world, objects: updatedObjects, updatedAt: new Date() })
     clearSelection()
     setHasUnsavedChanges(true)
-  }, [world, clearSelection])
+  }, [world, clearSelection, pushUndo])
 
   // ── Cartography handlers ──────────────────────────────────
 
@@ -1373,6 +1717,9 @@ export function WorldPage() {
     if (!world || !cartographyGrid) return
     if (!confirm("Generate terrain from cartography map? This will replace current terrain heights and materials.")) return
 
+    const oldHeights = new Float32Array(world.terrain.heights)
+    const oldMaterials = new Uint8Array(world.terrain.materials)
+
     generateTerrainFromCartography(cartographyGrid, world.terrain.size, world.terrain.sizeZ, world.terrain, cartographySettings)
     // Create a NEW terrain object so React detects the change
     const newTerrain = {
@@ -1380,11 +1727,20 @@ export function WorldPage() {
       heights: new Float32Array(world.terrain.heights),
       materials: new Uint8Array(world.terrain.materials),
     }
+
+    pushUndo({
+      type: 'terrain-bulk',
+      oldHeights,
+      oldMaterials,
+      newHeights: new Float32Array(newTerrain.heights),
+      newMaterials: new Uint8Array(newTerrain.materials),
+    })
+
     setWorld({ ...world, terrain: newTerrain, updatedAt: new Date() })
     setHasUnsavedChanges(true)
     setActiveTool('sculpt')
     setEditorPhase('editor')
-  }, [world, cartographyGrid, cartographySettings, setActiveTool])
+  }, [world, cartographyGrid, cartographySettings, setActiveTool, pushUndo])
 
   const handleCartographyClear = useCallback(() => {
     if (!world) return
@@ -1473,6 +1829,24 @@ export function WorldPage() {
     setCameraMode('orbit')
   }, [setPlaytesting, setCameraMode])
 
+  // Terrain update helper for PropertiesPanel
+  const handleTerrainUpdate = useCallback((updates: Record<string, unknown>) => {
+    if (!world) return
+    const newTerrain = { ...world.terrain, ...updates }
+    setWorld({ ...world, terrain: newTerrain, updatedAt: new Date() })
+    setHasUnsavedChanges(true)
+  }, [world])
+
+  const handleAutoMaterialPaint = useCallback(() => {
+    if (!world) return
+    if (!confirm("Auto-paint entire terrain based on height? This replaces all materials.")) return
+    const newMaterials = new Uint8Array(world.terrain.materials)
+    const terrain = { ...world.terrain, materials: newMaterials }
+    applyMaterialBrush(terrain, 0, 0, { ...materialBrush, type: 'auto-paint' })
+    setWorld({ ...world, terrain, updatedAt: new Date() })
+    setHasUnsavedChanges(true)
+  }, [world, materialBrush])
+
   // Refs for keyboard handler to use late-defined callbacks
   const handleFinishBorderRef = useRef<() => void>(() => {})
   const handleFinishRoadRef = useRef<() => void>(() => {})
@@ -1486,11 +1860,28 @@ export function WorldPage() {
 
       // Universal shortcuts (work in all modes)
       if (e.ctrlKey || e.metaKey) {
+        if (e.shiftKey && e.key.toLowerCase() === 'p') {
+          e.preventDefault()
+          if (isPlaytesting) handleStopPlaytest()
+          else handleStartPlaytest()
+          return
+        }
         switch (e.key.toLowerCase()) {
           case 'z': e.preventDefault(); handleUndo(); return
           case 'y': e.preventDefault(); handleRedo(); return
           case 'd': e.preventDefault(); handleDuplicateSelected(); return
           case 's': e.preventDefault(); handleSave(); return
+        }
+      }
+
+      // Alt+number — toggle panels
+      if (e.altKey) {
+        const store = useWorldBuilderStore.getState()
+        switch (e.key) {
+          case '1': e.preventDefault(); store.setPanelVisible('explorer', !store.panels.explorer.visible); return
+          case '2': e.preventDefault(); store.setPanelVisible('properties', !store.panels.properties.visible); return
+          case '3': e.preventDefault(); store.setPanelVisible('toolbox', !store.panels.toolbox.visible); return
+          case '4': e.preventDefault(); store.setPanelVisible('output', !store.panels.output.visible); return
         }
       }
 
@@ -1553,7 +1944,7 @@ export function WorldPage() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setActiveTool, handleDeleteSelected, editorPhase, cameraMode, setCameraMode, handleUndo, handleRedo, adjustBrushSize, handleDuplicateSelected, handleSave, activeTool, borderDrawMode, roadDrawMode, clearBorderVertices, clearRoadWaypoints, wallStartPoint, setWallStartPoint, setWallDrawMode, lotCorner1, setLotCorner1, currentLevel, isPlaytesting, handleStopPlaytest])
+  }, [setActiveTool, handleDeleteSelected, editorPhase, cameraMode, setCameraMode, handleUndo, handleRedo, adjustBrushSize, handleDuplicateSelected, handleSave, activeTool, borderDrawMode, roadDrawMode, clearBorderVertices, clearRoadWaypoints, wallStartPoint, setWallStartPoint, setWallDrawMode, lotCorner1, setLotCorner1, currentLevel, isPlaytesting, handleStopPlaytest, handleStartPlaytest])
 
   // ── Get current node data helpers ────────────────────────────
   const currentNode = hierarchicalWorld && activeNodeId ? hierarchicalWorld.nodes[activeNodeId] : null
@@ -1627,6 +2018,17 @@ export function WorldPage() {
         childSizeX,
         childSizeZ
       )
+
+      // Transform border vertices to child local coords
+      const childCellSizeX = (boundsWidth * cs) / childSizeX
+      const childCellSizeZ = (boundsDepth * cs) / childSizeZ
+      childNode.polygonBoundary = borderVertices.map(v => ({
+        x: (v.x - minX * cs) / childCellSizeX * childNode.terrain.cellSize,
+        z: (v.z - minZ * cs) / childCellSizeZ * childNode.terrain.cellSize,
+      }))
+
+      // Capture parent terrain snapshot for propagation detection
+      childNode.parentBoundsSnapshot = extractBoundsSnapshot(node.terrain, regionBoundsForChild)
 
       node.childIds.push(childNode.id)
       hw.nodes[childNode.id] = childNode
@@ -2070,6 +2472,8 @@ export function WorldPage() {
 
   const buildingObjects = getCatalogByCategory('building')
   const decorationObjects = getCatalogByCategory('decoration')
+  const propObjects = getCatalogByCategory('prop')
+  const vegetationObjects = getCatalogByCategory('vegetation')
 
   // Get selected object data for the right panel
   const selectedObj = selectedObjectIds.length === 1
@@ -2077,298 +2481,153 @@ export function WorldPage() {
     : null
 
   // Compute dock column visibility
-  const hasVisibleLeft = (['toolbox', 'locations'] as const).some(id => {
+  const hasVisibleLeft = (['explorer', 'toolbox', 'locations'] as const).some(id => {
     if (!panels[id].visible) return false
     if (id === 'toolbox' && currentLevel === 'building') return false
     return true
   })
 
-  const hasVisibleRight = (['explorer', 'properties'] as const).some(id => {
+  const hasVisibleRight = (['properties'] as const).some(id => {
     if (!panels[id].visible) return false
     return true
   })
 
+  // Build ribbon callbacks object
+  const ribbonCallbacks: RibbonCallbacks = {
+    onUndo: handleUndo,
+    onRedo: handleRedo,
+    onDuplicate: handleDuplicateSelected,
+    onDelete: handleDeleteSelected,
+    onSave: handleSave,
+    onImportHeightmap: () => heightmapInputRef.current?.click(),
+    onExportHeightmap: handleExportHeightmap,
+    onPlaceDummy: () => {
+      const pos: [number, number, number] = cameraPosRef.current ? [cameraPosRef.current[0], 0, cameraPosRef.current[2]] : [0, 0, 0]
+      handleObjectPlace(pos)
+    },
+    undoCount: undoStack.length,
+    redoCount: redoStack.length,
+    selectedCount: selectedObjectIds.length,
+    hasUnsavedChanges,
+    transformMode,
+    onTransformModeChange: setTransformMode,
+    onGenerateTerrain: handleGenerateTerrain,
+    onResetTerrain: handleResetTerrain,
+    onFlattenToGround: handleFlattenToGround,
+    onSmoothCoastlines: handleSmoothCoastlines,
+    onOpenScaleDialog: () => { setShowScaleDialog(true); setScaleVertical(1.0); setScaleHorizontal(1.0) },
+    onFinishBorder: handleFinishBorder,
+    onCancelBorder: clearBorderVertices,
+    borderVertexCount: borderVertices.length,
+    borderLabel,
+    onAddFloor: handleAddFloor,
+    hasFloors: !!currentNode?.buildingData,
+    maxFloor: currentNode?.buildingData?.floors ? Math.max(...currentNode.buildingData.floors.map(f => f.level)) : 0,
+    sunAngle,
+    sunElevation,
+    skyColor,
+    fogEnabled,
+    weatherType,
+    showSkyPicker,
+    onSunAngleChange: setSunAngle,
+    onSunElevationChange: setSunElevation,
+    onSkyColorChange: setSkyColor,
+    onWaterColorChange: setWaterColor,
+    onFogToggle: () => setFogEnabled(!fogEnabled),
+    onWeatherChange: setWeatherType,
+    onToggleSkyPicker: () => setShowSkyPicker(!showSkyPicker),
+    onScreenshot: () => {
+      const canvas = document.querySelector('canvas')
+      if (canvas) {
+        const link = document.createElement('a')
+        link.download = `world-screenshot-${Date.now()}.png`
+        link.href = canvas.toDataURL('image/png')
+        link.click()
+      }
+    },
+    onSaveLocation: () => setShowSaveLocationDialog(true),
+    onCameraPreset: (preset) => { setCameraPreset(preset); setCameraPresetCounter(c => c + 1) },
+    isPlaytesting,
+    onStartPlaytest: handleStartPlaytest,
+    onStopPlaytest: handleStopPlaytest,
+  }
+
   return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-900 to-slate-800">
+    <div className="h-screen flex flex-col bg-[#1e1e1e]">
       {/* Hidden file input for heightmap */}
       <input ref={heightmapInputRef} type="file" accept="image/png,image/jpeg" className="hidden" onChange={handleHeightmapUpload} />
 
-      {/* ── Ribbon Tab Bar ── */}
-      <div className="shrink-0 bg-gray-900 border-b border-gray-700/50">
-        <div className="flex items-center h-9 pl-12 pr-3 gap-1">
-          <div className="flex items-center gap-1.5 mr-4">
-            <Globe className="w-4 h-4 text-sky-400" />
-            <span className="text-xs font-semibold text-slate-200">World Builder</span>
-            {hasUnsavedChanges && <span className="text-xs text-amber-500">●</span>}
-          </div>
-          {(['home', 'terrain', 'build', 'environment', 'view'] as const)
-            .filter(tab => !(tab === 'terrain' && currentLevel === 'building'))
-            .map(tab => (
-            <button
-              key={tab}
-              onClick={() => setRibbonTab(tab)}
-              className={`px-4 py-1.5 text-xs font-medium rounded-t transition-colors ${
-                ribbonTab === tab
-                  ? 'bg-gray-800 text-white border-t-2 border-x border-sky-500/60 border-x-gray-700/50'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
-              }`}
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-            </button>
-          ))}
-          <div className="flex-1" />
-          {!isPlaytesting ? (
-            <button
-              onClick={handleStartPlaytest}
-              className="h-7 px-3 flex items-center gap-1.5 rounded-md bg-green-600 hover:bg-green-500 text-white text-xs font-medium transition-colors"
-            >
-              <Play className="w-3.5 h-3.5" /> Play
-            </button>
-          ) : (
-            <button
-              onClick={handleStopPlaytest}
-              className="h-7 px-3 flex items-center gap-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-medium transition-colors"
-            >
-              <Square className="w-3.5 h-3.5" /> Stop
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* ── Ribbon Content ── */}
-      {!isPlaytesting && (
-      <div className="shrink-0 bg-gray-800/90 border-b border-gray-700/50 px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto">
-
-        {/* ─── HOME TAB ─── */}
-        {ribbonTab === 'home' && (
-          <>
-            <button onClick={handleUndo} disabled={undoStack.length === 0} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300 disabled:text-gray-600" title="Undo (Ctrl+Z)"><Undo2 className="w-4 h-4" /></button>
-            <button onClick={handleRedo} disabled={redoStack.length === 0} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300 disabled:text-gray-600" title="Redo (Ctrl+Y)"><Redo2 className="w-4 h-4" /></button>
-            <button onClick={handleDuplicateSelected} disabled={selectedObjectIds.length === 0} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300 disabled:text-gray-600" title="Duplicate (Ctrl+D)"><Copy className="w-4 h-4" /></button>
-            <button onClick={handleDeleteSelected} disabled={selectedObjectIds.length === 0} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300 disabled:text-gray-600" title="Delete"><Trash2 className="w-4 h-4" /></button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button onClick={handleSave} disabled={!hasUnsavedChanges} className="h-8 px-3 flex items-center gap-1.5 rounded-md bg-sky-600 text-white text-xs font-medium hover:bg-sky-500 disabled:opacity-40"><Save className="w-4 h-4" /> Save</button>
-            <button onClick={() => heightmapInputRef.current?.click()} className="h-8 px-2.5 flex items-center gap-1 rounded-md hover:bg-gray-700 text-gray-300 text-xs" title="Import Heightmap"><Upload className="w-4 h-4" /> Import</button>
-            <button onClick={handleExportHeightmap} className="h-8 px-2.5 flex items-center gap-1 rounded-md hover:bg-gray-700 text-gray-300 text-xs" title="Export Heightmap"><Download className="w-4 h-4" /> Export</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button
-              onClick={() => setCameraMode(cameraMode === 'orbit' ? 'first-person' : 'orbit')}
-              className={`h-8 px-2.5 flex items-center gap-1 rounded-md text-xs ${cameraMode === 'first-person' ? 'bg-amber-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}
-              title="Toggle Camera (F)"
-            >
-              {cameraMode === 'orbit' ? <User className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              {cameraMode === 'orbit' ? 'First Person' : 'Orbit'}
-            </button>
-            {cameraMode === 'first-person' && (
-              <>
-                <button
-                  onClick={() => setFirstPersonSubMode(firstPersonSubMode === 'walk' ? 'fly' : 'walk')}
-                  className={`h-8 px-2.5 rounded-md text-xs ${firstPersonSubMode === 'fly' ? 'bg-amber-700/60 text-amber-200' : 'hover:bg-gray-700 text-gray-300'}`}
-                >
-                  {firstPersonSubMode === 'walk' ? 'Walk' : 'Fly'}
-                </button>
-                <input type="range" min={1} max={100} value={Math.round(firstPersonSpeed * 10)} onChange={(e) => setFirstPersonSpeed(Number(e.target.value) / 10)} className="w-20 h-1.5" title={`Speed: ${firstPersonSpeed.toFixed(1)}x`} />
-              </>
-            )}
-          </>
-        )}
-
-        {/* ─── TERRAIN TAB ─── */}
-        {ribbonTab === 'terrain' && currentLevel !== 'building' && (
-          <>
-            <button
-              onClick={() => setActiveTool('sculpt')}
-              className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'sculpt' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}
-            >
-              <Mountain className="w-4 h-4" /> Sculpt
-            </button>
-            <button
-              onClick={() => setActiveTool('paint-material')}
-              className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'paint-material' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}
-            >
-              <Paintbrush className="w-4 h-4" /> Paint
-            </button>
-            <div
-              className="w-7 h-7 rounded-md border-2 border-gray-600 cursor-pointer"
-              style={{ backgroundColor: (() => { const mat = TERRAIN_MATERIALS[materialBrush.materialId]; return mat ? `rgb(${Math.round(mat.color[0]*255)},${Math.round(mat.color[1]*255)},${Math.round(mat.color[2]*255)})` : '#888' })() }}
-              title={TERRAIN_MATERIALS[materialBrush.materialId]?.name ?? 'Material'}
-              onClick={() => setActiveTool('paint-material')}
-            />
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button
-              onClick={() => setActiveTool('cartography')}
-              className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'cartography' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}
-            >
-              <MapIcon className="w-4 h-4" /> Map
-            </button>
-            <div className="w-6 h-6 rounded border-2 border-gray-600" style={{ backgroundColor: BIOME_COLORS[cartographyBiome] ?? '#888' }} title={BIOME_LABELS[cartographyBiome]} />
-            <button onClick={handleGenerateTerrain} className="h-7 px-2 text-[11px] rounded-md hover:bg-gray-700 text-gray-300">Generate</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button onClick={handleResetTerrain} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300" title="Flatten All"><RotateCcw className="w-4 h-4" /></button>
-            <button onClick={handleFlattenToGround} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300" title="Level Ground"><Minus className="w-4 h-4" /></button>
-            <button onClick={handleSmoothCoastlines} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300" title="Smooth Coasts"><Droplets className="w-4 h-4" /></button>
-            <button onClick={() => { setShowScaleDialog(true); setScaleVertical(1.0); setScaleHorizontal(1.0) }} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300" title="Scale Map"><Scaling className="w-4 h-4" /></button>
-          </>
-        )}
-
-        {/* ─── BUILD TAB ─── */}
-        {ribbonTab === 'build' && (
-          <>
-            <button onClick={() => setActiveTool('select')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'select' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><MousePointer className="w-4 h-4" /> Select</button>
-            <button onClick={() => setActiveTool('delete')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'delete' ? 'bg-red-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><Trash2 className="w-4 h-4" /> Delete</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-
-            {/* Objects (country/city) */}
-            {currentLevel !== 'world' && currentLevel !== 'building' && (
-              <>
-                <button onClick={() => setActiveTool('place-object')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'place-object' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><Package className="w-4 h-4" /> Objects</button>
-                <div className="w-px h-7 bg-gray-700/50 mx-1" />
-              </>
-            )}
-
-            {/* Regions (world/country/city) */}
-            {currentLevel !== 'building' && (
-              <>
-                <button onClick={() => setActiveTool('draw-border')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'draw-border' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><Pentagon className="w-4 h-4" /> {borderLabel}</button>
-                <input type="color" value={borderColor} onChange={e => setBorderColor(e.target.value)} className="w-7 h-7 rounded-md border border-gray-600 bg-transparent cursor-pointer" title="Border color" />
-                {borderVertices.length > 0 && (
-                  <>
-                    <button onClick={handleFinishBorder} disabled={borderVertices.length < 3} className="h-8 px-2.5 text-xs rounded-md bg-sky-600 text-white disabled:opacity-40">Finish</button>
-                    <button onClick={clearBorderVertices} className="h-8 px-2.5 text-xs rounded-md hover:bg-gray-700 text-gray-400">Cancel</button>
-                  </>
-                )}
-                <div className="w-px h-7 bg-gray-700/50 mx-1" />
-              </>
-            )}
-
-            {/* City tools */}
-            {currentLevel === 'city' && (
-              <>
-                <button onClick={() => setActiveTool('draw-lot')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'draw-lot' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><LayoutGrid className="w-4 h-4" /> Lot</button>
-                <button onClick={() => setActiveTool('draw-road')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'draw-road' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><Route className="w-4 h-4" /> Road</button>
-                <div className="w-px h-7 bg-gray-700/50 mx-1" />
-              </>
-            )}
-
-            {/* Building tools */}
-            {currentLevel === 'building' && (
-              <>
-                <button onClick={() => setActiveTool('place-wall')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'place-wall' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><Square className="w-4 h-4" /> Wall</button>
-                <button onClick={() => setActiveTool('place-door')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'place-door' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><DoorOpen className="w-4 h-4" /> Door</button>
-                <button onClick={() => setActiveTool('paint-floor')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'paint-floor' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><PaintBucket className="w-4 h-4" /> Floor</button>
-                <button onClick={() => setActiveTool('place-furniture')} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${activeTool === 'place-furniture' ? 'bg-sky-600 text-white' : 'hover:bg-gray-700 text-gray-300'}`}><Armchair className="w-4 h-4" /> Furnish</button>
-                {currentNode?.buildingData && (
-                  <>
-                    <div className="w-px h-7 bg-gray-700/50 mx-1" />
-                    <button onClick={() => setActiveFloor(Math.max(0, activeFloor - 1))} disabled={activeFloor === 0} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300 disabled:text-gray-600"><ChevronDown className="w-4 h-4" /></button>
-                    <span className="text-xs text-gray-300 px-1">Floor {activeFloor}</span>
-                    <button onClick={() => setActiveFloor(activeFloor + 1)} disabled={!currentNode.buildingData!.floors.some(f => f.level > activeFloor)} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300 disabled:text-gray-600"><ChevronUp className="w-4 h-4" /></button>
-                    <button onClick={handleAddFloor} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-gray-700 text-gray-300" title="Add floor"><Plus className="w-4 h-4" /></button>
-                  </>
-                )}
-              </>
-            )}
-
-            {/* Toolbox button - opens object library panel */}
-            {currentLevel !== 'building' && (
-              <>
-                <div className="w-px h-7 bg-gray-700/50 mx-1" />
-                <button
-                  onClick={() => { setActiveTool('place-object'); setPanelVisible('toolbox', !panels.toolbox.visible) }}
-                  className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium ${panels.toolbox.visible ? 'bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'}`}
-                >
-                  <Package className="w-4 h-4" /> Toolbox
-                </button>
-              </>
-            )}
-          </>
-        )}
-
-        {/* ─── ENVIRONMENT TAB ─── */}
-        {ribbonTab === 'environment' && (
-          <>
-            <Sun className="w-4 h-4 text-amber-400 shrink-0" />
-            <span className="text-[10px] text-gray-500">Dir</span>
-            <input type="range" min={0} max={360} value={sunAngle} onChange={(e) => setSunAngle(Number(e.target.value))} className="w-24 h-1.5" title={`Direction: ${sunAngle}°`} />
-            <span className="text-[10px] text-gray-400 w-7">{sunAngle}°</span>
-            <span className="text-[10px] text-gray-500">Elev</span>
-            <input type="range" min={5} max={85} value={sunElevation} onChange={(e) => setSunElevation(Number(e.target.value))} className="w-24 h-1.5" title={`Elevation: ${sunElevation}°`} />
-            <span className="text-[10px] text-gray-400 w-7">{sunElevation}°</span>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            {[
-              { label: 'Dawn', angle: 80, el: 12 },
-              { label: 'Morning', angle: 120, el: 35 },
-              { label: 'Noon', angle: 160, el: 75 },
-              { label: 'Dusk', angle: 260, el: 12 },
-            ].map(preset => (
-              <button key={preset.label} onClick={() => { setSunAngle(preset.angle); setSunElevation(preset.el) }} className="h-8 px-2.5 text-xs rounded-md hover:bg-gray-700 text-gray-300">{preset.label}</button>
-            ))}
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button disabled className="h-8 px-2.5 flex items-center gap-1 rounded-md text-xs text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon"><Cloud className="w-4 h-4" /> Sky</button>
-            <button disabled className="h-8 px-2.5 flex items-center gap-1 rounded-md text-xs text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon"><CloudFog className="w-4 h-4" /> Fog</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            {[
-              { label: 'Clear', icon: Sun },
-              { label: 'Cloudy', icon: Cloud },
-              { label: 'Rain', icon: CloudRain },
-              { label: 'Snow', icon: Snowflake },
-              { label: 'Fog', icon: CloudFog },
-            ].map(w => (
-              <button key={w.label} disabled className="h-8 w-8 flex items-center justify-center rounded-md text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon"><w.icon className="w-4 h-4" /></button>
-            ))}
-          </>
-        )}
-
-        {/* ─── VIEW TAB ─── */}
-        {ribbonTab === 'view' && (
-          <>
-            {/* Panel toggles */}
-            <button onClick={() => setPanelVisible('explorer', !panels.explorer.visible)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${panels.explorer.visible ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><Flag className="w-4 h-4" /> Explorer</button>
-            <button onClick={() => setPanelVisible('toolbox', !panels.toolbox.visible)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${panels.toolbox.visible ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><Package className="w-4 h-4" /> Toolbox</button>
-            <button onClick={() => setPanelVisible('properties', !panels.properties.visible)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${panels.properties.visible ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><MousePointer className="w-4 h-4" /> Properties</button>
-            <button onClick={() => setPanelVisible('locations', !panels.locations.visible)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${panels.locations.visible ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><MapPin className="w-4 h-4" /> Locations</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button onClick={() => setShowGrid(!showGrid)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${showGrid ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><Grid3x3 className="w-4 h-4" /> Grid</button>
-            <button onClick={() => setShowWater(!showWater)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${showWater ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><Waves className="w-4 h-4" /> Water</button>
-            <button onClick={() => setShowWireframe(!showWireframe)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${showWireframe ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><Box className="w-4 h-4" /> Wireframe</button>
-            <button onClick={() => setShowMiniMap(!showMiniMap)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${showMiniMap ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><MapIcon className="w-4 h-4" /> Mini-Map</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button onClick={() => setShowBorders(!showBorders)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${showBorders ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><Pentagon className="w-4 h-4" /> Borders</button>
-            <button onClick={() => setShowLots(!showLots)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${showLots ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><LayoutGrid className="w-4 h-4" /> Lots</button>
-            <button onClick={() => setShowRoads(!showRoads)} className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs ${showRoads ? 'bg-sky-700/50 text-sky-200' : 'hover:bg-gray-700 text-gray-300'}`}><Route className="w-4 h-4" /> Roads</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button onClick={() => setShowSaveLocationDialog(true)} className="h-8 px-2.5 flex items-center gap-1 rounded-md text-xs hover:bg-gray-700 text-gray-300"><Camera className="w-4 h-4" /> Save Loc</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button disabled className="h-8 px-2.5 text-xs rounded-md text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon">Top</button>
-            <button disabled className="h-8 px-2.5 text-xs rounded-md text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon">Front</button>
-            <button disabled className="h-8 px-2.5 text-xs rounded-md text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon">Side</button>
-            <button disabled className="h-8 px-2.5 text-xs rounded-md text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon">Persp</button>
-            <div className="w-px h-7 bg-gray-700/50 mx-1" />
-            <button disabled className="h-8 px-2.5 flex items-center gap-1 rounded-md text-xs text-gray-500 opacity-40 cursor-not-allowed" title="Coming Soon"><MonitorUp className="w-4 h-4" /> Screenshot</button>
-          </>
-        )}
-      </div>
-      )}
+      {/* ── Ribbon ── */}
+      <RibbonBar
+        ribbonTab={ribbonTab}
+        onTabChange={setRibbonTab}
+        currentLevel={currentLevel}
+        callbacks={ribbonCallbacks}
+      />
 
       {/* Main Area — flex layout with dock columns */}
-      <div className="flex-1 overflow-hidden flex">
+      <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="flex-1 overflow-hidden flex">
 
-        {/* Left dock */}
+        {/* Left dock — Explorer + Toolbox + Locations */}
         {!isPlaytesting && hasVisibleLeft && (
           <>
             <DockColumn side="left" width={leftDockWidth}>
+              {/* Explorer (moved to left) */}
+              <DockPanel id="explorer" title="Explorer" icon={<Globe className="w-3.5 h-3.5 text-[#4da6ff]" />}>
+                <ExplorerTree
+                  objects={world.objects}
+                  childRegions={childRegions}
+                  childLevel={getChildLevel(currentLevel)}
+                  currentLevel={currentLevel}
+                  selectedObjectIds={selectedObjectIds}
+                  polygonBorders={currentNode?.polygonBorders}
+                  selectedExplorerItem={explorerSelection}
+                  onSelectObject={(id, additive) => {
+                    setExplorerSelection(null)
+                    if (additive) {
+                      if (selectedObjectIds.includes(id)) {
+                        useWorldBuilderStore.getState().removeFromSelection(id)
+                      } else {
+                        addToSelection(id)
+                      }
+                    } else {
+                      selectObject(id)
+                    }
+                  }}
+                  onDeleteObject={(ids) => {
+                    if (!world) return
+                    const updatedObjects = world.objects.filter((obj) => !ids.includes(obj.id))
+                    setWorld({ ...world, objects: updatedObjects, updatedAt: new Date() })
+                    const currentSel = useWorldBuilderStore.getState().selectedObjectIds
+                    const newSel = currentSel.filter((id) => !ids.includes(id))
+                    if (newSel.length !== currentSel.length) useWorldBuilderStore.getState().setSelection(newSel)
+                    setHasUnsavedChanges(true)
+                  }}
+                  onEnterRegion={handleEnterNode}
+                  onDeleteBorder={handleDeleteBorder}
+                  onDrawBorder={() => setActiveTool('draw-border')}
+                  onSelectTerrain={() => {
+                    clearSelection()
+                    setExplorerSelection('terrain')
+                    setActiveTool('sculpt')
+                  }}
+                />
+              </DockPanel>
               <DockPanel id="toolbox" title="Toolbox" icon={<Package className="w-3.5 h-3.5 text-green-400" />} autoHide={currentLevel === 'building'}>
-                <div className="p-3 space-y-2">
+                <div className="p-2 space-y-2 max-h-[400px] overflow-y-auto">
                   <input
                     type="text"
                     value={toolboxSearch}
                     onChange={(e) => setToolboxSearch(e.target.value)}
                     placeholder="Search objects..."
-                    className="w-full bg-gray-800 text-xs border border-gray-700 rounded-md px-2 py-1.5 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                    className="w-full bg-[#1e1e1e] text-xs border border-[#3d3d3d] rounded px-2 py-1.5 text-[#ccc] placeholder:text-[#666] focus:outline-none focus:border-[#0066cc]"
                   />
                   {[
                     { label: 'Buildings', items: buildingObjects },
                     { label: 'Decorations', items: decorationObjects },
+                    { label: 'Props', items: propObjects },
+                    { label: 'Vegetation', items: vegetationObjects },
                   ].map((group) => {
                     const filtered = toolboxSearch
                       ? group.items.filter(e => e.name.toLowerCase().includes(toolboxSearch.toLowerCase()))
@@ -2376,8 +2635,8 @@ export function WorldPage() {
                     if (filtered.length === 0) return null
                     return (
                       <div key={group.label}>
-                        <label className="text-[10px] text-gray-500 mb-1 block">{group.label}</label>
-                        <div className="grid grid-cols-3 gap-1">
+                        <label className="text-[9px] text-[#666] mb-0.5 block">{group.label}</label>
+                        <div className="grid grid-cols-2 gap-0.5">
                           {filtered.map((entry) => (
                             <button
                               key={entry.type}
@@ -2385,16 +2644,13 @@ export function WorldPage() {
                                 setSelectedObjectType(selectedObjectType === entry.type ? null : entry.type)
                                 setActiveTool('place-object')
                               }}
-                              className={`py-2 px-1 text-[10px] rounded-md border transition-colors flex flex-col items-center gap-1 ${
+                              className={`py-1.5 px-1 text-[9px] rounded border transition-colors flex flex-col items-center gap-0.5 ${
                                 selectedObjectType === entry.type
-                                  ? 'border-sky-500 bg-sky-900/40 text-sky-300'
-                                  : 'border-gray-700 text-gray-400 hover:bg-gray-800'
+                                  ? 'border-[#0066cc] bg-[#0066cc]/20 text-[#4da6ff]'
+                                  : 'border-[#3d3d3d] text-[#999] hover:bg-[#383838]'
                               }`}
                             >
-                              <div
-                                className="w-7 h-7 rounded-md"
-                                style={{ backgroundColor: entry.defaultColor }}
-                              />
+                              <div className="w-6 h-6 rounded" style={{ backgroundColor: entry.defaultColor }} />
                               <span className="truncate w-full text-center">{entry.name}</span>
                             </button>
                           ))}
@@ -2404,26 +2660,26 @@ export function WorldPage() {
                   })}
                 </div>
               </DockPanel>
-              <DockPanel id="locations" title="Locations" icon={<MapPin className="w-3.5 h-3.5 text-sky-400" />}>
-                <div className="p-3">
+              <DockPanel id="locations" title="Locations" icon={<MapPin className="w-3.5 h-3.5 text-[#4da6ff]" />}>
+                <div className="p-2">
                   {(!world?.locations || world.locations.length === 0) ? (
-                    <p className="text-[10px] text-gray-600">
-                      No locations saved yet. Use &quot;Save Location&quot; to bookmark camera positions for use in scenes.
+                    <p className="text-[9px] text-[#666]">
+                      No locations saved yet. Use &quot;Save Location&quot; to bookmark camera positions.
                     </p>
                   ) : (
-                    <ul className="space-y-1">
+                    <ul className="space-y-0.5">
                       {world.locations.map((loc) => (
                         <li
                           key={loc.id}
-                          className="group flex items-center justify-between p-1.5 rounded bg-gray-800/50 text-[10px] text-gray-300"
+                          className="group flex items-center justify-between p-1.5 rounded bg-[#1e1e1e] text-[10px] text-[#ccc]"
                         >
                           <div className="flex items-center gap-1.5">
-                            <Camera className="w-3 h-3 text-gray-500" />
+                            <Camera className="w-3 h-3 text-[#666]" />
                             <span className="truncate max-w-[120px]">{loc.name}</span>
                           </div>
                           <button
                             onClick={() => handleDeleteLocation(loc.id)}
-                            className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity"
+                            className="opacity-0 group-hover:opacity-100 text-[#666] hover:text-red-400 transition-opacity"
                             title="Delete location"
                           >
                             <X className="w-3 h-3" />
@@ -2434,7 +2690,7 @@ export function WorldPage() {
                   )}
                   <button
                     onClick={() => setShowSaveLocationDialog(true)}
-                    className="mt-2 w-full py-1.5 text-[10px] rounded border border-gray-700 text-gray-400 hover:bg-gray-800 flex items-center justify-center gap-1"
+                    className="mt-2 w-full py-1.5 text-[9px] rounded border border-[#3d3d3d] text-[#999] hover:bg-[#383838] flex items-center justify-center gap-1"
                   >
                     <MapPin className="w-3 h-3" /> Save Current Location
                   </button>
@@ -2497,9 +2753,14 @@ export function WorldPage() {
               onObjectPlace={handleObjectPlace}
               onObjectSelect={handleObjectSelect}
               onObjectMove={handleObjectMove}
+              onObjectMoveEnd={handleObjectMoveEnd}
               onCameraUpdate={handleCameraUpdate}
               sunAngle={sunAngle}
               sunElevation={sunElevation}
+              skyColor={skyColor}
+              fogEnabled={fogEnabled}
+              weatherType={weatherType}
+              waterColor={waterColor}
               childRegions={childRegions.map((child) => {
                 // Find linked border polygon for this child region
                 const linkedBorder = currentNode?.polygonBorders?.find(b => b.linkedChildId === child.id)
@@ -2535,6 +2796,7 @@ export function WorldPage() {
               }}
 
               currentLevel={currentLevel}
+              polygonBoundary={currentNode?.polygonBoundary}
               polygonBorders={currentNode?.polygonBorders}
               showBorders={showBorders}
               borderDrawMode={borderDrawMode}
@@ -2559,6 +2821,9 @@ export function WorldPage() {
               onWallClick={activeTool === 'place-door' ? handleDoorClick : handleWallClick}
               onFloorPaint={handleFloorPaint}
               onFurniturePlace={handleFurniturePlace}
+              transformMode={transformMode}
+              cameraPreset={cameraPreset}
+              cameraPresetCounter={cameraPresetCounter}
             />
           </div>
 
@@ -2610,7 +2875,7 @@ export function WorldPage() {
           </div>
 
           {/* Status bar */}
-          <div className="absolute bottom-0 left-0 right-0 bg-gray-900/80 text-[10px] text-gray-400 px-3 py-1 flex items-center gap-4 pointer-events-none">
+          <div className="absolute bottom-0 left-0 right-0 bg-[#1e1e1e]/90 text-[10px] text-[#999] px-3 py-1 flex items-center gap-4 pointer-events-none">
             <span>{fps} FPS</span>
             {cursorGridPos && (
               <span>Grid: ({cursorGridPos.x}, {cursorGridPos.z})</span>
@@ -2640,791 +2905,48 @@ export function WorldPage() {
 
         </div>{/* end viewport */}
 
-        {/* Right dock */}
+        {/* Right dock — Properties only */}
         {!isPlaytesting && hasVisibleRight && (
           <>
             <DockResizeHandle side="right" currentWidth={rightDockWidth} onWidthChange={setRightDockWidth} />
             <DockColumn side="right" width={rightDockWidth}>
-
-          {/* ── Explorer Panel (scene tree) ── */}
-          <DockPanel id="explorer" title="Explorer" icon={<Globe className="w-3.5 h-3.5 text-sky-400" />}>
-            <ExplorerTree
-              objects={world.objects}
-              childRegions={childRegions}
-              childLevel={getChildLevel(currentLevel)}
-              currentLevel={currentLevel}
-              selectedObjectIds={selectedObjectIds}
-              polygonBorders={currentNode?.polygonBorders}
-              onSelectObject={(id, additive) => {
-                if (additive) addToSelection(id)
-                else selectObject(id)
-              }}
-              onDeleteObject={(ids) => {
-                if (!world) return
-                const updatedObjects = world.objects.filter((obj) => !ids.includes(obj.id))
-                setWorld({ ...world, objects: updatedObjects, updatedAt: new Date() })
-                const currentSel = useWorldBuilderStore.getState().selectedObjectIds
-                const newSel = currentSel.filter((id) => !ids.includes(id))
-                if (newSel.length !== currentSel.length) useWorldBuilderStore.getState().setSelection(newSel)
-                setHasUnsavedChanges(true)
-              }}
-              onEnterRegion={handleEnterNode}
-              onDeleteBorder={handleDeleteBorder}
-              onDrawBorder={() => setActiveTool('draw-border')}
-            />
-          </DockPanel>
-
-          {/* ── Properties Panel ── */}
-          <DockPanel id="properties" title="Properties" icon={<MousePointer className="w-3.5 h-3.5 text-sky-400" />}>
-
-          {/* Selected object properties — always visible when something is selected */}
-          {selectedObj && (
-            <div className="p-3 space-y-2.5 border-b border-gray-700/50">
-              {/* Type & Name */}
-              <div>
-                <label className="text-[10px] text-gray-500 block mb-0.5">Type</label>
-                <span className="text-xs text-gray-200">
-                  {OBJECT_CATALOG[selectedObj.type]?.name ?? selectedObj.type}
-                </span>
-              </div>
-              <div>
-                <label className="text-[10px] text-gray-500 block mb-0.5">Name</label>
-                <input
-                  type="text"
-                  value={selectedObj.name ?? ''}
-                  placeholder={OBJECT_CATALOG[selectedObj.type]?.name ?? 'Unnamed'}
-                  onChange={(e) => handleObjectUpdate(selectedObj.id, { name: e.target.value || undefined })}
-                  className="w-full bg-gray-800 text-[10px] border border-gray-700 rounded px-1.5 py-1 text-gray-200"
+              <DockPanel id="properties" title="Properties" icon={<MousePointer className="w-3.5 h-3.5 text-[#4da6ff]" />}>
+                <PropertiesPanel
+                  objects={world.objects}
+                  terrain={world.terrain}
+                  onObjectUpdate={handleObjectUpdate}
+                  onObjectColorChange={handleObjectColorChange}
+                  onDuplicate={handleDuplicateSelected}
+                  onDelete={handleDeleteSelected}
+                  onTerrainUpdate={handleTerrainUpdate}
+                  onAutoMaterialPaint={handleAutoMaterialPaint}
+                  borderLabel={borderLabel}
+                  borderVertexCount={borderVertices.length}
+                  onFinishBorder={handleFinishBorder}
+                  onCancelBorder={clearBorderVertices}
+                  currentNode={currentNode}
+                  onDeleteLot={handleDeleteLot}
+                  onFinishRoad={handleFinishRoad}
+                  onDeleteRoad={handleDeleteRoad}
+                  cartographyBiome={cartographyBiome}
+                  cartographyBrushSize={cartographyBrushSize}
+                  cartographySettings={cartographySettings}
+                  onBiomeChange={setCartographyBiome}
+                  onBrushSizeChange={setCartographyBrushSize}
+                  onSettingsChange={setCartographySettings}
+                  onCartographyGenerate={handleGenerateTerrain}
+                  onCartographyClear={handleCartographyClear}
+                  onCartographyFillAll={handleCartographyFillAll}
                 />
-              </div>
-
-              {/* Position */}
-              <div>
-                <label className="text-[10px] text-gray-500 block mb-0.5">Position</label>
-                <div className="flex gap-1">
-                  {['X', 'Y', 'Z'].map((axis, i) => (
-                    <div key={axis} className="flex-1">
-                      <label className="text-[8px] text-gray-600 block text-center">{axis}</label>
-                      <input
-                        type="number"
-                        step={0.5}
-                        value={Number(selectedObj.position[i].toFixed(1))}
-                        onChange={(e) => {
-                          const newPos = [...selectedObj.position] as [number, number, number]
-                          newPos[i] = Number(e.target.value) || 0
-                          handleObjectUpdate(selectedObj.id, { position: newPos })
-                        }}
-                        className="w-full bg-gray-800 text-[10px] border border-gray-700 rounded px-1 py-0.5 text-center text-gray-300"
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Rotation */}
-              <div>
-                <label className="text-[10px] text-gray-500 block mb-0.5">Rotation (deg)</label>
-                <div className="flex gap-1">
-                  {['X', 'Y', 'Z'].map((axis, i) => (
-                    <div key={axis} className="flex-1">
-                      <label className="text-[8px] text-gray-600 block text-center">{axis}</label>
-                      <input
-                        type="number"
-                        step={5}
-                        value={Math.round(selectedObj.rotation[i] * 180 / Math.PI)}
-                        onChange={(e) => {
-                          const newRot = [...selectedObj.rotation] as [number, number, number]
-                          newRot[i] = (Number(e.target.value) || 0) * Math.PI / 180
-                          handleObjectUpdate(selectedObj.id, { rotation: newRot })
-                        }}
-                        className="w-full bg-gray-800 text-[10px] border border-gray-700 rounded px-1 py-0.5 text-center text-gray-300"
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Scale */}
-              <div>
-                <label className="text-[10px] text-gray-500 block mb-0.5">Scale</label>
-                <div className="flex gap-1">
-                  {['X', 'Y', 'Z'].map((axis, i) => (
-                    <div key={axis} className="flex-1">
-                      <label className="text-[8px] text-gray-600 block text-center">{axis}</label>
-                      <input
-                        type="number"
-                        step={0.1}
-                        min={0.01}
-                        value={Number(selectedObj.scale[i].toFixed(2))}
-                        onChange={(e) => {
-                          const newScale = [...selectedObj.scale] as [number, number, number]
-                          newScale[i] = Math.max(0.01, Number(e.target.value) || 1)
-                          handleObjectUpdate(selectedObj.id, { scale: newScale })
-                        }}
-                        className="w-full bg-gray-800 text-[10px] border border-gray-700 rounded px-1 py-0.5 text-center text-gray-300"
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Color */}
-              <div>
-                <label className="text-[10px] text-gray-500 block mb-0.5">Color</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={selectedObj.color}
-                    onChange={(e) => handleObjectColorChange(selectedObj.id, e.target.value)}
-                    className="w-8 h-6 rounded border border-gray-600 cursor-pointer bg-transparent"
-                  />
-                  <span className="text-[10px] text-gray-400 font-mono">{selectedObj.color}</span>
-                </div>
-              </div>
-
-              {/* Lock & Visibility */}
-              <div className="flex gap-1">
-                <button
-                  onClick={() => handleObjectUpdate(selectedObj.id, { locked: !selectedObj.locked })}
-                  className={`flex-1 py-1 text-[10px] rounded border flex items-center justify-center gap-1 ${
-                    selectedObj.locked
-                      ? 'border-amber-600 bg-amber-900/30 text-amber-300'
-                      : 'border-gray-700 text-gray-400 hover:bg-gray-800'
-                  }`}
-                >
-                  {selectedObj.locked ? <Lock className="w-3 h-3" /> : <UnlockIcon className="w-3 h-3" />}
-                  {selectedObj.locked ? 'Locked' : 'Lock'}
-                </button>
-                <button
-                  onClick={() => handleObjectUpdate(selectedObj.id, { visible: !selectedObj.visible })}
-                  className={`flex-1 py-1 text-[10px] rounded border flex items-center justify-center gap-1 ${
-                    !selectedObj.visible
-                      ? 'border-gray-600 bg-gray-800 text-gray-500'
-                      : 'border-gray-700 text-gray-400 hover:bg-gray-800'
-                  }`}
-                >
-                  {selectedObj.visible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                  {selectedObj.visible ? 'Visible' : 'Hidden'}
-                </button>
-              </div>
-
-              {/* Actions */}
-              <div className="flex gap-1">
-                <button
-                  onClick={handleDuplicateSelected}
-                  className="flex-1 py-1.5 text-[10px] rounded border border-gray-700 text-gray-300 hover:bg-gray-800 flex items-center justify-center gap-1"
-                >
-                  <Copy className="w-3 h-3" /> Duplicate
-                </button>
-                <button
-                  onClick={handleDeleteSelected}
-                  className="flex-1 py-1.5 text-[10px] rounded border border-red-700 text-red-400 hover:bg-red-900/30 flex items-center justify-center gap-1"
-                >
-                  <Trash2 className="w-3 h-3" /> Delete
-                </button>
-              </div>
-            </div>
-          )}
-          {!selectedObj && selectedObjectIds.length > 1 && (
-            <div className="p-3 border-b border-gray-700/50 space-y-2">
-              <p className="text-[10px] text-gray-400">
-                {selectedObjectIds.length} objects selected
-              </p>
-              <div className="flex gap-1">
-                <button
-                  onClick={handleDuplicateSelected}
-                  className="flex-1 py-1.5 text-[10px] rounded border border-gray-700 text-gray-300 hover:bg-gray-800 flex items-center justify-center gap-1"
-                >
-                  <Copy className="w-3 h-3" /> Duplicate
-                </button>
-                <button
-                  onClick={handleDeleteSelected}
-                  className="flex-1 py-1.5 text-[10px] rounded border border-red-700 text-red-400 hover:bg-red-900/30 flex items-center justify-center gap-1"
-                >
-                  <Trash2 className="w-3 h-3" /> Delete
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Camera settings (first-person mode) */}
-          {cameraMode === 'first-person' && (
-            <div className="p-3 space-y-3 border-b border-gray-700/50">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Eye className="w-3.5 h-3.5 text-amber-400" /> Camera
-              </h3>
-              <div>
-                <label className="text-[10px] text-gray-500 mb-1 block">Mode</label>
-                <div className="flex gap-1">
-                  {(['walk', 'fly'] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => setFirstPersonSubMode(mode)}
-                      className={`flex-1 py-1 text-[10px] rounded border ${
-                        firstPersonSubMode === mode
-                          ? 'border-amber-500 bg-amber-900/40 text-amber-300'
-                          : 'border-gray-700 text-gray-400'
-                      }`}
-                    >
-                      {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="text-[10px] text-gray-500 flex justify-between">
-                  <span>Speed</span><span>{firstPersonSpeed.toFixed(1)}x</span>
-                </label>
-                <input
-                  type="range"
-                  min={1}
-                  max={100}
-                  value={Math.round(firstPersonSpeed * 10)}
-                  onChange={(e) => setFirstPersonSpeed(Number(e.target.value) / 10)}
-                  className="w-full h-1 mt-1"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Sculpt settings */}
-          {activeTool === 'sculpt' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Mountain className="w-3.5 h-3.5" /> Sculpt Brush
-              </h3>
-              <div className="grid grid-cols-2 gap-1">
-                {sculptBrushTypes.map((b) => (
-                  <button
-                    key={b.type}
-                    onClick={() => setSculptBrushType(b.type)}
-                    className={`py-1.5 text-[10px] rounded border transition-colors ${
-                      sculptBrush.type === b.type
-                        ? 'border-sky-500 bg-sky-900/40 text-sky-300'
-                        : 'border-gray-700 text-gray-400 hover:bg-gray-800'
-                    }`}
-                  >
-                    {b.label}
-                  </button>
-                ))}
-              </div>
-              <div>
-                <label className="text-[10px] text-gray-500 flex justify-between">
-                  <span>Size</span><span>{sculptBrush.size}</span>
-                </label>
-                <input
-                  type="range"
-                  min={1}
-                  max={64}
-                  value={sculptBrush.size}
-                  onChange={(e) => setSculptBrushSize(Number(e.target.value))}
-                  className="w-full h-1 mt-1"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-gray-500 flex justify-between">
-                  <span>Strength</span><span>{Math.round(sculptBrush.strength * 100)}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={5}
-                  max={100}
-                  value={Math.round(sculptBrush.strength * 100)}
-                  onChange={(e) => setSculptBrushStrength(Number(e.target.value) / 100)}
-                  className="w-full h-1 mt-1"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-gray-500 mb-1 block">Falloff</label>
-                <div className="flex gap-1">
-                  {(['linear', 'smooth', 'constant'] as const).map((f) => (
-                    <button
-                      key={f}
-                      onClick={() => setSculptBrushFalloff(f)}
-                      className={`flex-1 py-1 text-[10px] rounded border ${
-                        sculptBrush.falloff === f
-                          ? 'border-sky-500 bg-sky-900/40 text-sky-300'
-                          : 'border-gray-700 text-gray-400'
-                      }`}
-                    >
-                      {f}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {(() => {
-                // Derive land height and ocean depth from maxHeight + seaLevel
-                const oceanDepth = Math.round(world.terrain.seaLevel * world.terrain.maxHeight)
-                const landHeight = Math.round((1 - world.terrain.seaLevel) * world.terrain.maxHeight)
-
-                const updateHeights = (newLand: number, newOcean: number) => {
-                  const total = newLand + newOcean
-                  const newSeaLevel = total > 0 ? newOcean / total : 0
-                  const newTerrain = { ...world.terrain, maxHeight: total, seaLevel: newSeaLevel }
-                  setWorld({ ...world, terrain: newTerrain, updatedAt: new Date() })
-                  setHasUnsavedChanges(true)
-                }
-
-                return (
-                  <>
-                    <div>
-                      <label className="text-[10px] text-gray-500 flex justify-between">
-                        <span>Land Height</span><span>{landHeight}</span>
-                      </label>
-                      <input
-                        type="range"
-                        min={10}
-                        max={2000}
-                        step={10}
-                        value={landHeight}
-                        onChange={(e) => updateHeights(Number(e.target.value), oceanDepth)}
-                        className="w-full h-1 mt-1"
-                      />
-                      <div className="flex gap-1 mt-1">
-                        {[50, 100, 300, 500, 1000].map((v) => (
-                          <button
-                            key={v}
-                            onClick={() => updateHeights(v, oceanDepth)}
-                            className={`flex-1 py-0.5 text-[9px] rounded border ${
-                              landHeight === v
-                                ? 'border-sky-500 bg-sky-900/40 text-sky-300'
-                                : 'border-gray-700 text-gray-500 hover:bg-gray-800'
-                            }`}
-                          >
-                            {v}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-gray-500 flex justify-between">
-                        <span>Ocean Depth</span><span>{oceanDepth}</span>
-                      </label>
-                      <input
-                        type="range"
-                        min={0}
-                        max={1000}
-                        step={10}
-                        value={oceanDepth}
-                        onChange={(e) => updateHeights(landHeight, Number(e.target.value))}
-                        className="w-full h-1 mt-1"
-                      />
-                      <div className="flex gap-1 mt-1">
-                        {[0, 20, 50, 100, 300].map((v) => (
-                          <button
-                            key={v}
-                            onClick={() => updateHeights(landHeight, v)}
-                            className={`flex-1 py-0.5 text-[9px] rounded border ${
-                              oceanDepth === v
-                                ? 'border-sky-500 bg-sky-900/40 text-sky-300'
-                                : 'border-gray-700 text-gray-500 hover:bg-gray-800'
-                            }`}
-                          >
-                            {v === 0 ? 'None' : v}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )
-              })()}
-              {/* Terrain stats */}
-              <div className="pt-2 border-t border-gray-800">
-                <label className="text-[10px] text-gray-500 mb-1 block">Terrain Stats</label>
-                {(() => {
-                  const h = world.terrain.heights
-                  let min = 1, max = 0, sum = 0, aboveWater = 0
-                  for (let i = 0; i < h.length; i++) {
-                    if (h[i] < min) min = h[i]
-                    if (h[i] > max) max = h[i]
-                    sum += h[i]
-                    if (h[i] >= world.terrain.seaLevel) aboveWater++
-                  }
-                  const avg = sum / h.length
-                  const landPct = Math.round((aboveWater / h.length) * 100)
-                  return (
-                    <div className="text-[9px] text-gray-600 space-y-0.5">
-                      <div className="flex justify-between"><span>Min height</span><span>{(min * world.terrain.maxHeight).toFixed(0)}</span></div>
-                      <div className="flex justify-between"><span>Max height</span><span>{(max * world.terrain.maxHeight).toFixed(0)}</span></div>
-                      <div className="flex justify-between"><span>Avg height</span><span>{(avg * world.terrain.maxHeight).toFixed(0)}</span></div>
-                      <div className="flex justify-between"><span>Land / Water</span><span>{landPct}% / {100 - landPct}%</span></div>
-                      <div className="flex justify-between"><span>Vertices</span><span>{(world.terrain.size * world.terrain.sizeZ).toLocaleString()}</span></div>
-                    </div>
-                  )
-                })()}
-              </div>
-            </div>
-          )}
-
-          {/* Material paint settings */}
-          {activeTool === 'paint-material' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Paintbrush className="w-3.5 h-3.5" /> Material Paint
-              </h3>
-              <div>
-                <label className="text-[10px] text-gray-500 flex justify-between">
-                  <span>Brush Size</span><span>{materialBrush.size}</span>
-                </label>
-                <input
-                  type="range"
-                  min={1}
-                  max={64}
-                  value={materialBrush.size}
-                  onChange={(e) => setMaterialBrushSize(Number(e.target.value))}
-                  className="w-full h-1 mt-1"
-                />
-              </div>
-              <button
-                onClick={() => {
-                  if (!confirm("Auto-paint entire terrain based on height? This replaces all materials.")) return
-                  applyMaterialBrush(world.terrain, 0, 0, { ...materialBrush, type: 'auto-paint' })
-                  setWorld({ ...world, updatedAt: new Date() })
-                  setHasUnsavedChanges(true)
-                }}
-                className="w-full py-1.5 text-[10px] rounded border border-sky-700 text-sky-300 hover:bg-sky-900/30"
-              >
-                Auto-Paint by Height
-              </button>
-              {[
-                { label: 'Natural', materials: naturalMaterials },
-                { label: 'Urban', materials: urbanMaterials },
-                { label: 'Fantasy', materials: fantasyMaterials },
-              ].map((group) => (
-                <div key={group.label}>
-                  <label className="text-[10px] text-gray-500 mb-1 block">{group.label}</label>
-                  <div className="grid grid-cols-5 gap-1">
-                    {group.materials.map((mat) => (
-                      <button
-                        key={mat.id}
-                        onClick={() => setMaterialBrushMaterial(mat.id)}
-                        className={`aspect-square rounded border-2 transition-all ${
-                          materialBrush.materialId === mat.id
-                            ? 'border-white scale-110'
-                            : 'border-transparent hover:border-gray-500'
-                        }`}
-                        style={{
-                          backgroundColor: `rgb(${Math.round(mat.color[0] * 255)}, ${Math.round(mat.color[1] * 255)}, ${Math.round(mat.color[2] * 255)})`,
-                        }}
-                        title={mat.name}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Delete tool */}
-          {activeTool === 'delete' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Trash2 className="w-3.5 h-3.5" /> Delete
-              </h3>
-              <p className="text-[10px] text-gray-500">
-                Click objects to select them, then press <kbd className="bg-gray-800 px-1 rounded text-gray-300">Delete</kbd> to remove.
-              </p>
-              {selectedObjectIds.length > 0 && (
-                <button
-                  onClick={handleDeleteSelected}
-                  className="w-full py-1.5 text-[10px] rounded border border-red-700 text-red-400 hover:bg-red-900/30 flex items-center justify-center gap-1"
-                >
-                  <Trash2 className="w-3 h-3" /> Delete {selectedObjectIds.length} selected
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Cartography panel */}
-          {activeTool === 'cartography' && (
-            <CartographyPanel
-              activeBiome={cartographyBiome}
-              brushSize={cartographyBrushSize}
-              settings={cartographySettings}
-              onBiomeChange={setCartographyBiome}
-              onBrushSizeChange={setCartographyBrushSize}
-              onSettingsChange={setCartographySettings}
-              onGenerate={handleGenerateTerrain}
-              onClear={handleCartographyClear}
-              onFillAll={handleCartographyFillAll}
-            />
-          )}
-
-          {/* ── Border / Region Drawing Panel ────────────────────── */}
-          {activeTool === 'draw-border' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Pentagon className="w-3.5 h-3.5" /> Draw {borderLabel}
-              </h3>
-              <p className="text-[10px] text-gray-500">
-                Click to draw the border. Press Enter or double-click to finish.
-                {getChildLevel(currentLevel) && ` This creates a ${getChildLevel(currentLevel)} you can enter.`}
-              </p>
-
-              <div>
-                <label className="text-[10px] text-gray-500 mb-1 block">Border Color</label>
-                <input type="color" value={borderColor} onChange={e => setBorderColor(e.target.value)} className="w-full h-6 rounded border border-gray-700 bg-gray-800 cursor-pointer" />
-              </div>
-
-              {borderVertices.length > 0 && (
-                <div className="space-y-1">
-                  <p className="text-[10px] text-gray-400">{borderVertices.length} points placed</p>
-                  <div className="flex gap-1">
-                    <button onClick={handleFinishBorder} disabled={borderVertices.length < 3} className="flex-1 py-1.5 text-[10px] rounded bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-50">
-                      Finish
-                    </button>
-                    <button onClick={clearBorderVertices} className="flex-1 py-1.5 text-[10px] rounded border border-gray-700 text-gray-400 hover:bg-gray-800">
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── Lot Drawing Panel ───────────────────────── */}
-          {activeTool === 'draw-lot' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <LayoutGrid className="w-3.5 h-3.5" /> Draw Lot
-              </h3>
-              <p className="text-[10px] text-gray-500">{lotCorner1 ? `Click to set second corner` : `Click two corners to define a rectangular lot`}</p>
-
-              <div>
-                <label className="text-[10px] text-gray-500 mb-1 block">Zoning</label>
-                <div className="grid grid-cols-2 gap-1">
-                  {(['residential', 'commercial', 'industrial', 'park', 'special'] as LotZoning[]).map(z => (
-                    <button key={z} onClick={() => setLotZoning(z)} className={`py-1.5 text-[10px] rounded border flex items-center gap-1 justify-center ${lotZoning === z ? 'border-sky-500 bg-sky-900/40 text-sky-300' : 'border-gray-700 text-gray-400 hover:bg-gray-800'}`}>
-                      <span className="w-2 h-2 rounded" style={{ backgroundColor: LOT_ZONING_COLORS[z] }} />
-                      {z}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Existing lots list */}
-              {currentNode?.lots && currentNode.lots.length > 0 && (
-                <div className="border-t border-gray-800 pt-2">
-                  <label className="text-[10px] text-gray-500 mb-1 block">Existing Lots</label>
-                  <ul className="space-y-1">
-                    {currentNode.lots.map(lot => (
-                      <li key={lot.id} className="flex items-center justify-between p-1.5 rounded bg-gray-800/50 text-[10px]">
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-3 h-3 rounded" style={{ backgroundColor: LOT_ZONING_COLORS[lot.zoning] }} />
-                          <span className="text-gray-300 truncate max-w-[80px]">{lot.name}</span>
-                          <span className="text-gray-600">{lot.zoning}</span>
-                        </div>
-                        <button onClick={() => handleDeleteLot(lot.id)} className="text-gray-500 hover:text-red-400"><X className="w-3 h-3" /></button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── Road Drawing Panel ──────────────────────── */}
-          {activeTool === 'draw-road' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Route className="w-3.5 h-3.5" /> Draw Road
-              </h3>
-              <p className="text-[10px] text-gray-500">Click to place waypoints. Enter to finish.</p>
-
-              <div>
-                <label className="text-[10px] text-gray-500 mb-1 block">Road Type</label>
-                <div className="grid grid-cols-2 gap-1">
-                  {(['highway', 'main', 'street', 'alley', 'footpath'] as RoadType[]).map(rt => (
-                    <button key={rt} onClick={() => setRoadType(rt)} className={`py-1.5 text-[10px] rounded border ${roadType === rt ? 'border-sky-500 bg-sky-900/40 text-sky-300' : 'border-gray-700 text-gray-400 hover:bg-gray-800'}`}>
-                      {rt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {roadType && ROAD_TYPE_DEFAULTS[roadType] && (
-                <div className="text-[9px] text-gray-600 space-y-0.5">
-                  <div>Width: {ROAD_TYPE_DEFAULTS[roadType].width}m · Lanes: {ROAD_TYPE_DEFAULTS[roadType].lanes}</div>
-                  <div>Sidewalk: {ROAD_TYPE_DEFAULTS[roadType].hasSidewalk ? `${ROAD_TYPE_DEFAULTS[roadType].sidewalkWidth}m` : 'none'}</div>
-                </div>
-              )}
-
-              {roadWaypoints.length > 0 && (
-                <div className="space-y-1">
-                  <p className="text-[10px] text-gray-400">{roadWaypoints.length} waypoints</p>
-                  <div className="flex gap-1">
-                    <button onClick={handleFinishRoad} disabled={roadWaypoints.length < 2} className="flex-1 py-1.5 text-[10px] rounded bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-50">
-                      Finish Road
-                    </button>
-                    <button onClick={clearRoadWaypoints} className="flex-1 py-1.5 text-[10px] rounded border border-gray-700 text-gray-400 hover:bg-gray-800">
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Existing roads list */}
-              {currentNode?.roadNetwork?.segments && currentNode.roadNetwork.segments.length > 0 && (
-                <div className="border-t border-gray-800 pt-2">
-                  <label className="text-[10px] text-gray-500 mb-1 block">Roads</label>
-                  <ul className="space-y-1">
-                    {currentNode.roadNetwork.segments.map(seg => (
-                      <li key={seg.id} className="flex items-center justify-between p-1.5 rounded bg-gray-800/50 text-[10px]">
-                        <div className="flex items-center gap-1.5">
-                          <Route className="w-3 h-3 text-gray-500" />
-                          <span className="text-gray-300">{seg.name || seg.type}</span>
-                          <span className="text-gray-600">{seg.waypoints.length}pts</span>
-                        </div>
-                        <button onClick={() => handleDeleteRoad(seg.id)} className="text-gray-500 hover:text-red-400"><X className="w-3 h-3" /></button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Intersections list */}
-              {currentNode?.roadNetwork?.intersections && currentNode.roadNetwork.intersections.length > 0 && (
-                <div className="border-t border-gray-800 pt-2">
-                  <label className="text-[10px] text-gray-500 mb-1 block">Intersections</label>
-                  <ul className="space-y-1">
-                    {currentNode.roadNetwork.intersections.map(ix => (
-                      <li key={ix.id} className="p-1.5 rounded bg-gray-800/50 text-[10px] text-gray-400">
-                        {ix.type} · {ix.connectedSegmentIds.length} roads
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── Place Wall Panel ─────────────────────────── */}
-          {activeTool === 'place-wall' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Square className="w-3.5 h-3.5" /> Place Wall
-              </h3>
-              <p className="text-[10px] text-gray-500">{wallStartPoint ? 'Click to set end point' : 'Click to start wall, click again to end'}</p>
-
-              <div>
-                <label className="text-[10px] text-gray-500 flex justify-between"><span>Height</span><span>{wallHeight}m</span></label>
-                <input type="range" min={2} max={5} step={0.5} value={wallHeight} onChange={e => setWallHeight(Number(e.target.value))} className="w-full h-1 mt-1" />
-              </div>
-
-              <div>
-                <label className="text-[10px] text-gray-500 mb-1 block">Material</label>
-                <div className="grid grid-cols-3 gap-1">
-                  {['drywall', 'brick', 'stone', 'glass', 'wood', 'concrete'].map(m => (
-                    <button key={m} onClick={() => setWallMat(m)} className={`py-1 text-[9px] rounded border ${wallMat === m ? 'border-sky-500 bg-sky-900/40 text-sky-300' : 'border-gray-700 text-gray-400 hover:bg-gray-800'}`}>
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── Place Door/Window Panel ──────────────────── */}
-          {activeTool === 'place-door' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <DoorOpen className="w-3.5 h-3.5" /> Place Opening
-              </h3>
-              <p className="text-[10px] text-gray-500">Click on a wall to place a door</p>
-              <div className="text-[9px] text-gray-600">
-                <div>Door: 0.9m wide × 2.1m tall</div>
-              </div>
-            </div>
-          )}
-
-          {/* ── Paint Floor Panel ────────────────────────── */}
-          {activeTool === 'paint-floor' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <PaintBucket className="w-3.5 h-3.5" /> Paint Floor
-              </h3>
-              <p className="text-[10px] text-gray-500">Click/drag to paint floor tiles</p>
-              <div>
-                <label className="text-[10px] text-gray-500 mb-1 block">Material</label>
-                <div className="grid grid-cols-3 gap-1">
-                  {['wood', 'tile', 'carpet', 'marble', 'concrete', 'stone'].map(m => (
-                    <button key={m} onClick={() => setFloorMaterial(m)} className={`py-1 text-[9px] rounded border ${floorMaterial === m ? 'border-sky-500 bg-sky-900/40 text-sky-300' : 'border-gray-700 text-gray-400 hover:bg-gray-800'}`}>
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── Furniture Panel ──────────────────────────── */}
-          {activeTool === 'place-furniture' && (
-            <div className="p-3 space-y-3">
-              <h3 className="text-xs font-medium text-gray-300 flex items-center gap-2">
-                <Armchair className="w-3.5 h-3.5" /> Place Furniture
-              </h3>
-              <p className="text-[10px] text-gray-500">Select item and click to place</p>
-
-              <div className="flex gap-0.5 flex-wrap">
-                {FURNITURE_CATEGORIES.map(cat => (
-                  <button key={cat.id} onClick={() => setFurnitureCategory(cat.id)} className={`px-2 py-0.5 text-[9px] rounded ${furnitureCategory === cat.id ? 'bg-sky-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-                    {cat.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto">
-                {getFurnitureByCategory(furnitureCategory).map(item => (
-                  <button
-                    key={item.id}
-                    onClick={() => setSelectedFurnitureType(item.id)}
-                    className={`py-1.5 text-[9px] rounded border text-center ${selectedFurnitureType === item.id ? 'border-sky-500 bg-sky-900/40 text-sky-300' : 'border-gray-700 text-gray-400 hover:bg-gray-800'}`}
-                  >
-                    {item.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Controls reference */}
-          <div className="p-3 border-t border-gray-800">
-            <h4 className="text-[10px] font-medium text-gray-500 mb-1">Controls</h4>
-            {cameraMode === 'first-person' ? (
-              <ul className="text-[9px] text-gray-600 space-y-0.5">
-                <li>WASD — Move</li>
-                <li>Right-drag — Look around</li>
-                <li>Shift — Toggle cursor lock</li>
-                <li>Ctrl — Sprint (2x speed)</li>
-                <li>Space — Jump (walk) / Up (fly)</li>
-                <li>Q — Descend (fly mode)</li>
-                <li>Double Space — Toggle fly/walk</li>
-                <li>[ / ] — Brush size</li>
-                <li>Ctrl+Z / Y — Undo / Redo</li>
-                <li>Click — Use tool</li>
-                <li>ESC — Unlock cursor</li>
-                <li>F — Exit first-person</li>
-              </ul>
-            ) : (
-              <ul className="text-[9px] text-gray-600 space-y-0.5">
-                <li>MMB drag — Orbit camera</li>
-                <li>RMB drag — Pan</li>
-                <li>Scroll — Zoom</li>
-                <li>V/B/P/O/M/X — Switch tools</li>
-                <li>[ / ] — Brush size</li>
-                <li>Ctrl+Z / Y — Undo / Redo</li>
-                <li>Ctrl+D — Duplicate objects</li>
-                <li>Ctrl+S — Save</li>
-                <li>F — First-person camera</li>
-                <li>Delete — Remove selected objects</li>
-              </ul>
-            )}
-          </div>
-          </DockPanel>
-
+              </DockPanel>
             </DockColumn>
           </>
         )}
+
+        </div>{/* end horizontal dock layout */}
+
+        {/* Bottom dock — Output panel */}
+        {!isPlaytesting && <OutputPanel />}
 
       </div>{/* end main flex */}
 
@@ -3567,6 +3089,7 @@ export function WorldPage() {
               size="sm"
               onClick={handleScaleMap}
               disabled={scaleVertical === 1.0 && scaleHorizontal === 1.0}
+              className="bg-sky-500 text-white hover:bg-sky-600"
             >
               Apply Scale
             </Button>
@@ -3629,6 +3152,7 @@ export function WorldPage() {
               size="sm"
               onClick={handleSaveLocation}
               disabled={!newLocationName.trim()}
+              className="bg-sky-500 text-white hover:bg-sky-600"
             >
               Save Location
             </Button>
@@ -3671,6 +3195,7 @@ export function WorldPage() {
               size="sm"
               onClick={handleCreateRegion}
               disabled={!regionName.trim() || !regionBounds}
+              className="bg-sky-500 text-white hover:bg-sky-600"
             >
               Create
             </Button>

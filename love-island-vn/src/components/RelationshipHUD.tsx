@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useVNStore } from "@/engine/vnEngine";
-import { CHARACTERS } from "@/data/characters";
+import { useVNStore, useCharacters } from "@/engine/VNProvider";
 
 export function RelationshipHUD() {
   const [isOpen, setIsOpen] = useState(false);
   const relationships = useVNStore((s) => s.gameState.relationships);
+  const characters = useCharacters();
 
-  const sortedChars = CHARACTERS.filter((c) => c.id !== "player").sort(
+  const sortedChars = characters.filter((c) => c.id !== "player").sort(
     (a, b) =>
       (relationships[b.id]?.score ?? 0) - (relationships[a.id]?.score ?? 0)
   );

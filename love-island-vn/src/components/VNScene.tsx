@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useVNStore } from "@/engine/vnEngine";
+import { useVNStore, useCharacters } from "@/engine/VNProvider";
 import { CharacterSprite } from "./CharacterSprite";
 import { DialogueBox } from "./DialogueBox";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { RelationshipHUD } from "./RelationshipHUD";
 import { Backlog } from "./Backlog";
-import { CHARACTERS } from "@/data/characters";
 import type { ChoiceBeat, DialogueBeat, Episode, NarrationStyle, SceneBeat } from "@/types";
+import { useRouter } from "next/navigation";
 
 /** Determine sprite positions based on how many characters are on screen */
 function getPositions(
@@ -117,6 +117,7 @@ export function VNScene() {
   const toggleLoadMenu = useVNStore((s) => s.toggleLoadMenu);
   const resetGame = useVNStore((s) => s.resetGame);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  const router = useRouter();
 
   if (!currentEpisode || !currentBeat) {
     return (
@@ -127,10 +128,10 @@ export function VNScene() {
           </p>
           <p className="text-white/50">More drama coming soon...</p>
           <button
-            onClick={() => useVNStore.getState().resetGame()}
+            onClick={() => router.push("/")}
             className="mt-6 px-6 py-3 bg-pink-600 hover:bg-pink-500 text-white rounded-xl transition-colors"
           >
-            Play Again
+            Back to Library
           </button>
         </div>
       </div>
@@ -205,6 +206,7 @@ export function VNScene() {
           onLeave={() => {
             setShowQuitConfirm(false);
             resetGame();
+            router.push("/");
           }}
           onCancel={() => setShowQuitConfirm(false)}
         />
@@ -267,12 +269,13 @@ function SceneCharacters({
   characterIds: string[];
   currentBeat: SceneBeat;
 }) {
+  const characters = useCharacters();
   const positions = getPositions(characterIds);
 
   return (
     <>
       {characterIds.map((charId, i) => {
-        const char = CHARACTERS.find((c) => c.id === charId);
+        const char = characters.find((c) => c.id === charId);
         if (!char) return null;
 
         const isSpeaking =

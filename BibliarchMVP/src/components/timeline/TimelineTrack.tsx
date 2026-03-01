@@ -21,6 +21,7 @@ interface TimelineTrackProps {
   zoom: number
   eventWidthBase: number
   isDragTarget?: boolean
+  draggingEventId?: string | null
 }
 
 export default function TimelineTrack({
@@ -34,7 +35,8 @@ export default function TimelineTrack({
   onEventDragStart,
   zoom,
   eventWidthBase,
-  isDragTarget = false
+  isDragTarget = false,
+  draggingEventId = null
 }: TimelineTrackProps) {
   // Sort events by order for proper display
   const sortedEvents = [...events].sort((a, b) => (a.order || 0) - (b.order || 0))
@@ -69,6 +71,7 @@ export default function TimelineTrack({
           event={event}
           trackColor={track.color}
           isSelected={selectedEventId === event.id}
+          isDragging={draggingEventId === event.id}
           onSelect={() => onSelectEvent(event.id)}
           onDragStart={(e) => onEventDragStart(event.id, e)}
           left={(event.order || 0) * eventWidthBase * zoom}

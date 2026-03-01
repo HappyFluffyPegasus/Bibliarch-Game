@@ -5,12 +5,15 @@
 
 import * as THREE from 'three'
 import { CharacterRenderer } from '@/lib/characters/CharacterRenderer'
-import type { CharacterData, SceneCharacter } from '@/types/scenes'
+import { AnimationManager } from '@/lib/scenes/AnimationManager'
+import type { CharacterData, SceneCharacter, CharacterAnimationState } from '@/types/scenes'
 
 interface ManagedCharacter {
   sceneCharacterId: string
   characterId: string
   renderer: CharacterRenderer
+  animationManager: AnimationManager
+  hitbox: THREE.Mesh | null
   loaded: boolean
 }
 
@@ -49,10 +52,13 @@ export class SceneCharacterManager {
     }
 
     const renderer = new CharacterRenderer()
+    const animationManager = new AnimationManager()
     const managed: ManagedCharacter = {
       sceneCharacterId: sceneChar.id,
       characterId: sceneChar.characterId,
       renderer,
+      animationManager,
+      hitbox: null,
       loaded: false,
     }
 
@@ -63,17 +69,44 @@ export class SceneCharacterManager {
     await renderer.load()
     managed.loaded = true
 
+    // Initialize animation manager with the loaded model
+    animationManager.initialize(renderer.getGroup())
+
     // Apply appearance from character data
     const charData = this.characterDataMap.get(sceneChar.characterId)
     if (charData) {
       renderer.applyAppearance(charData)
     }
 
+    // Create invisible hitbox proxy for reliable raycasting
+    // (SkinnedMesh raycasts against bind-pose, not current pose)
+    const group = renderer.getGroup()
+    const box = new THREE.Box3().setFromObject(group)
+    const size = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+
+    // Use a capsule-like cylinder that covers the character
+    const hitboxHeight = Math.max(size.y, 1.6)
+    const hitboxRadius = Math.max(size.x, size.z, 0.4) * 0.5
+    const hitboxGeometry = new THREE.CylinderGeometry(hitboxRadius, hitboxRadius, hitboxHeight, 8)
+    const hitboxMaterial = new THREE.MeshBasicMaterial({ visible: false })
+    const hitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial)
+    // Position hitbox at center of character (relative to group)
+    hitbox.position.set(
+      center.x - group.position.x,
+      center.y - group.position.y,
+      center.z - group.position.z
+    )
+    hitbox.userData.sceneCharacterId = sceneChar.id
+    hitbox.userData.isHitbox = true
+    group.add(hitbox)
+    managed.hitbox = hitbox
+
     // Set initial position
     renderer.setWorldTransform(sceneChar.position, sceneChar.rotation)
 
     // Store reference for raycasting
-    renderer.getGroup().userData.sceneCharacterId = sceneChar.id
+    group.userData.sceneCharacterId = sceneChar.id
   }
 
   /**
@@ -83,6 +116,13 @@ export class SceneCharacterManager {
     const managed = this.characters.get(sceneCharacterId)
     if (!managed) return
 
+    // Dispose hitbox
+    if (managed.hitbox) {
+      managed.hitbox.geometry.dispose()
+      ;(managed.hitbox.material as THREE.Material).dispose()
+    }
+
+    managed.animationManager.dispose()
     this.parentGroup.remove(managed.renderer.getGroup())
     managed.renderer.dispose()
     this.characters.delete(sceneCharacterId)
@@ -120,12 +160,22 @@ export class SceneCharacterManager {
   }
 
   /**
+   * Apply animation state to a character
+   */
+  async applyAnimationState(sceneCharacterId: string, state: CharacterAnimationState): Promise<void> {
+    const managed = this.characters.get(sceneCharacterId)
+    if (!managed || !managed.loaded) return
+    await managed.animationManager.applyState(state)
+  }
+
+  /**
    * Update all characters (call each frame)
    */
   update(delta: number): void {
     this.characters.forEach((managed) => {
       if (managed.loaded) {
         managed.renderer.update(delta)
+        managed.animationManager.update(delta)
       }
     })
   }
@@ -149,6 +199,20 @@ export class SceneCharacterManager {
       }
     })
     return groups
+  }
+
+  /**
+   * Get all hitbox meshes for reliable raycasting
+   * (Use these instead of character meshes - SkinnedMesh raycasting is unreliable)
+   */
+  getAllHitboxes(): THREE.Mesh[] {
+    const hitboxes: THREE.Mesh[] = []
+    this.characters.forEach((managed) => {
+      if (managed.loaded && managed.hitbox) {
+        hitboxes.push(managed.hitbox)
+      }
+    })
+    return hitboxes
   }
 
   /**
@@ -177,6 +241,11 @@ export class SceneCharacterManager {
    */
   dispose(): void {
     this.characters.forEach((managed) => {
+      if (managed.hitbox) {
+        managed.hitbox.geometry.dispose()
+        ;(managed.hitbox.material as THREE.Material).dispose()
+      }
+      managed.animationManager.dispose()
       this.parentGroup.remove(managed.renderer.getGroup())
       managed.renderer.dispose()
     })

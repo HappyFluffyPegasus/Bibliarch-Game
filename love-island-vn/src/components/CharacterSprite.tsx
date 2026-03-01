@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { CHARACTERS } from "@/data/characters";
+import { useCharacters } from "@/engine/VNProvider";
 
 interface CharacterSpriteProps {
   characterId: string;
@@ -46,7 +46,8 @@ export function CharacterSprite({
   position = "center",
   isSpeaking = false,
 }: CharacterSpriteProps) {
-  const character = CHARACTERS.find((c) => c.id === characterId);
+  const characters = useCharacters();
+  const character = characters.find((c) => c.id === characterId);
   if (!character) return null;
 
   // Pick the right sprite: variant if available, otherwise base

@@ -101,6 +101,29 @@ export class ChunkManager {
     this.dirtyChunks.clear()
   }
 
+  /** Frustum-cull chunks: hide any chunk whose bounding box is outside the camera frustum */
+  cullChunks(camera: THREE.Camera): void {
+    const projScreenMatrix = new THREE.Matrix4()
+    projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+    const frustum = new THREE.Frustum()
+    frustum.setFromProjectionMatrix(projScreenMatrix)
+
+    for (const [, mesh] of this.chunks) {
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
+      mesh.visible = frustum.intersectsBox(mesh.geometry.boundingBox!)
+    }
+  }
+
+  /** Update the light direction uniform on all chunk materials */
+  updateLightDirection(direction: THREE.Vector3): void {
+    this.chunks.forEach(mesh => {
+      const mat = mesh.material as THREE.ShaderMaterial
+      if (mat.uniforms?.uLightDirection) {
+        mat.uniforms.uLightDirection.value.copy(direction)
+      }
+    })
+  }
+
   /** Dispose all GPU resources */
   dispose(): void {
     for (const mesh of this.chunks.values()) {
@@ -147,10 +170,90 @@ export class ChunkManager {
     const cellsX = Math.min(cs, terrain.size - startX)
     const cellsZ = Math.min(cs, terrain.sizeZ - startZ)
 
-    // Dispose old geometry
-    mesh.geometry.dispose()
-    // Create new
-    mesh.geometry = this.buildChunkGeometry(startX, startZ, cellsX, cellsZ, terrain)
+    const geo = mesh.geometry
+    const posAttr = geo.getAttribute('position') as THREE.BufferAttribute
+    const colorAttr = geo.getAttribute('color') as THREE.BufferAttribute
+    const normalAttr = geo.getAttribute('normal') as THREE.BufferAttribute
+
+    // Verify buffer sizes match (same chunk dimensions) — if not, fall back to full rebuild
+    const vertsX = cellsX + 1
+    const vertsZ = cellsZ + 1
+    const vertCount = vertsX * vertsZ
+    if (posAttr.count !== vertCount) {
+      geo.dispose()
+      mesh.geometry = this.buildChunkGeometry(startX, startZ, cellsX, cellsZ, terrain)
+      return
+    }
+
+    // Update positions and colors in-place (no GPU memory alloc/dealloc)
+    this.fillPositionsAndColors(
+      posAttr.array as Float32Array,
+      colorAttr.array as Float32Array,
+      startX, startZ, vertsX, vertsZ, terrain
+    )
+
+    // Recompute normals in-place
+    this.computeNormals(
+      posAttr.array as Float32Array,
+      geo.index!.array as Uint32Array,
+      normalAttr.array as Float32Array,
+      vertCount
+    )
+
+    posAttr.needsUpdate = true
+    colorAttr.needsUpdate = true
+    normalAttr.needsUpdate = true
+    geo.computeBoundingBox()
+    geo.computeBoundingSphere()
+  }
+
+  /**
+   * Fill position and color arrays for a chunk's vertices.
+   * Shared by both buildChunkGeometry (initial) and updateChunkGeometry (in-place).
+   */
+  private fillPositionsAndColors(
+    positions: Float32Array,
+    colors: Float32Array,
+    startX: number,
+    startZ: number,
+    vertsX: number,
+    vertsZ: number,
+    terrain: TerrainData
+  ): void {
+    const cellSize = terrain.cellSize
+    for (let vz = 0; vz < vertsZ; vz++) {
+      for (let vx = 0; vx < vertsX; vx++) {
+        const vi = vz * vertsX + vx
+
+        const gx = Math.min(startX + vx, terrain.size - 1)
+        const gz = Math.min(startZ + vz, terrain.sizeZ - 1)
+
+        const wx = gx * cellSize
+        const wz = gz * cellSize
+        const height = terrain.heights[terrainIndex(gx, gz, terrain.size)]
+        const wy = height * terrain.maxHeight
+
+        positions[vi * 3] = wx
+        positions[vi * 3 + 1] = wy
+        positions[vi * 3 + 2] = wz
+
+        const matId = terrain.materials[terrainIndex(gx, gz, terrain.size)] as TerrainMaterialId
+        const rgb = getMaterialColor(matId)
+        let r = rgb[0], g = rgb[1], b = rgb[2]
+
+        if (height < terrain.seaLevel) {
+          const depth = Math.min((terrain.seaLevel - height) / terrain.seaLevel, 1)
+          const tint = 1 - depth * 0.45
+          r = r * tint * 0.7
+          g = g * tint * 0.85
+          b = Math.min(1, b * tint + depth * 0.15)
+        }
+
+        colors[vi * 3] = r
+        colors[vi * 3 + 1] = g
+        colors[vi * 3 + 2] = b
+      }
+    }
   }
 
   /**
@@ -162,74 +265,68 @@ export class ChunkManager {
     startZ: number,
     cellsX: number,
     cellsZ: number,
-    terrain: TerrainData
+    terrain: TerrainData,
+    lodStep: number = 1
   ): THREE.BufferGeometry {
-    const vertsX = cellsX + 1
-    const vertsZ = cellsZ + 1
+    const vertsX = Math.floor(cellsX / lodStep) + 1
+    const vertsZ = Math.floor(cellsZ / lodStep) + 1
     const vertCount = vertsX * vertsZ
-    const cellSize = terrain.cellSize
 
     // Attribute arrays
     const positions = new Float32Array(vertCount * 3)
     const colors = new Float32Array(vertCount * 3)
     const normals = new Float32Array(vertCount * 3)
 
-    // Fill positions and colors
-    for (let vz = 0; vz < vertsZ; vz++) {
-      for (let vx = 0; vx < vertsX; vx++) {
-        const vi = vz * vertsX + vx
+    if (lodStep === 1) {
+      this.fillPositionsAndColors(positions, colors, startX, startZ, vertsX, vertsZ, terrain)
+    } else {
+      // LOD: sample every lodStep-th vertex
+      const cellSize = terrain.cellSize
+      for (let vz = 0; vz < vertsZ; vz++) {
+        for (let vx = 0; vx < vertsX; vx++) {
+          const vi = vz * vertsX + vx
+          const gx = Math.min(startX + vx * lodStep, terrain.size - 1)
+          const gz = Math.min(startZ + vz * lodStep, terrain.sizeZ - 1)
 
-        // Grid coordinates (clamped to terrain bounds)
-        const gx = Math.min(startX + vx, terrain.size - 1)
-        const gz = Math.min(startZ + vz, terrain.sizeZ - 1)
+          positions[vi * 3] = gx * cellSize
+          positions[vi * 3 + 1] = terrain.heights[terrainIndex(gx, gz, terrain.size)] * terrain.maxHeight
+          positions[vi * 3 + 2] = gz * cellSize
 
-        // World position
-        const wx = gx * cellSize
-        const wz = gz * cellSize
-        const height = terrain.heights[terrainIndex(gx, gz, terrain.size)]
-        const wy = height * terrain.maxHeight
-
-        positions[vi * 3] = wx
-        positions[vi * 3 + 1] = wy
-        positions[vi * 3 + 2] = wz
-
-        // Vertex color from material
-        const matId = terrain.materials[terrainIndex(gx, gz, terrain.size)] as TerrainMaterialId
-        const rgb = getMaterialColor(matId)
-        let r = rgb[0], g = rgb[1], b = rgb[2]
-
-        if (height < terrain.seaLevel) {
-          // How far below sea level (0 = at sea level, 1 = at 0 height)
-          const depth = Math.min((terrain.seaLevel - height) / terrain.seaLevel, 1)
-          const tint = 1 - depth * 0.45   // darken up to 45%
-          r = r * tint * 0.7               // reduce red
-          g = g * tint * 0.85              // slightly reduce green
-          b = Math.min(1, b * tint + depth * 0.15)  // push toward blue
+          const matId = terrain.materials[terrainIndex(gx, gz, terrain.size)] as TerrainMaterialId
+          const rgb = getMaterialColor(matId)
+          let r = rgb[0], g = rgb[1], b = rgb[2]
+          const height = terrain.heights[terrainIndex(gx, gz, terrain.size)]
+          if (height < terrain.seaLevel) {
+            const depth = Math.min((terrain.seaLevel - height) / terrain.seaLevel, 1)
+            const tint = 1 - depth * 0.45
+            r = r * tint * 0.7
+            g = g * tint * 0.85
+            b = Math.min(1, b * tint + depth * 0.15)
+          }
+          colors[vi * 3] = r
+          colors[vi * 3 + 1] = g
+          colors[vi * 3 + 2] = b
         }
-
-        colors[vi * 3] = r
-        colors[vi * 3 + 1] = g
-        colors[vi * 3 + 2] = b
       }
     }
 
-    // Build index buffer (two triangles per cell)
-    const indexCount = cellsX * cellsZ * 6
+    // Build index buffer (two triangles per cell in the LOD grid)
+    const cellCountX = vertsX - 1
+    const cellCountZ = vertsZ - 1
+    const indexCount = cellCountX * cellCountZ * 6
     const indices = new Uint32Array(indexCount)
     let idx = 0
 
-    for (let cz = 0; cz < cellsZ; cz++) {
-      for (let cx = 0; cx < cellsX; cx++) {
+    for (let cz = 0; cz < cellCountZ; cz++) {
+      for (let cx = 0; cx < cellCountX; cx++) {
         const tl = cz * vertsX + cx
         const tr = tl + 1
         const bl = (cz + 1) * vertsX + cx
         const br = bl + 1
 
-        // Triangle 1
         indices[idx++] = tl
         indices[idx++] = bl
         indices[idx++] = tr
-        // Triangle 2
         indices[idx++] = tr
         indices[idx++] = bl
         indices[idx++] = br

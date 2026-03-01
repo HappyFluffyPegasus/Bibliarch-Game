@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useVNStore } from "@/engine/vnEngine";
+import { useVNStore } from "@/engine/VNProvider";
 import type { BacklogEntry } from "@/types";
 
 export function Backlog() {

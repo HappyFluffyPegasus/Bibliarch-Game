@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Love Island: The Crossover",
-  description: "A Love Island visual novel featuring characters from all your stories",
+  title: "Visual Novel Library",
+  description: "A collection of visual novels",
 };
 
 export default function RootLayout({

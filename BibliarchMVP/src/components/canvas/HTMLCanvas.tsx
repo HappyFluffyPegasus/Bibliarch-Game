@@ -945,8 +945,28 @@ export default function HTMLCanvas({
   }, [])
 
   // Initialize nodes from props when they change (canvas navigation)
+  // Use a stable fingerprint to avoid infinite loops from default [] creating new references each render
+  const initialNodesFingerprint = useMemo(
+    () => JSON.stringify(initialNodes.map(n => n.id).sort()),
+    [initialNodes]
+  )
+  const initialConnectionsFingerprint = useMemo(
+    () => JSON.stringify(initialConnections.map(c => c.id).sort()),
+    [initialConnections]
+  )
+  const prevFingerprintRef = useRef<string | null>(null)
+
   useEffect(() => {
-    // PERFORMANCE: Removed console.log to reduce CPU load
+    const currentFingerprint = initialNodesFingerprint + '|' + initialConnectionsFingerprint
+    // Skip if fingerprint hasn't changed (prevents infinite loop from unstable array references)
+    if (prevFingerprintRef.current === currentFingerprint) return
+    // Skip the very first render — useState(initialNodes) already handles that
+    if (prevFingerprintRef.current === null) {
+      prevFingerprintRef.current = currentFingerprint
+      return
+    }
+    prevFingerprintRef.current = currentFingerprint
+
     setNodes(initialNodes)
     setConnections(initialConnections)
     setVisibleNodeIds(initialNodes.map(node => node.id))
@@ -958,7 +978,7 @@ export default function HTMLCanvas({
     }
     setHistory([initialState])
     setHistoryIndex(0)
-  }, [initialNodes, initialConnections])
+  }, [initialNodesFingerprint, initialConnectionsFingerprint, initialNodes, initialConnections])
 
   // Notify parent when state changes (for navigation saves, without auto-saving)
   // onStateChange excluded from deps to prevent cursor jumping from constant re-renders
@@ -4462,7 +4482,7 @@ export default function HTMLCanvas({
                     id="mobile-grid-size"
                     value={gridSize}
                     onChange={(e) => setGridSize(Number(e.target.value))}
-                    className="text-xs rounded px-2 py-1 bg-background border border-border focus:outline-none focus:ring-2 focus:ring-sky-500 w-20"
+                    className="text-xs rounded px-2 py-1 bg-slate-800 text-slate-200 border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 w-20 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                   >
                     <option value={10}>10px</option>
                     <option value={20}>20px</option>
@@ -4645,7 +4665,7 @@ export default function HTMLCanvas({
                     id="grid-size"
                     value={gridSize}
                     onChange={(e) => setGridSize(Number(e.target.value))}
-                    className="text-xs rounded px-2 py-1 bg-background border border-border focus:outline-none focus:ring-2 focus:ring-sky-500 w-20"
+                    className="text-xs rounded px-2 py-1 bg-slate-800 text-slate-200 border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 w-20 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                   >
                     <option value={10}>10px</option>
                     <option value={20}>20px</option>
@@ -5173,7 +5193,7 @@ export default function HTMLCanvas({
                 <Button variant="outline" onClick={() => setShowEditTemplateDialog(null)}>
                   Cancel
                 </Button>
-                <Button onClick={() => {
+                <Button className="bg-sky-500 text-white hover:bg-sky-600" onClick={() => {
                   updateTemplate(showEditTemplateDialog.id, {
                     name: showEditTemplateDialog.name,
                     displayType: showEditTemplateDialog.displayType,
@@ -5392,7 +5412,7 @@ export default function HTMLCanvas({
                   key={node.id}
                   data-node-id={node.id}
                   className={`absolute border-2 rounded cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm node-background ${
-                    connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                    connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
                   } ${
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   }`}
@@ -5566,7 +5586,7 @@ export default function HTMLCanvas({
                   key={node.id}
                   data-node-id={node.id}
                   className={`absolute cursor-move ${
-                    connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                    connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -5972,7 +5992,7 @@ export default function HTMLCanvas({
                   key={node.id}
                   data-node-id={node.id}
                   className={`absolute cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm ${
-                    connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                    connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -6349,7 +6369,7 @@ export default function HTMLCanvas({
                   key={node.id}
                   data-node-id={node.id}
                   className={`absolute border-2 rounded-lg overflow-hidden cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm node-background ${
-                    connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                    connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
                   } ${
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
@@ -6586,7 +6606,7 @@ export default function HTMLCanvas({
                   key={node.id}
                   data-node-id={node.id}
                   className={`absolute border-2 rounded-lg overflow-hidden cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm node-background ${
-                    connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                    connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
                   } ${
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
@@ -6945,7 +6965,7 @@ export default function HTMLCanvas({
                     nodeStylePreferences.corners === 'very-rounded' ? 'rounded-2xl' :
                     'rounded-lg'
                   } ${
-                    connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                    connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
                   }`}
                   style={{
                     left: getNodeDragPosition(node).x,
@@ -7422,7 +7442,7 @@ export default function HTMLCanvas({
                   key={node.id}
                   data-node-id={node.id}
                   className={`absolute border-2 rounded-lg overflow-hidden cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm node-background ${
-                    connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                    connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
                   } ${
                     isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
                   } ${
@@ -7708,7 +7728,7 @@ export default function HTMLCanvas({
               data-node-id={node.id}
               draggable={false}
               className={`absolute border-2 rounded-lg p-3 cursor-move ${!isPanning ? 'hover:shadow-lg' : ''} shadow-sm node-background ${
-                connectingFrom === node.id ? 'ring-2 ring-orange-500' : ''
+                connectingFrom === node.id ? 'ring-2 ring-cyan-500' : ''
               } ${
                 isDropTarget ? 'ring-2 ring-green-500 bg-green-50' : ''
               } ${
@@ -9361,7 +9381,7 @@ export default function HTMLCanvas({
                       </button>
                     </div>
                     <select
-                      className="w-full p-2 border rounded-md"
+                      className="w-full p-2 border rounded-md bg-slate-800 text-slate-200 border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                       onChange={(e) => {
                         if (e.target.value) {
                           const characterId = e.target.value
@@ -9718,7 +9738,7 @@ export default function HTMLCanvas({
                         <User className="w-6 h-6 text-gray-400" />
                       </div>
                       <select
-                        className="text-xs p-1 border rounded"
+                        className="text-xs p-1 border rounded bg-slate-800 text-slate-200 border-slate-600"
                         onChange={(e) => {
                           if (e.target.value && relationshipCanvasModal) {
                             const selectedChar = relationshipCanvasModal.node.relationshipData?.selectedCharacters?.find(c => c.id === e.target.value)
@@ -9747,7 +9767,7 @@ export default function HTMLCanvas({
               <div>
                 <label className="text-sm font-medium mb-2 block">Relationship Type:</label>
                 <select
-                  className="w-full p-2 border rounded-md"
+                  className="w-full p-2 border rounded-md bg-slate-800 text-slate-200 border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                   id="relationshipType"
                   defaultValue={relationshipModal.editingRelationship?.relationshipType || 'friends'}
                 >
@@ -9763,7 +9783,7 @@ export default function HTMLCanvas({
               <div>
                 <label className="text-sm font-medium mb-2 block">Relationship Strength:</label>
                 <select
-                  className="w-full p-2 border rounded-md"
+                  className="w-full p-2 border rounded-md bg-slate-800 text-slate-200 border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                   id="relationshipStrength"
                   defaultValue={relationshipModal.editingRelationship?.strength || 2}
                 >
@@ -9778,7 +9798,7 @@ export default function HTMLCanvas({
                 <input
                   type="text"
                   placeholder="e.g. 'married', 'siblings', 'best friends'"
-                  className="w-full p-2 border rounded-md"
+                  className="w-full p-2 border rounded-md bg-slate-800 text-slate-200 border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                   id="relationshipLabel"
                   defaultValue={relationshipModal.editingRelationship?.label || ''}
                 />
@@ -9826,7 +9846,7 @@ export default function HTMLCanvas({
                   <div>
                     <label className="text-sm font-medium mb-1 block">Return Relationship Type:</label>
                     <select
-                      className="w-full p-2 border rounded-md"
+                      className="w-full p-2 border rounded-md bg-slate-800 text-slate-200 border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                       id="reverseRelationshipType"
                       defaultValue={relationshipModal.editingRelationship?.reverseRelationshipType || 'friends'}
                     >
@@ -9842,7 +9862,7 @@ export default function HTMLCanvas({
                   <div>
                     <label className="text-sm font-medium mb-1 block">Return Strength:</label>
                     <select
-                      className="w-full p-2 border rounded-md"
+                      className="w-full p-2 border rounded-md bg-slate-800 text-slate-200 border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                       id="reverseStrength"
                       defaultValue={relationshipModal.editingRelationship?.reverseStrength || 2}
                     >
@@ -9857,7 +9877,7 @@ export default function HTMLCanvas({
                     <input
                       type="text"
                       placeholder="e.g. 'dislikes', 'ignores', 'admires'"
-                      className="w-full p-2 border rounded-md"
+                      className="w-full p-2 border rounded-md bg-slate-800 text-slate-200 border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
                       id="reverseLabel"
                       defaultValue={relationshipModal.editingRelationship?.reverseLabel || ''}
                     />
