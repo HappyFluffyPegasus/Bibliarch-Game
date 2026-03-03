@@ -215,7 +215,6 @@ interface NodeContextMenuProps {
   position: { x: number; y: number }
   onClose: () => void
   onSettingChange: (nodeId: string, setting: string, value: any) => void
-  onColorChange?: (nodeId: string, color: string) => void
   onDuplicate: (nodeId: string) => void
   onDelete: (nodeId: string) => void
   onBringToFront: (nodeId: string) => void
@@ -224,106 +223,11 @@ interface NodeContextMenuProps {
   isInsideFolder?: boolean
 }
 
-// Color picker for node background color
-const NODE_COLORS = [
-  { name: 'Red', color: '#fecaca' },
-  { name: 'Orange', color: '#fed7aa' },
-  { name: 'Yellow', color: '#fef08a' },
-  { name: 'Green', color: '#bbf7d0' },
-  { name: 'Teal', color: '#99f6e4' },
-  { name: 'Blue', color: '#bfdbfe' },
-  { name: 'Purple', color: '#ddd6fe' },
-  { name: 'Pink', color: '#fbcfe8' },
-  { name: 'Rose', color: '#fecdd3' },
-  { name: 'Gray', color: '#e5e7eb' },
-]
-
-const ColorPicker = ({
-  currentColor,
-  onSelect,
-  isReady
-}: {
-  currentColor?: string
-  onSelect: (color: string | null) => void
-  isReady: boolean
-}) => {
-  const [isExpanded, setIsExpanded] = useState(false)
-
-  if (!isExpanded) {
-    return (
-      <button
-        className="w-full text-left px-3 py-2.5 text-sm hover:bg-accent active:bg-accent transition-colors text-foreground flex items-center justify-between"
-        onClick={() => {
-          if (!isReady) return
-          setIsExpanded(true)
-        }}
-        onTouchEnd={(e) => {
-          if (!isReady) return
-          e.preventDefault()
-          setIsExpanded(true)
-        }}
-      >
-        <span className="flex items-center gap-2">
-          {currentColor ? (
-            <span className="w-4 h-4 rounded border border-border" style={{ backgroundColor: currentColor }} />
-          ) : (
-            <Palette className="w-4 h-4" />
-          )}
-          <span>Change Color</span>
-        </span>
-        <ChevronRight className="w-4 h-4 text-muted-foreground" />
-      </button>
-    )
-  }
-
-  return (
-    <div className="px-2 py-2">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Node Color</span>
-        <button
-          className="text-xs text-muted-foreground hover:text-foreground"
-          onClick={() => {
-            if (!isReady) return
-            onSelect(null)
-          }}
-          onTouchEnd={(e) => {
-            if (!isReady) return
-            e.preventDefault()
-            onSelect(null)
-          }}
-        >
-          Reset
-        </button>
-      </div>
-      <div className="grid grid-cols-5 gap-1">
-        {NODE_COLORS.map((c) => (
-          <button
-            key={c.name}
-            className={`w-8 h-8 rounded border hover:scale-110 transition-transform ${currentColor === c.color ? 'ring-2 ring-primary ring-offset-1' : 'border-border'}`}
-            style={{ backgroundColor: c.color }}
-            onClick={() => {
-              if (!isReady) return
-              onSelect(c.color)
-            }}
-            onTouchEnd={(e) => {
-              if (!isReady) return
-              e.preventDefault()
-              onSelect(c.color)
-            }}
-            title={c.name}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
 export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
   node,
   position,
   onClose,
   onSettingChange,
-  onColorChange,
   onDuplicate,
   onDelete,
   onBringToFront,
@@ -630,22 +534,6 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
         }}
         isReady={isReady}
       />
-
-      {/* Color picker for all node types */}
-      {onColorChange && (
-        <ColorPicker
-          currentColor={node.color}
-          onSelect={(color) => {
-            if (color) {
-              onColorChange(node.id, color)
-            } else {
-              onColorChange(node.id, '')
-            }
-            onClose()
-          }}
-          isReady={isReady}
-        />
-      )}
       <Divider />
 
       {/* Global settings for all nodes */}

@@ -396,9 +396,10 @@ export default function HTMLCanvas({
   // Pending template to place on next canvas click (click-to-place behavior)
   const [pendingTemplate, setPendingTemplate] = useState<CustomTemplate | null>(null)
 
-  // Wrapper for onSave that skips saving when in template editor mode
+  // Wrapper for onSave that skips saving when in template editor mode or when realtimeSave is disabled
+  // When realtimeSave is false, saves only happen on navigation/manual button (parent handles via onStateChange)
   // Also enforces viewer mode - viewers cannot save changes
-  // Broadcasting for realtime collaboration happens regardless
+  // Broadcasting for realtime collaboration happens regardless of realtimeSave flag
   const handleSave = useCallback((nodesToSave: Node[], connectionsToSave: Connection[]) => {
     // Viewers cannot save or broadcast changes
     if (isViewer) {
@@ -410,16 +411,17 @@ export default function HTMLCanvas({
       return
     }
 
-    // Always broadcast to collaborators for real-time sync
+    // Always broadcast to collaborators for real-time sync (regardless of realtimeSave)
+    // Use ref to always get the latest callback
     if (onBroadcastChangeRef.current) {
       onBroadcastChangeRef.current(nodesToSave, connectionsToSave)
     }
 
-    // Save to database
-    if (onSave) {
+    // Only auto-save to database if realtimeSave is enabled
+    if (realtimeSave && onSave) {
       onSave(nodesToSave, connectionsToSave)
     }
-  }, [templateEditorMode, onSave, isViewer])
+  }, [templateEditorMode, realtimeSave, onSave, isViewer])
 
   // Keep a ref to handleSave so callbacks can always access the latest version
   const handleSaveRef = useRef(handleSave)
@@ -1009,15 +1011,30 @@ export default function HTMLCanvas({
     }
   }, [isDraggingCrop, isResizingCrop, resizeDirection, cropModal, cropData, dragStartCrop])
 
-  // Auto-save when nodes change (2-second debounce)
+  // Auto-save when nodes change (DISABLED FOR TESTING EGRESS)
+  // TEMPORARY: Auto-save disabled to reduce Supabase egress
+  // TODO: Re-enable with longer debounce after egress resets
+  /*
   useEffect(() => {
     const timeoutId = setTimeout(async () => {
       if (onSave && (nodes.length > 0 || connections.length > 0)) {
         await handleSaveRef.current(nodes, connections)
+
+        // Check if any character nodes exist in current canvas
+        const hasCharacters = nodes.some(node => node.type === 'character')
+        if (hasCharacters) {
+          console.log('[Auto-save] Character nodes detected, refreshing character list after save')
+          // Wait a bit for database to update, then refresh
+          setTimeout(() => {
+            // Call refreshAllCharacters directly - it's stable from useCallback
+            refreshAllCharacters().catch(err => console.error('[Auto-save] Error refreshing characters:', err))
+          }, 500)
+        }
       }
-    }, 2000)
+    }, 2000) // Give users more time between saves
     return () => clearTimeout(timeoutId)
   }, [nodes, connections, onSave])
+  */
 
   // Listen for palette changes and force re-render
   useEffect(() => {
@@ -2860,14 +2877,6 @@ export default function HTMLCanvas({
   }
 
   const getNodeColor = (nodeType: string, customColor?: string, nodeId?: string, isChildInList: boolean = false) => {
-    // If a custom color is set on the node, use it directly
-    if (customColor) {
-      if (isChildInList) {
-        return lightenColor(customColor, 0.2)
-      }
-      return customColor
-    }
-
     let baseColor: string
 
     // PRIORITY 1: Check CSS variables first (applied immediately by palette system)
@@ -3357,7 +3366,7 @@ export default function HTMLCanvas({
   const handleColorChange = (nodeId: string, color: string) => {
     const newNodes = nodes.map(node =>
       node.id === nodeId
-        ? { ...node, color: color || undefined }
+        ? { ...node, color }
         : node
     )
     setNodes(newNodes)
@@ -7507,7 +7516,6 @@ export default function HTMLCanvas({
                           }
                         }}
                         spellCheck={false}
-                        data-placeholder="Name this map..."
                         ref={(el) => {
                           if (el && !(editingField?.nodeId === node.id && editingField?.field === 'title')) {
                             if (el.textContent !== (node.text || '')) {
@@ -10696,7 +10704,6 @@ export default function HTMLCanvas({
           position={contextMenu.position}
           onClose={() => setContextMenu(null)}
           onSettingChange={handleSettingChange}
-          onColorChange={handleColorChange}
           onDuplicate={handleDuplicateNode}
           onDelete={handleDeleteNode}
           onBringToFront={handleBringToFront}
