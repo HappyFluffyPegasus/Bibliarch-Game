@@ -251,7 +251,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
             const lowerName = meshName.toLowerCase()
 
             // Check if this is an eye mesh - keep original material completely unchanged
-            const isEyeMesh = lowerName.includes('eye') || meshName === 'Eyes' || meshName === 'Eyes_3'
+            const isEyeMesh = lowerName === 'eye' || lowerName === 'iris' || lowerName.includes('eye white') || lowerName.includes('eye_white')
 
             if (!isEyeMesh) {
               // Convert materials to toon shading for non-eye meshes
@@ -269,6 +269,11 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
                     mat instanceof THREE.MeshLambertMaterial) {
                   baseColor = mat.color.clone()
                   map = mat.map
+                  // Ensure FBX-loaded textures use correct color space
+                  if (map) {
+                    map.colorSpace = THREE.SRGBColorSpace
+                    map.needsUpdate = true
+                  }
                 }
 
                 // For skinned meshes, use MeshToonMaterial (preserves textures)
@@ -297,25 +302,60 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
                     ? new THREE.Color(initialHairColor)  // Tint texture to target color
                     : new THREE.Color(baseColor)
 
+                  // Determine material role from its name
+                  const matNameLower = (mat?.name || '').toLowerCase()
+                  const isFaceTextureMat = matNameLower.includes('chill') || (map && isSkinMesh)
+                  const isEyeWhiteMat = matNameLower.includes('eye white') || matNameLower.includes('eye_white') || matNameLower.includes('eyewhite')
+                  const hasOriginalMap = !isHairMesh && map
+
                   toonMat = createColoredShadowMaterial({
-                    color: isHairMesh ? hairTintColor : baseColor,
+                    // Face texture: use skin tone as tint (multiply with texture)
+                    // Hair: use hair tint color
+                    // Eye whites: bright white
+                    // Other textured: white to not darken
+                    color: isHairMesh ? hairTintColor
+                      : isFaceTextureMat ? new THREE.Color(categoryColors?.body?.skinTone || '#ffffff')
+                      : isEyeWhiteMat ? new THREE.Color(0xffffff)
+                      : (hasOriginalMap ? new THREE.Color(0xffffff) : baseColor),
                     map: isHairMesh ? hairTexture : map,
                   })
 
-                  if (isSkinMesh) {
+                  // Face texture PNG has transparent areas — use alphaTest
+                  // to cut them out. High threshold (0.99) ensures only fully
+                  // opaque pixels render, so semi-transparent edges don't
+                  // get filled with the skin tone multiply color.
+                  if (isFaceTextureMat && toonMat instanceof THREE.MeshToonMaterial) {
+                    toonMat.alphaTest = 0.99
+                  }
+
+                  // Eye whites: double-sided (normals may face inward into socket)
+                  if (isEyeWhiteMat) {
+                    toonMat.side = THREE.DoubleSide
+                  }
+
+                  // Tag skin meshes (but not eye whites or face texture sub-materials)
+                  if (isSkinMesh && !isEyeWhiteMat && !isFaceTextureMat) {
                     ;(toonMat as any)._isSkinMesh = true
+                  }
+                  if (isFaceTextureMat) {
+                    ;(toonMat as any)._isFaceTexture = true
+                  }
+                  if (hasOriginalMap && !isFaceTextureMat) {
+                    ;(toonMat as any)._hasImageMap = true
                   }
                   if (isHairMesh) {
                     ;(toonMat as any)._isHairMesh = true
                   }
                 } else {
-                  toonMat = createToonMaterial({
-                    color: baseColor,
-                    skinning: false,
-                    steps: 4,
-                    ambient: 0.3,
-                    rimPower: 4.0,
+                  // Use MeshToonMaterial for non-skinned meshes too, so textures (UV maps) work
+                  // White color when textured to avoid darkening via multiplication
+                  toonMat = createColoredShadowMaterial({
+                    color: map ? new THREE.Color(0xffffff) : baseColor,
+                    map: map ?? undefined,
                   })
+                  if (map) {
+                    ;(toonMat as any)._hasImageMap = true
+                  }
                 }
 
                 toonMaterials.push(toonMat)
@@ -332,8 +372,32 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
                 node.material = toonMaterials
               }
 
+            } else {
+              // Eye meshes — fix texture, remove excessive specular/emissive
+              const eyeMats = node.material ? (Array.isArray(node.material) ? node.material : [node.material]) : []
+              const newMats = eyeMats.map((mat) => {
+                // Eye whites: pure flat white, no shading, no lighting
+                if (lowerName.includes('eye white') || lowerName.includes('eye_white')) {
+                  return new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    side: THREE.DoubleSide,
+                  })
+                }
+                // Iris: unlit MeshBasicMaterial so texture shows without lighting
+                const map = (mat as any).map || null
+                if (map) {
+                  map.colorSpace = THREE.SRGBColorSpace
+                  map.needsUpdate = true
+                }
+                return new THREE.MeshBasicMaterial({
+                  map,
+                  color: 0xffffff,
+                })
+              })
+              node.material = newMats.length === 1 ? newMats[0] : newMats
+              // Render eyes after body so they show through face cutouts
+              node.renderOrder = 1
             }
-            // Eye meshes keep their original material - no changes needed
 
             node.visible = true
             node.frustumCulled = false  // SkinnedMesh bounding sphere is unreliable after 0.01 scale + rebind
@@ -348,69 +412,30 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
         // Create animation mixer on the fbx model (not wrapper) so it targets bones correctly
         mixerRef.current = new THREE.AnimationMixer(fbx)
 
-        // Now load the shape keys model from FBX
-        loader.load(
-          '/models/Bibliarch Maybe.fbx',
-          (shapeKeysFbx) => {
-            if (!mounted) return  // Stale callback from unmounted instance
-            console.log('Loading shape keys from Bibliarch Maybe.fbx...')
-
-            console.log('[ShapeKeys] FBX loaded, traversing scene...')
-            let meshCount = 0
-            shapeKeysFbx.traverse((node) => {
-              if (node instanceof THREE.SkinnedMesh || node instanceof THREE.Mesh) {
-                meshCount++
-                const geo = node.geometry as THREE.BufferGeometry
-                const hasMorphAttribs = geo.morphAttributes && Object.keys(geo.morphAttributes).length > 0
-                const hasMorphDict = !!node.morphTargetDictionary
-                const hasMorphInfluences = !!node.morphTargetInfluences
-                console.log(`[ShapeKeys] Mesh #${meshCount}: "${node.name}", hasMorphAttribs: ${hasMorphAttribs}, hasMorphDict: ${hasMorphDict}, hasMorphInfluences: ${hasMorphInfluences}`)
-
+        // Collect morph targets from meshes already loaded (same FBX has shape keys)
+        {
+            // Scan all meshes (including regular Mesh like Iris) for morph targets
+            fbx.traverse((node) => {
+              if (node instanceof THREE.Mesh || node instanceof THREE.SkinnedMesh) {
                 if (node.morphTargetDictionary && node.morphTargetInfluences) {
                   const meshName = node.name
-                  const targetMesh = workingMeshes.get(meshName)
+                  console.log(`[ShapeKeys] Found ${Object.keys(node.morphTargetDictionary).length} shape keys on "${meshName}"`)
 
-                  if (targetMesh) {
-                    // Transfer morph target data
-                    const geometry = targetMesh.geometry as THREE.BufferGeometry
-                    const sourceGeometry = node.geometry as THREE.BufferGeometry
-
-                    // Copy morph attributes
-                    if (sourceGeometry.morphAttributes.position) {
-                      geometry.morphAttributes.position = sourceGeometry.morphAttributes.position
-                    }
-                    if (sourceGeometry.morphAttributes.normal) {
-                      geometry.morphAttributes.normal = sourceGeometry.morphAttributes.normal
-                    }
-
-                    // Copy morph target dictionary and influences
-                    targetMesh.morphTargetDictionary = { ...node.morphTargetDictionary }
-                    targetMesh.morphTargetInfluences = new Array(node.morphTargetInfluences.length).fill(0)
-
-                    // Update geometry morph targets count
-                    geometry.morphTargetsRelative = sourceGeometry.morphTargetsRelative
-
-                    console.log(`Transferred ${Object.keys(node.morphTargetDictionary).length} shape keys to ${meshName}`)
-
-                    // Collect morph targets for UI
-                    Object.keys(node.morphTargetDictionary).forEach((targetName) => {
-                      const index = node.morphTargetDictionary![targetName]
-                      morphTargets.push({ meshName, targetName, index })
-                    })
-                  } else {
-                    // No matching mesh in FBX, but still collect the morph targets for UI
-                    console.log(`[ShapeKeys] No matching FBX mesh for ${meshName}, adding morph targets directly`)
-                    Object.keys(node.morphTargetDictionary).forEach((targetName) => {
-                      const index = node.morphTargetDictionary![targetName]
-                      morphTargets.push({ meshName, targetName, index })
-                    })
+                  // Store regular meshes in meshMap too so morph target effect can find them
+                  if (!(node instanceof THREE.SkinnedMesh)) {
+                    meshMapRef.current.set(meshName, node)
                   }
+
+                  // Collect morph targets for UI
+                  Object.keys(node.morphTargetDictionary).forEach((targetName) => {
+                    const index = node.morphTargetDictionary![targetName]
+                    morphTargets.push({ meshName, targetName, index })
+                  })
                 }
               }
             })
-            console.log(`[ShapeKeys] Total meshes in FBX: ${meshCount}`)
 
-            console.log(`Shape keys transferred. Total morph targets: ${morphTargets.length}`)
+            console.log(`Shape keys found. Total morph targets: ${morphTargets.length}`)
 
             // Debug: log mesh names vs visibleAssets to diagnose refresh visibility bug
             console.log('[Viewer3D] Model loaded. meshMap keys:', [...meshMapRef.current.keys()])
@@ -440,19 +465,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
             if (onMorphTargetsLoaded && morphTargets.length > 0) {
               onMorphTargetsLoaded(morphTargets)
             }
-          },
-          undefined,
-          (error) => {
-            if (!mounted) return
-            console.error('Error loading shape keys model:', error)
-            // Still continue with working model, just without shape keys
-            setLoading(false)
-            setModelReady(true)
-            if (onMeshesLoaded) {
-              onMeshesLoaded(meshes)
-            }
-          }
-        )
+        }
       },
       (progress) => {
         console.log('Loading:', (progress.loaded / progress.total * 100).toFixed(0) + '%')
@@ -498,8 +511,8 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
         const visibleSet = new Set(visibleAssetsRef.current)
         meshMapRef.current.forEach((mesh, name) => {
           const lowerName = name.toLowerCase()
-          // Body and eyes are always visible
-          const isEyeMesh = lowerName.includes('eye') || name === 'Eyes' || name === 'Eyes_3'
+          // Body, eyes, and eye whites are always visible
+          const isEyeMesh = lowerName === 'eye' || lowerName === 'iris' || lowerName.includes('eye white') || lowerName.includes('eye_white')
           const isVisible = lowerName === 'body' || isEyeMesh || visibleSet.has(name)
           mesh.visible = isVisible
         })
@@ -591,13 +604,14 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     }
   }, [selectedPose, modelReady])
 
-  // Morph target control effect
+  // Morph target control effect — checks both skinned and regular meshes
   useEffect(() => {
-    if (!morphTargetValues || skinnedMeshMapRef.current.size === 0) return
+    if (!morphTargetValues) return
 
     Object.entries(morphTargetValues).forEach(([key, value]) => {
       const [meshName, targetName] = key.split(':')
-      const mesh = skinnedMeshMapRef.current.get(meshName)
+      // Check skinned meshes first, then regular meshes
+      const mesh = skinnedMeshMapRef.current.get(meshName) || meshMapRef.current.get(meshName)
 
       if (mesh && mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
         const index = mesh.morphTargetDictionary[targetName]
@@ -764,6 +778,15 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
         if ((mat as any)._isSkinMesh) {
           if (skinTone && mat instanceof THREE.MeshToonMaterial) {
             mat.color.set(skinTone)
+          }
+          return
+        }
+
+        // For face texture material, tint with skin tone (multiply with texture)
+        if ((mat as any)._isFaceTexture) {
+          if (skinTone && mat instanceof THREE.MeshToonMaterial) {
+            mat.color.set(skinTone)
+            mat.needsUpdate = true
           }
           return
         }

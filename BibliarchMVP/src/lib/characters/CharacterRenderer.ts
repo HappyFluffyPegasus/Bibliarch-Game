@@ -16,7 +16,7 @@ const MODEL_PATH = '/models/Bibliarch Maybe.fbx'
 // Keywords for identifying mesh types
 const HAIR_KEYWORDS = ['hair', 'pigtail', 'ponytail', 'bob', 'bangs', 'bun', 'braids', 'luke', 'ahoge']
 const SKIN_KEYWORDS = ['body', 'skin', 'head', 'face', 'hand', 'arm', 'leg', 'foot']
-const EYE_KEYWORDS = ['eye', 'Eyes', 'Eyes_3']
+const EYE_KEYWORDS = ['eye', 'iris', 'eye white', 'eye_white']
 
 // Shared FBX cache to avoid reloading for each character
 const fbxCache: Map<string, THREE.Group> = new Map()
@@ -200,33 +200,71 @@ export class CharacterRenderer {
       const meshName = node.name
       const lowerName = meshName.toLowerCase()
 
-      // Skip eye meshes - keep original material
+      // Skip eye meshes - keep original material completely unchanged
       const isEyeMesh = EYE_KEYWORDS.some(kw => lowerName.includes(kw.toLowerCase()) || meshName === kw)
-      if (isEyeMesh) return
+      if (isEyeMesh) {
+        return
+      }
 
       const isHairMesh = HAIR_KEYWORDS.some(kw => lowerName.includes(kw))
       const isSkinMesh = SKIN_KEYWORDS.some(kw => lowerName.includes(kw))
 
-      // Create toon material
-      let baseColor: THREE.Color
-      let map: THREE.Texture | null = null
+      // Convert each sub-material individually to preserve multi-material meshes
+      const currentMats = Array.isArray(node.material) ? node.material : [node.material]
+      const toonMaterials: THREE.Material[] = currentMats.map((mat) => {
+        let baseColor = new THREE.Color(0xcccccc)
+        let map: THREE.Texture | null = null
+        const matNameLower = ((mat as any).name || '').toLowerCase()
 
-      if (isHairMesh) {
-        baseColor = new THREE.Color(colors.hair)
-        map = this.hairTexture
-      } else if (isSkinMesh) {
-        baseColor = new THREE.Color(colors.body.skinTone)
-      } else {
-        // Use clothing color or neutral gray
-        baseColor = new THREE.Color(colors.tops?.primary || 0xcccccc)
-      }
+        if (mat instanceof THREE.MeshStandardMaterial ||
+            mat instanceof THREE.MeshPhongMaterial ||
+            mat instanceof THREE.MeshToonMaterial ||
+            mat instanceof THREE.MeshLambertMaterial ||
+            mat instanceof THREE.MeshBasicMaterial) {
+          baseColor = mat.color.clone()
+          if (mat.map) {
+            map = mat.map
+            map.colorSpace = THREE.SRGBColorSpace
+            map.needsUpdate = true
+          }
+        }
 
-      const toonMat = createColoredShadowMaterial({
-        color: baseColor,
-        map: map ?? undefined,
+        const isFaceTextureMat = matNameLower.includes('chill') || (map && isSkinMesh)
+        const isEyeWhiteMat = matNameLower.includes('eye white')
+
+        if (isHairMesh) {
+          baseColor = new THREE.Color(colors.hair)
+          map = this.hairTexture  // Override with hair texture for hair
+        } else if (isFaceTextureMat) {
+          // Face texture: tint with skin tone (multiply)
+          baseColor = new THREE.Color(colors.body.skinTone)
+        } else if (isEyeWhiteMat) {
+          baseColor = new THREE.Color(0xffffff)
+        } else if (isSkinMesh && !map) {
+          baseColor = new THREE.Color(colors.body.skinTone)
+        } else if (!isSkinMesh && !isHairMesh && !map) {
+          baseColor = new THREE.Color(colors.tops?.primary || 0xcccccc)
+        }
+
+        const toonMat = createColoredShadowMaterial({
+          color: (map && !isHairMesh && !isFaceTextureMat) ? new THREE.Color(0xffffff) : baseColor,
+          map: map ?? undefined,
+        })
+
+        // Face texture PNG has transparent eye holes — alphaTest cuts them out
+        if (isFaceTextureMat) {
+          toonMat.alphaTest = 0.99
+        }
+
+        // Eye whites: double-sided (normals may face inward into socket)
+        if (isEyeWhiteMat) {
+          toonMat.side = THREE.DoubleSide
+        }
+
+        return toonMat
       })
 
-      node.material = toonMat
+      node.material = toonMaterials.length === 1 ? toonMaterials[0] : toonMaterials
       node.castShadow = true
       node.receiveShadow = true
       node.frustumCulled = false

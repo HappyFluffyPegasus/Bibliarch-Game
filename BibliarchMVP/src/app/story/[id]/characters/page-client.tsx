@@ -104,7 +104,7 @@ const CATEGORIES = [
 ]
 
 const SECTION_RULES: Array<{ category: Category; keywords: string[] }> = [
-  { category: 'BODY', keywords: ['skin', 'tone', 'body', 'plane072', 'mouth', 'eyebrow', 'brow', 'eyes'] },
+  { category: 'BODY', keywords: ['skin', 'tone', 'body', 'plane072', 'mouth', 'eyebrow', 'brow', 'eye', 'iris'] },
   { category: 'HAIR', keywords: ['hair', 'pigtail', 'ponytail', 'bob', 'bangs', 'bun', 'braids', 'luke', 'ahoge'] },
   { category: 'TOPS', keywords: ['shirt', 'tee', 'polo', 'sweater', 'jacket', 'tank', 'top', 'plane023'] },
   { category: 'DRESSES', keywords: ['dress'] },
@@ -113,7 +113,7 @@ const SECTION_RULES: Array<{ category: Category; keywords: string[] }> = [
   { category: 'ACCESSORIES', keywords: ['glasses', 'hat', 'wing', 'sock', 'tight', 'stocking', 'accessory', 'warmer', 'leg warmer'] }
 ]
 
-const HIDDEN_MESHES = ['Plane032_1', 'Plane023_1', 'Plane072', 'Plane072_1', 'Plane072_2', 'Eyes_1', 'Eyes_2']
+const HIDDEN_MESHES = ['Plane032_1', 'Plane023_1', 'Plane072', 'Plane072_1', 'Plane072_2', 'Eyes_1', 'Eyes_2', 'BézierCircle', 'BézierCircle001', 'NurbsPath052', 'NurbsPath013', 'eye whites', 'Eye Whites', 'eye_whites', 'Eye_Whites']
 
 export function CharactersPage() {
   const params = useParams()
@@ -203,7 +203,7 @@ export function CharactersPage() {
 
   const categorizeMesh = useCallback((meshName: string): Category => {
     const lower = meshName.toLowerCase()
-    if (meshName === 'Eyes' || meshName === 'Eyes_3' || lower === 'eyes') return 'BODY'
+    if (lower === 'eye' || lower === 'iris') return 'BODY'
     if (lower.includes('mouth')) return 'BODY'
     if (lower.includes('brow')) return 'BODY'
     if (lower === 'body') return null
@@ -217,7 +217,8 @@ export function CharactersPage() {
   }, [])
 
   const getSubcategory = useCallback((meshName: string): string => {
-    if (meshName === 'Eyes' || meshName === 'Eyes_3' || matchesKeyword(meshName, ['eyes'])) return 'Eyes'
+    const lower = meshName.toLowerCase()
+    if (lower === 'eye' || lower === 'iris') return 'Eyes'
     if (matchesKeyword(meshName, ['eyebrow', 'brow'])) return 'Eyebrows'
     if (matchesKeyword(meshName, ['mouth'])) return 'Mouths'
     if (matchesKeyword(meshName, ['shirt', 'tee', 'polo', 'sweater', 'jacket', 'tank', 'plane023'])) return 'Shirts'
@@ -236,7 +237,7 @@ export function CharactersPage() {
     return 'Other'
   }, [categorizeMesh])
 
-  const DEFAULT_BODY_ASSETS = ['Eyes_3', 'Chill Brows', 'Closed Mouth']
+  const DEFAULT_BODY_ASSETS = ['Body', 'Chill Brows', 'Closed Mouth']
 
   // Character management
   const handleCreateCharacter = () => {
@@ -685,11 +686,11 @@ export function CharactersPage() {
                 </div>
               </div>
 
-              {/* Shape Keys */}
+              {/* Eye Controls (Shape Keys) */}
               {availableMorphTargets.length > 0 && (
                 <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-medium text-slate-200">Body Shape</span>
+                    <span className="text-sm font-medium text-slate-200">Eye Controls</span>
                     <button
                       onClick={handleResetAllMorphTargets}
                       className="text-xs text-slate-200/50 hover:text-sky-400 transition-colors flex items-center gap-1"
@@ -703,9 +704,6 @@ export function CharactersPage() {
                       const key = `${target.meshName}:${target.targetName}`
                       const value = selectedCharacter.morphTargets?.[key] ?? 0
                       const displayName = target.targetName
-                        .replace(/^Key\s*/i, '')
-                        .replace(/_/g, ' ')
-                        .replace(/([a-z])([A-Z])/g, '$1 $2')
 
                       return (
                         <div key={key} className="space-y-1">
@@ -732,8 +730,8 @@ export function CharactersPage() {
                 </div>
               )}
 
-              {/* Eyes Selector */}
-              <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
+              {/* Eyes Selector (legacy mesh-based eyes, if any exist) */}
+              {getBodySubcategoryItems('Eyes').length > 0 && <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
                 <h4 className="text-sm font-medium text-slate-200 mb-3">Eyes</h4>
                 <div className="grid grid-cols-4 gap-2">
                   {getBodySubcategoryItems('Eyes').map((meshName) => {
@@ -755,7 +753,7 @@ export function CharactersPage() {
                     )
                   })}
                 </div>
-              </div>
+              </div>}
 
               {/* Eyebrows Selector */}
               <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
