@@ -141,6 +141,11 @@ export function createColoredShadowMaterial(options: ColoredShadowMaterialOption
     side: THREE.FrontSide,
   })
 
+  // Force morph target support in shader (auto-detect may miss if geometry loads after material)
+  ;(material as any).morphTargets = true
+  ;(material as any).morphNormals = true
+  material.needsUpdate = true
+
   ;(material as any)._toonColor = color.clone()
   ;(material as any)._isToonMaterial = true
 
@@ -220,6 +225,10 @@ export function createToonMaterial(options: ToonMaterialOptions = {}): THREE.Mat
       gradientMap,
       side: THREE.FrontSide,
     })
+
+    ;(material as any).morphTargets = true
+    ;(material as any).morphNormals = true
+    material.needsUpdate = true
 
     // Store metadata for color updates
     ;(material as any)._toonColor = color.clone()

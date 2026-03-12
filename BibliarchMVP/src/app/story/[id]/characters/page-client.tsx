@@ -686,11 +686,11 @@ export function CharactersPage() {
                 </div>
               </div>
 
-              {/* Eye Controls (Shape Keys) */}
+              {/* Shape Keys */}
               {availableMorphTargets.length > 0 && (
                 <div className="bg-slate-700/80 rounded-2xl p-4 shadow-sm shadow-sky-500/20">
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-medium text-slate-200">Eye Controls</span>
+                    <span className="text-sm font-medium text-slate-200">Shape Keys</span>
                     <button
                       onClick={handleResetAllMorphTargets}
                       className="text-xs text-slate-200/50 hover:text-sky-400 transition-colors flex items-center gap-1"

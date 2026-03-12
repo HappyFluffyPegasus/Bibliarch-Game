@@ -9,53 +9,50 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { createColoredShadowMaterial } from '@/lib/shaders/toonMaterial'
 import { SpringBoneSystem } from '@/lib/SpringBoneSystem'
 import { getUndertoneTexturePath } from '@/lib/hairTextures'
+import { loadShapeKeyData, applyShapeKeysToModel } from '@/lib/characters/shapeKeyLoader'
 import type { CharacterData, CategoryColors } from '@/types/scenes'
 
-const MODEL_PATH = '/models/Bibliarch Maybe.fbx'
+const FBX_PATH = '/models/Bibliarch Maybe.fbx'
 
 // Keywords for identifying mesh types
 const HAIR_KEYWORDS = ['hair', 'pigtail', 'ponytail', 'bob', 'bangs', 'bun', 'braids', 'luke', 'ahoge']
 const SKIN_KEYWORDS = ['body', 'skin', 'head', 'face', 'hand', 'arm', 'leg', 'foot']
 const EYE_KEYWORDS = ['eye', 'iris', 'eye white', 'eye_white']
 
-// Shared FBX cache to avoid reloading for each character
-const fbxCache: Map<string, THREE.Group> = new Map()
-const loadingPromises: Map<string, Promise<THREE.Group>> = new Map()
+// Shared model cache to avoid reloading for each character
+let modelCache: THREE.Group | null = null
+let modelLoadingPromise: Promise<THREE.Group> | null = null
 
 /**
- * Load the FBX model with caching
- * Uses SkeletonUtils.clone() for proper skinned mesh cloning
+ * Load the FBX character model with caching.
+ * Uses SkeletonUtils.clone() for proper skinned mesh cloning.
  */
-async function loadFBXModel(): Promise<THREE.Group> {
-  // Check cache first
-  if (fbxCache.has(MODEL_PATH)) {
-    // Use SkeletonUtils.clone for proper skinned mesh cloning
-    return SkeletonUtils.clone(fbxCache.get(MODEL_PATH)!) as THREE.Group
+async function loadCharacterModel(): Promise<THREE.Group> {
+  if (modelCache) {
+    return SkeletonUtils.clone(modelCache) as THREE.Group
   }
 
-  // Check if already loading
-  if (loadingPromises.has(MODEL_PATH)) {
-    const cached = await loadingPromises.get(MODEL_PATH)!
+  if (modelLoadingPromise) {
+    const cached = await modelLoadingPromise
     return SkeletonUtils.clone(cached) as THREE.Group
   }
 
-  // Load the model
-  const loadPromise = new Promise<THREE.Group>((resolve, reject) => {
-    const loader = new FBXLoader()
-    loader.load(
-      MODEL_PATH,
+  modelLoadingPromise = new Promise((resolve, reject) => {
+    const fbxLoader = new FBXLoader()
+    fbxLoader.load(
+      FBX_PATH,
       (fbx) => {
-        fbxCache.set(MODEL_PATH, fbx)
-        // Use SkeletonUtils.clone for proper skinned mesh cloning
-        resolve(SkeletonUtils.clone(fbx) as THREE.Group)
+        modelCache = fbx
+        resolve(fbx)
       },
       undefined,
       reject
     )
   })
 
-  loadingPromises.set(MODEL_PATH, loadPromise)
-  return loadPromise
+  return modelLoadingPromise.then((result) => {
+    return SkeletonUtils.clone(result) as THREE.Group
+  })
 }
 
 // Base rotation offset for the FBX model (facing direction)
@@ -65,6 +62,7 @@ export class CharacterRenderer {
   private group: THREE.Group  // Wrapper group that contains the FBX
   private fbxModel: THREE.Group | null = null
   private meshMap: Map<string, THREE.SkinnedMesh> = new Map()
+  private allMeshMap: Map<string, THREE.Mesh> = new Map()  // Includes regular Mesh (for morph targets)
   private springBones: SpringBoneSystem | null = null
   private hairTexture: THREE.Texture | null = null
   private textureLoader: THREE.TextureLoader
@@ -83,7 +81,7 @@ export class CharacterRenderer {
   async load(): Promise<void> {
     if (this.loaded || this.disposed) return
 
-    const fbx = await loadFBXModel()
+    const fbx = await loadCharacterModel()
     if (this.disposed) {
       fbx.traverse((node) => {
         if (node instanceof THREE.Mesh) {
@@ -106,8 +104,9 @@ export class CharacterRenderer {
         this.meshMap.set(node.name, node)
       }
 
-      // Hide ALL meshes initially except body and eyes (catches both Mesh and SkinnedMesh)
+      // Track all meshes (for morph target application)
       if (node instanceof THREE.Mesh) {
+        this.allMeshMap.set(node.name, node)
         const lowerName = node.name.toLowerCase()
         const isBody = lowerName === 'body'
         const isEye = EYE_KEYWORDS.some(kw => lowerName.includes(kw.toLowerCase()) || node.name === kw)
@@ -117,6 +116,19 @@ export class CharacterRenderer {
 
     this.fbxModel = fbx
     this.group.add(fbx)
+
+    // Load external shape keys (from Blender export script)
+    const shapeKeyData = await loadShapeKeyData()
+    if (shapeKeyData && !this.disposed) {
+      applyShapeKeysToModel(fbx, shapeKeyData)
+      // Force material recompile so morph target shader code is included
+      fbx.traverse((node) => {
+        if (node instanceof THREE.Mesh && node.geometry?.morphAttributes?.position) {
+          const mats = Array.isArray(node.material) ? node.material : [node.material]
+          mats.forEach((mat) => { mat.needsUpdate = true })
+        }
+      })
+    }
 
     // Initialize spring bones for hair physics
     this.springBones = new SpringBoneSystem()
@@ -170,11 +182,11 @@ export class CharacterRenderer {
       })
     }
 
-    // Apply morph targets
+    // Apply morph targets (check skinned meshes first, then all meshes)
     if (data.morphTargets) {
       Object.entries(data.morphTargets).forEach(([key, value]) => {
         const [meshName, targetName] = key.split(':')
-        const mesh = this.meshMap.get(meshName)
+        const mesh = this.meshMap.get(meshName) || this.allMeshMap.get(meshName)
         if (mesh?.morphTargetDictionary && mesh.morphTargetInfluences) {
           const index = mesh.morphTargetDictionary[targetName]
           if (index !== undefined) {

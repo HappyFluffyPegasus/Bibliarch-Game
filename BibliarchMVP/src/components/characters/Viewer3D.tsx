@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { createToonMaterial, setToonMaterialColor, createColoredShadowMaterial } from '@/lib/shaders/toonMaterial'
 import { getUndertoneTexturePath, getUndertone } from '@/lib/hairTextures'
 import { SpringBoneSystem } from '@/lib/SpringBoneSystem'
+import { loadShapeKeyData, applyShapeKeysToModel } from '@/lib/characters/shapeKeyLoader'
 
 type Section = 'BODY' | 'HAIR' | 'TOPS' | 'DRESSES' | 'PANTS' | 'SHOES' | 'ACCESSORIES' | 'EXPRESSIONS' | 'POSES' | null
 
@@ -158,7 +158,6 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     const grid = new THREE.GridHelper(10, 10, 0x404040, 0x404040)
     scene.add(grid)
 
-    const loader = new FBXLoader()
     const textureLoader = new THREE.TextureLoader()
     textureLoaderRef.current = textureLoader
 
@@ -185,11 +184,9 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
       }
     )
 
-    // Load the working model (no shape keys, good for animation)
-    loader.load(
-      '/models/Bibliarch Maybe.fbx',
-      (fbx) => {
-        if (!mounted) return  // Stale callback from unmounted instance
+    const fbxLoader = new FBXLoader()
+    fbxLoader.load('/models/Bibliarch Maybe.fbx', (fbx) => {
+        if (!mounted) return
 
         fbx.scale.setScalar(0.01)
         fbx.name = 'Character Rig'
@@ -201,10 +198,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
         scene.add(wrapper)
         sceneObjectsRef.current = wrapper
 
-        // Rebind all SkinnedMeshes AFTER adding to scene.
-        // Calling bind() without a second argument forces Three.js to
-        // recompute bind matrices from the current (scaled) world matrices.
-        // Without this, the 0.01 scale causes armatures to collapse.
+        // Rebind all SkinnedMeshes AFTER adding to scene
         fbx.updateMatrixWorld(true)
         fbx.traverse((node) => {
           if (node instanceof THREE.SkinnedMesh) {
@@ -378,10 +372,13 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
               const newMats = eyeMats.map((mat) => {
                 // Eye whites: pure flat white, no shading, no lighting
                 if (lowerName.includes('eye white') || lowerName.includes('eye_white')) {
-                  return new THREE.MeshBasicMaterial({
+                  const m = new THREE.MeshBasicMaterial({
                     color: 0xffffff,
                     side: THREE.DoubleSide,
                   })
+                  ;(m as any).morphTargets = true
+                  m.needsUpdate = true
+                  return m
                 }
                 // Iris: unlit MeshBasicMaterial so texture shows without lighting
                 const map = (mat as any).map || null
@@ -389,10 +386,13 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
                   map.colorSpace = THREE.SRGBColorSpace
                   map.needsUpdate = true
                 }
-                return new THREE.MeshBasicMaterial({
+                const m = new THREE.MeshBasicMaterial({
                   map,
                   color: 0xffffff,
                 })
+                ;(m as any).morphTargets = true
+                m.needsUpdate = true
+                return m
               })
               node.material = newMats.length === 1 ? newMats[0] : newMats
               // Render eyes after body so they show through face cutouts
@@ -419,7 +419,7 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
               if (node instanceof THREE.Mesh || node instanceof THREE.SkinnedMesh) {
                 if (node.morphTargetDictionary && node.morphTargetInfluences) {
                   const meshName = node.name
-                  console.log(`[ShapeKeys] Found ${Object.keys(node.morphTargetDictionary).length} shape keys on "${meshName}"`)
+                  console.log(`[ShapeKeys] Found ${Object.keys(node.morphTargetDictionary).length} FBX-native shape keys on "${meshName}"`)
 
                   // Store regular meshes in meshMap too so morph target effect can find them
                   if (!(node instanceof THREE.SkinnedMesh)) {
@@ -435,24 +435,58 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
               }
             })
 
-            console.log(`Shape keys found. Total morph targets: ${morphTargets.length}`)
+            console.log(`[ShapeKeys] FBX-native morph targets: ${morphTargets.length}`)
+
+            // Load external shape keys (exported from Blender via export_shape_keys.py)
+            // This handles shape keys that FBX can't export due to modifiers
+            loadShapeKeyData().then((shapeKeyData) => {
+              if (!mounted) return
+
+              if (shapeKeyData) {
+                const externalTargets = applyShapeKeysToModel(fbx, shapeKeyData)
+                externalTargets.forEach((t) => {
+                  morphTargets.push(t)
+                  if (!meshMapRef.current.has(t.meshName)) {
+                    fbx.traverse((node) => {
+                      if ((node instanceof THREE.Mesh || node instanceof THREE.SkinnedMesh) && node.name === t.meshName) {
+                        meshMapRef.current.set(t.meshName, node as THREE.Mesh)
+                      }
+                    })
+                  }
+                })
+
+                // Force materials to recompile with morph target support.
+                // Shaders were compiled before morphAttributes existed on the geometry,
+                // so the morph target code was not included. Bumping material.version
+                // tells the renderer the program is stale.
+                fbx.traverse((node) => {
+                  if (node instanceof THREE.Mesh || node instanceof THREE.SkinnedMesh) {
+                    if (node.geometry?.morphAttributes?.position) {
+                      const mats = Array.isArray(node.material) ? node.material : [node.material]
+                      mats.forEach((mat) => {
+                        mat.needsUpdate = true
+                      })
+                    }
+                  }
+                })
+
+                console.log(`[ShapeKeys] Total after external: ${morphTargets.length}`)
+
+                if (onMorphTargetsLoaded && morphTargets.length > 0) {
+                  onMorphTargetsLoaded([...morphTargets])
+                }
+              }
+            })
 
             // Debug: log mesh names vs visibleAssets to diagnose refresh visibility bug
             console.log('[Viewer3D] Model loaded. meshMap keys:', [...meshMapRef.current.keys()])
             console.log('[Viewer3D] visibleAssetsRef:', visibleAssetsRef.current)
-            const debugVisibleSet = new Set(visibleAssetsRef.current)
-            meshMapRef.current.forEach((mesh, name) => {
-              const shouldBeVisible = name.toLowerCase() === 'body' || debugVisibleSet.has(name)
-              console.log(`[Viewer3D] mesh="${name}" visible=${mesh.visible} shouldBe=${shouldBeVisible} frustumCulled=${mesh.frustumCulled} hasMaterial=${!!mesh.material} hasGeometry=${!!mesh.geometry}`)
-            })
 
             setLoading(false)
             setModelReady(true)
 
             // Initialize spring bones for hair
             const springBones = new SpringBoneSystem()
-            // Add all hair-related bones with springy physics
-            // Stiffness: 0.3 = moderate spring, Damping: 0.7 = moderate bounce
             springBones.addBones(fbx, [
               'hair', 'pigtail', 'ponytail', 'braid', 'bangs', 'ahoge', 'bun', 'strand'
             ], 0.25, 0.7)
@@ -462,20 +496,16 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
               onMeshesLoaded(meshes)
             }
 
+            // Send morph targets immediately (external ones from JSON come async above)
             if (onMorphTargetsLoaded && morphTargets.length > 0) {
-              onMorphTargetsLoaded(morphTargets)
+              onMorphTargetsLoaded([...morphTargets])
             }
         }
-      },
-      (progress) => {
-        console.log('Loading:', (progress.loaded / progress.total * 100).toFixed(0) + '%')
-      },
-      (error) => {
-        console.error('Error loading model:', error)
-        setError('Failed to load 3D model')
-        setLoading(false)
-      }
-    )
+    }, undefined, (error) => {
+      console.error('Error loading model:', error)
+      setError('Failed to load 3D model')
+      setLoading(false)
+    })
 
     const handleResize = () => {
       const width = canvas.clientWidth
