@@ -15,6 +15,7 @@ interface ShapeKeyDelta {
   min: number
   max: number
   deltas: Record<string, [number, number, number]>
+  eval_deltas?: Record<string, [number, number, number]>  // post-modifier deltas (for subdivision meshes)
 }
 
 interface MeshShapeKeyData {
@@ -146,132 +147,303 @@ export function applyShapeKeysToModel(
   data: ShapeKeyExport
 ): { meshName: string; targetName: string; index: number }[] {
   const results: { meshName: string; targetName: string; index: number }[] = []
+  const normalize = (s: string) => s.toLowerCase().replace(/_/g, ' ')
 
+  // Collect all mesh nodes that have shape key data
+  const meshNodes: { node: THREE.Mesh; meshData: MeshShapeKeyData; meshName: string }[] = []
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh) && !(node instanceof THREE.SkinnedMesh)) return
-
     const meshName = node.name
     let meshData = data.meshes[meshName]
     if (!meshData) {
-      const lowerName = meshName.toLowerCase()
-      const key = Object.keys(data.meshes).find(k => k.toLowerCase() === lowerName)
+      const normalizedName = normalize(meshName)
+      const key = Object.keys(data.meshes).find(k => normalize(k) === normalizedName)
       if (key) meshData = data.meshes[key]
     }
-    if (!meshData) return
+    if (meshData) meshNodes.push({ node, meshData, meshName })
+  })
 
+  // ── Pass 1: Process Body with clean base_deltas ──
+  // Store Body's morph target buffers so clothing can copy from them
+  let bodyPositionAttr: THREE.BufferAttribute | null = null
+  let bodyMorphBuffers: Map<string, Float32Array> = new Map()
+
+  const bodyEntry = meshNodes.find(e => e.meshName === 'Body')
+  if (bodyEntry) {
+    const { node, meshData, meshName } = bodyEntry
     const geometry = node.geometry
     const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute
-    if (!positionAttr) return
+    if (positionAttr) {
+      bodyPositionAttr = positionAttr
+      const threeVertexCount = positionAttr.count
+
+      const evalPositions = meshData.eval_positions || meshData.basis_positions
+      const basePositions = meshData.base_positions
+      const hasMirror = meshData.has_mirror ?? false
+      const mirrorAxis = meshData.mirror_axis ?? 0
+
+      if (evalPositions && basePositions) {
+        const toThree = detectTransform(positionAttr, evalPositions, meshName)
+        if (toThree) {
+          const threeHash = buildThreePositionHash(positionAttr, 6)
+
+          // Build base→three mapping with mirror
+          const baseToThree = new Map<number, number[]>()
+          const baseMirrorToThree = new Map<number, number[]>()
+          let directMatches = 0
+          let mirrorMatches = 0
+
+          for (let bi = 0; bi < basePositions.length; bi++) {
+            const [bx, by, bz] = basePositions[bi]
+            const [tx, ty, tz] = toThree(bx, by, bz)
+            const key = `${tx.toFixed(6)},${ty.toFixed(6)},${tz.toFixed(6)}`
+            const matches = threeHash.get(key)
+            if (matches && matches.length > 0) {
+              baseToThree.set(bi, [...matches])
+              directMatches += matches.length
+            }
+
+            if (hasMirror) {
+              const mirrored: [number, number, number] = [bx, by, bz]
+              mirrored[mirrorAxis] = -mirrored[mirrorAxis]
+              const [mx, my, mz] = toThree(mirrored[0], mirrored[1], mirrored[2])
+              const mkey = `${mx.toFixed(6)},${my.toFixed(6)},${mz.toFixed(6)}`
+              const mmatches = threeHash.get(mkey)
+              if (mmatches && mmatches.length > 0) {
+                const directSet = new Set(baseToThree.get(bi) || [])
+                const mirrorOnly = mmatches.filter(ti => !directSet.has(ti))
+                if (mirrorOnly.length > 0) {
+                  baseMirrorToThree.set(bi, mirrorOnly)
+                  mirrorMatches += mirrorOnly.length
+                }
+              }
+            }
+          }
+
+          console.log(`[ShapeKeys] "Body": base→three: ${directMatches} direct, ${mirrorMatches} mirror (${basePositions.length} base verts, ${threeVertexCount} three verts)`)
+
+          // Create morph targets for Body
+          if (!geometry.morphAttributes.position) geometry.morphAttributes.position = []
+          const existingCount = (geometry.morphAttributes.position as THREE.BufferAttribute[]).length
+          if (!node.morphTargetDictionary) node.morphTargetDictionary = {}
+          if (!node.morphTargetInfluences) node.morphTargetInfluences = []
+
+          const shapeKeyNames = Object.keys(meshData.shape_keys)
+          console.log(`[ShapeKeys] Applying ${shapeKeyNames.length} shape keys to "Body" (base_deltas)`)
+
+          let addedCount = 0
+          shapeKeyNames.forEach((keyName) => {
+            if (node.morphTargetDictionary![keyName] !== undefined) return
+            const keyData = meshData.shape_keys[keyName]
+            const morphIndex = existingCount + addedCount
+            addedCount++
+
+            const deltaArray = new Float32Array(threeVertexCount * 3)
+
+            Object.entries(keyData.deltas).forEach(([baseIdxStr, delta]) => {
+              const baseIdx = parseInt(baseIdxStr, 10)
+              const [dx, dy, dz] = toThree(delta[0], delta[1], delta[2])
+
+              const directIndices = baseToThree.get(baseIdx)
+              if (directIndices) {
+                for (const ti of directIndices) {
+                  deltaArray[ti * 3] = dx
+                  deltaArray[ti * 3 + 1] = dy
+                  deltaArray[ti * 3 + 2] = dz
+                }
+              }
+
+              const mirrorIndices = baseMirrorToThree.get(baseIdx)
+              if (mirrorIndices) {
+                const md: [number, number, number] = [dx, dy, dz]
+                md[mirrorAxis] = -md[mirrorAxis]
+                for (const ti of mirrorIndices) {
+                  deltaArray[ti * 3] = md[0]
+                  deltaArray[ti * 3 + 1] = md[1]
+                  deltaArray[ti * 3 + 2] = md[2]
+                }
+              }
+            })
+
+            const morphAttr = new THREE.Float32BufferAttribute(deltaArray, 3)
+            morphAttr.name = keyName
+            ;(geometry.morphAttributes.position as THREE.Float32BufferAttribute[]).push(morphAttr)
+            node.morphTargetDictionary![keyName] = morphIndex
+            node.morphTargetInfluences![morphIndex] = 0
+
+            // Store for clothing to copy
+            bodyMorphBuffers.set(keyName, deltaArray)
+
+            results.push({ meshName, targetName: keyName, index: morphIndex })
+          })
+
+          geometry.morphTargetsRelative = true
+        }
+      }
+    }
+  }
+
+  // ── Pass 2: Process non-Body meshes ──
+  // For meshes where base matching fails (solidify etc.), copy from nearest Body vertex
+  // Build Body position hash for nearest-vertex lookup
+  let bodyPosHash: Map<string, number[]> | null = null
+  if (bodyPositionAttr) {
+    bodyPosHash = buildThreePositionHash(bodyPositionAttr, 4)
+  }
+
+  for (const entry of meshNodes) {
+    if (entry.meshName === 'Body') continue
+    const { node, meshData, meshName } = entry
+    const geometry = node.geometry
+    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute
+    if (!positionAttr) continue
     const threeVertexCount = positionAttr.count
 
-    // v3: use eval_positions for FBX matching, base_positions + deltas for shape keys
-    // v2 compat: use basis_positions
     const evalPositions = meshData.eval_positions || meshData.basis_positions
     const basePositions = meshData.base_positions
     const hasMirror = meshData.has_mirror ?? false
     const mirrorAxis = meshData.mirror_axis ?? 0
 
-    if (!evalPositions || evalPositions.length === 0) {
-      console.warn(`[ShapeKeys] "${meshName}": no position data, skipping`)
-      return
-    }
+    if (!evalPositions || evalPositions.length === 0) continue
 
-    // Detect coordinate transform (Blender space → Three.js FBX space)
     const toThree = detectTransform(positionAttr, evalPositions, meshName)
-    if (!toThree) return
+    if (!toThree) continue
 
-    // Build hash of Three.js vertex positions for fast lookup
     const threeHash = buildThreePositionHash(positionAttr, 6)
 
-    // If v3 format with base_positions: map base mesh verts → Three.js verts
-    // and handle mirror by also checking flipped positions
+    // Try base position matching first
+    let directMatches = 0
+    let mirrorMatches = 0
+    const baseToThree = new Map<number, number[]>()
+    const baseMirrorToThree = new Map<number, number[]>()
+
     if (basePositions && basePositions.length > 0) {
-      // Map: baseIdx → [threeIdx, ...]
-      const baseToThree = new Map<number, number[]>()
-      // Map: baseIdx → [threeIdx, ...] for mirrored vertices
-      const baseMirrorToThree = new Map<number, number[]>()
-
-      let directMatches = 0
-      let mirrorMatches = 0
-
       for (let bi = 0; bi < basePositions.length; bi++) {
         const [bx, by, bz] = basePositions[bi]
         const [tx, ty, tz] = toThree(bx, by, bz)
-
-        // Try exact match at multiple precisions
-        for (const dec of [6, 5, 4]) {
-          const key = `${tx.toFixed(dec)},${ty.toFixed(dec)},${tz.toFixed(dec)}`
-          // Need to rebuild hash at this precision if not 6
-          // For simplicity, just use the position attribute directly for lower precisions
-          if (dec === 6) {
-            const matches = threeHash.get(key)
-            if (matches && matches.length > 0) {
-              baseToThree.set(bi, [...matches])
-              directMatches += matches.length
-              break
-            }
-          } else {
-            // Fallback: scan (only needed if 6-decimal match fails)
-            const found: number[] = []
-            for (let ti = 0; ti < threeVertexCount; ti++) {
-              if (
-                positionAttr.getX(ti).toFixed(dec) === tx.toFixed(dec) &&
-                positionAttr.getY(ti).toFixed(dec) === ty.toFixed(dec) &&
-                positionAttr.getZ(ti).toFixed(dec) === tz.toFixed(dec)
-              ) {
-                found.push(ti)
-              }
-            }
-            if (found.length > 0) {
-              baseToThree.set(bi, found)
-              directMatches += found.length
-              break
-            }
-          }
+        const key = `${tx.toFixed(6)},${ty.toFixed(6)},${tz.toFixed(6)}`
+        const matches = threeHash.get(key)
+        if (matches && matches.length > 0) {
+          baseToThree.set(bi, [...matches])
+          directMatches += matches.length
         }
 
-        // If mirror: also find Three.js vertices at the mirrored position
         if (hasMirror) {
           const mirrored: [number, number, number] = [bx, by, bz]
           mirrored[mirrorAxis] = -mirrored[mirrorAxis]
           const [mx, my, mz] = toThree(mirrored[0], mirrored[1], mirrored[2])
-
-          for (const dec of [6, 5, 4]) {
-            const key = `${mx.toFixed(dec)},${my.toFixed(dec)},${mz.toFixed(dec)}`
-            if (dec === 6) {
-              const matches = threeHash.get(key)
-              if (matches && matches.length > 0) {
-                // Filter out vertices already matched directly
-                const directSet = new Set(baseToThree.get(bi) || [])
-                const mirrorOnly = matches.filter(ti => !directSet.has(ti))
-                if (mirrorOnly.length > 0) {
-                  baseMirrorToThree.set(bi, mirrorOnly)
-                  mirrorMatches += mirrorOnly.length
-                }
-                break
-              }
+          const mkey = `${mx.toFixed(6)},${my.toFixed(6)},${mz.toFixed(6)}`
+          const mmatches = threeHash.get(mkey)
+          if (mmatches && mmatches.length > 0) {
+            const directSet = new Set(baseToThree.get(bi) || [])
+            const mirrorOnly = mmatches.filter(ti => !directSet.has(ti))
+            if (mirrorOnly.length > 0) {
+              baseMirrorToThree.set(bi, mirrorOnly)
+              mirrorMatches += mirrorOnly.length
             }
           }
         }
       }
+    }
 
-      console.log(`[ShapeKeys] "${meshName}": base→three: ${directMatches} direct, ${mirrorMatches} mirror (${basePositions.length} base verts, ${threeVertexCount} three verts)`)
+    const baseMatchRate = threeVertexCount > 0 ? directMatches / threeVertexCount : 0
+    console.log(`[ShapeKeys] "${meshName}": base→three: ${directMatches} direct, ${mirrorMatches} mirror (rate=${(baseMatchRate * 100).toFixed(1)}%)`)
 
-      // Apply shape keys using base mesh mapping
-      if (!geometry.morphAttributes.position) {
-        geometry.morphAttributes.position = []
+    // If base matching is good, use base_deltas (same as Body approach)
+    const useBodyCopy = baseMatchRate < 0.3 && bodyPositionAttr && bodyMorphBuffers.size > 0
+
+    if (useBodyCopy) {
+      console.log(`[ShapeKeys] "${meshName}": copying morph deltas from nearest Body vertex`)
+
+      // Map each clothing vertex → nearest Body vertex index
+      const clothingToBody = new Int32Array(threeVertexCount).fill(-1)
+      let mapped = 0
+
+      for (let ci = 0; ci < threeVertexCount; ci++) {
+        const cx = positionAttr.getX(ci)
+        const cy = positionAttr.getY(ci)
+        const cz = positionAttr.getZ(ci)
+
+        // Try hash lookup at decreasing precision
+        let found = false
+        if (bodyPosHash) {
+          const key = `${cx.toFixed(4)},${cy.toFixed(4)},${cz.toFixed(4)}`
+          const bodyIndices = bodyPosHash.get(key)
+          if (bodyIndices && bodyIndices.length > 0) {
+            clothingToBody[ci] = bodyIndices[0]
+            mapped++
+            found = true
+          }
+        }
+
+        // Fallback: brute force nearest Body vertex
+        if (!found && bodyPositionAttr) {
+          let bestDist = Infinity
+          let bestIdx = -1
+          for (let bi = 0; bi < bodyPositionAttr.count; bi++) {
+            const dx = cx - bodyPositionAttr.getX(bi)
+            const dy = cy - bodyPositionAttr.getY(bi)
+            const dz = cz - bodyPositionAttr.getZ(bi)
+            const d = dx * dx + dy * dy + dz * dz
+            if (d < bestDist) {
+              bestDist = d
+              bestIdx = bi
+            }
+          }
+          if (bestIdx >= 0 && bestDist < 0.01) {  // Max distance threshold
+            clothingToBody[ci] = bestIdx
+            mapped++
+          }
+        }
       }
+
+      console.log(`[ShapeKeys] "${meshName}": ${mapped}/${threeVertexCount} verts mapped to Body`)
+
+      // Create morph targets by copying Body deltas
+      if (!geometry.morphAttributes.position) geometry.morphAttributes.position = []
+      const existingCount = (geometry.morphAttributes.position as THREE.BufferAttribute[]).length
+      if (!node.morphTargetDictionary) node.morphTargetDictionary = {}
+      if (!node.morphTargetInfluences) node.morphTargetInfluences = []
+
+      let addedCount = 0
+      bodyMorphBuffers.forEach((bodyDeltas, keyName) => {
+        if (node.morphTargetDictionary![keyName] !== undefined) return
+        const morphIndex = existingCount + addedCount
+        addedCount++
+
+        const deltaArray = new Float32Array(threeVertexCount * 3)
+        for (let ci = 0; ci < threeVertexCount; ci++) {
+          const bi = clothingToBody[ci]
+          if (bi >= 0) {
+            deltaArray[ci * 3] = bodyDeltas[bi * 3]
+            deltaArray[ci * 3 + 1] = bodyDeltas[bi * 3 + 1]
+            deltaArray[ci * 3 + 2] = bodyDeltas[bi * 3 + 2]
+          }
+        }
+
+        const morphAttr = new THREE.Float32BufferAttribute(deltaArray, 3)
+        morphAttr.name = keyName
+        ;(geometry.morphAttributes.position as THREE.Float32BufferAttribute[]).push(morphAttr)
+        node.morphTargetDictionary![keyName] = morphIndex
+        node.morphTargetInfluences![morphIndex] = 0
+        results.push({ meshName, targetName: keyName, index: morphIndex })
+      })
+
+      geometry.morphTargetsRelative = true
+
+    } else {
+      // Good base match rate — use base_deltas directly (same as Body)
+      if (!geometry.morphAttributes.position) geometry.morphAttributes.position = []
       const existingCount = (geometry.morphAttributes.position as THREE.BufferAttribute[]).length
       if (!node.morphTargetDictionary) node.morphTargetDictionary = {}
       if (!node.morphTargetInfluences) node.morphTargetInfluences = []
 
       const shapeKeyNames = Object.keys(meshData.shape_keys)
-      console.log(`[ShapeKeys] Applying ${shapeKeyNames.length} shape keys to "${meshName}"`)
+      console.log(`[ShapeKeys] Applying ${shapeKeyNames.length} shape keys to "${meshName}" (base_deltas)`)
 
       let addedCount = 0
       shapeKeyNames.forEach((keyName) => {
         if (node.morphTargetDictionary![keyName] !== undefined) return
-
         const keyData = meshData.shape_keys[keyName]
         const morphIndex = existingCount + addedCount
         addedCount++
@@ -282,7 +454,6 @@ export function applyShapeKeysToModel(
           const baseIdx = parseInt(baseIdxStr, 10)
           const [dx, dy, dz] = toThree(delta[0], delta[1], delta[2])
 
-          // Apply to directly matched Three.js vertices
           const directIndices = baseToThree.get(baseIdx)
           if (directIndices) {
             for (const ti of directIndices) {
@@ -292,17 +463,10 @@ export function applyShapeKeysToModel(
             }
           }
 
-          // Apply mirrored delta to mirror-matched Three.js vertices
           const mirrorIndices = baseMirrorToThree.get(baseIdx)
           if (mirrorIndices) {
-            // Mirror the delta on the mirror axis
             const md: [number, number, number] = [dx, dy, dz]
-            // The toThree transform was already applied to the delta.
-            // We need to flip the component that corresponds to the mirror axis
-            // in Three.js space. Since transform is identity (detected), the
-            // mirror axis maps directly.
             md[mirrorAxis] = -md[mirrorAxis]
-
             for (const ti of mirrorIndices) {
               deltaArray[ti * 3] = md[0]
               deltaArray[ti * 3 + 1] = md[1]
@@ -314,66 +478,6 @@ export function applyShapeKeysToModel(
         const morphAttr = new THREE.Float32BufferAttribute(deltaArray, 3)
         morphAttr.name = keyName
         ;(geometry.morphAttributes.position as THREE.Float32BufferAttribute[]).push(morphAttr)
-
-        node.morphTargetDictionary![keyName] = morphIndex
-        node.morphTargetInfluences![morphIndex] = 0
-
-        results.push({ meshName, targetName: keyName, index: morphIndex })
-      })
-
-      geometry.morphTargetsRelative = true
-
-    } else {
-      // v2 fallback: use eval_positions with hash matching (old approach)
-      console.warn(`[ShapeKeys] "${meshName}": no base_positions, using eval_positions fallback`)
-
-      const evalToThree = new Map<number, number[]>()
-      let matched = 0
-      for (let ei = 0; ei < evalPositions.length; ei++) {
-        const [tx, ty, tz] = toThree(evalPositions[ei][0], evalPositions[ei][1], evalPositions[ei][2])
-        const key = `${tx.toFixed(6)},${ty.toFixed(6)},${tz.toFixed(6)}`
-        const threeIndices = threeHash.get(key)
-        if (threeIndices) {
-          evalToThree.set(ei, [...threeIndices])
-          matched += threeIndices.length
-        }
-      }
-
-      if (!geometry.morphAttributes.position) {
-        geometry.morphAttributes.position = []
-      }
-      const existingCount = (geometry.morphAttributes.position as THREE.BufferAttribute[]).length
-      if (!node.morphTargetDictionary) node.morphTargetDictionary = {}
-      if (!node.morphTargetInfluences) node.morphTargetInfluences = []
-
-      let addedCount = 0
-      Object.keys(meshData.shape_keys).forEach((keyName) => {
-        if (node.morphTargetDictionary![keyName] !== undefined) return
-        const keyData = meshData.shape_keys[keyName]
-        const morphIndex = existingCount + addedCount
-        addedCount++
-
-        const deltaArray = new Float32Array(threeVertexCount * 3)
-        const MAX_DELTA_SQ = 0.1 * 0.1
-
-        Object.entries(keyData.deltas).forEach(([idxStr, delta]) => {
-          const magSq = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
-          if (magSq > MAX_DELTA_SQ) return
-          const idx = parseInt(idxStr, 10)
-          const threeIndices = evalToThree.get(idx)
-          if (threeIndices) {
-            const [dx, dy, dz] = toThree(delta[0], delta[1], delta[2])
-            for (const ti of threeIndices) {
-              deltaArray[ti * 3] = dx
-              deltaArray[ti * 3 + 1] = dy
-              deltaArray[ti * 3 + 2] = dz
-            }
-          }
-        })
-
-        const morphAttr = new THREE.Float32BufferAttribute(deltaArray, 3)
-        morphAttr.name = keyName
-        ;(geometry.morphAttributes.position as THREE.Float32BufferAttribute[]).push(morphAttr)
         node.morphTargetDictionary![keyName] = morphIndex
         node.morphTargetInfluences![morphIndex] = 0
         results.push({ meshName, targetName: keyName, index: morphIndex })
@@ -381,9 +485,7 @@ export function applyShapeKeysToModel(
 
       geometry.morphTargetsRelative = true
     }
-
-    // Don't call updateMorphTargets() — it overwrites our dictionary
-  })
+  }
 
   if (results.length > 0) {
     console.log(`[ShapeKeys] Total morph targets applied: ${results.length}`)

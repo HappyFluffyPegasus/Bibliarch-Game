@@ -700,7 +700,17 @@ export function CharactersPage() {
                     </button>
                   </div>
                   <div className="space-y-3">
-                    {availableMorphTargets.map((target) => {
+                    {availableMorphTargets
+                      // Deduplicate: show Body shape keys (which propagate to clothing),
+                      // and only show non-Body targets if Body doesn't have that same key
+                      .filter((target) => {
+                        if (target.meshName === 'Body') return true
+                        // Keep non-Body targets only if no Body version exists
+                        return !availableMorphTargets.some(
+                          (t) => t.meshName === 'Body' && t.targetName === target.targetName
+                        )
+                      })
+                      .map((target) => {
                       const key = `${target.meshName}:${target.targetName}`
                       const value = selectedCharacter.morphTargets?.[key] ?? 0
                       const displayName = target.targetName

@@ -183,15 +183,30 @@ export class CharacterRenderer {
     }
 
     // Apply morph targets (check skinned meshes first, then all meshes)
+    // Body shape keys propagate to all clothing meshes that share the same target
     if (data.morphTargets) {
-      Object.entries(data.morphTargets).forEach(([key, value]) => {
-        const [meshName, targetName] = key.split(':')
-        const mesh = this.meshMap.get(meshName) || this.allMeshMap.get(meshName)
-        if (mesh?.morphTargetDictionary && mesh.morphTargetInfluences) {
+      const setMorphTarget = (mesh: THREE.Mesh, targetName: string, value: number) => {
+        if (mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
           const index = mesh.morphTargetDictionary[targetName]
           if (index !== undefined) {
             mesh.morphTargetInfluences[index] = value
           }
+        }
+      }
+
+      Object.entries(data.morphTargets).forEach(([key, value]) => {
+        const [meshName, targetName] = key.split(':')
+        const mesh = this.meshMap.get(meshName) || this.allMeshMap.get(meshName)
+        if (mesh) setMorphTarget(mesh, targetName, value)
+
+        // Propagate body shape keys to all other meshes
+        if (meshName === 'Body') {
+          this.meshMap.forEach((m, name) => {
+            if (name !== 'Body') setMorphTarget(m, targetName, value)
+          })
+          this.allMeshMap.forEach((m, name) => {
+            if (name !== 'Body') setMorphTarget(m, targetName, value)
+          })
         }
       })
     }

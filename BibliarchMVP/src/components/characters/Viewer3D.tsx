@@ -634,19 +634,56 @@ export default function Viewer3D({ currentSection, visibleAssets, categoryColors
     }
   }, [selectedPose, modelReady])
 
-  // Morph target control effect — checks both skinned and regular meshes
+  // Morph target control effect — applies to target mesh AND propagates to all
+  // meshes sharing the same shape key name (e.g. Body shape keys → clothing)
   useEffect(() => {
     if (!morphTargetValues) return
 
-    Object.entries(morphTargetValues).forEach(([key, value]) => {
-      const [meshName, targetName] = key.split(':')
-      // Check skinned meshes first, then regular meshes
-      const mesh = skinnedMeshMapRef.current.get(meshName) || meshMapRef.current.get(meshName)
-
-      if (mesh && mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
+    // Helper to set a morph target on a single mesh
+    const setMorphTarget = (mesh: THREE.Mesh, targetName: string, value: number, debug = false) => {
+      if (mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
         const index = mesh.morphTargetDictionary[targetName]
         if (index !== undefined) {
           mesh.morphTargetInfluences[index] = value
+          if (debug) {
+            console.log(`[MorphPropagation] ${mesh.name}:${targetName} = ${value} (idx=${index}, morphAttrs=${mesh.geometry?.morphAttributes?.position ? (mesh.geometry.morphAttributes.position as any).length : 0})`)
+          }
+        } else if (debug) {
+          console.log(`[MorphPropagation] ${mesh.name}: "${targetName}" NOT in dictionary. Keys: ${Object.keys(mesh.morphTargetDictionary).join(', ')}`)
+        }
+      } else if (debug) {
+        console.log(`[MorphPropagation] ${mesh.name}: no morphTargetDictionary or influences`)
+      }
+    }
+
+    // Debug: log first change only
+    const isFirstChange = Object.values(morphTargetValues).some(v => v !== 0)
+
+    Object.entries(morphTargetValues).forEach(([key, value]) => {
+      const [meshName, targetName] = key.split(':')
+
+      // Apply to the target mesh
+      const mesh = skinnedMeshMapRef.current.get(meshName) || meshMapRef.current.get(meshName)
+      if (mesh) setMorphTarget(mesh, targetName, value)
+
+      // Propagate body shape keys to all other meshes that have the same target
+      if (meshName === 'Body') {
+        let propagated = 0
+        const debugThis = isFirstChange && value !== 0
+        skinnedMeshMapRef.current.forEach((m, name) => {
+          if (name !== 'Body') {
+            setMorphTarget(m, targetName, value, debugThis && propagated < 5)
+            propagated++
+          }
+        })
+        meshMapRef.current.forEach((m, name) => {
+          if (name !== 'Body' && !skinnedMeshMapRef.current.has(name)) {
+            setMorphTarget(m, targetName, value, debugThis && propagated < 5)
+            propagated++
+          }
+        })
+        if (debugThis) {
+          console.log(`[MorphPropagation] Propagated Body:${targetName}=${value} to ${propagated} meshes`)
         }
       }
     })

@@ -48,6 +48,8 @@ def export_shape_keys_for_object(obj, depsgraph):
     for sk in shape_keys:
         if sk.name == "Basis":
             continue
+
+        # Base-space deltas (from key_blocks directly, pre-modifier)
         deltas = {}
         for i, (bv, sv) in enumerate(zip(basis_key.data, sk.data)):
             dx = sv.co[0] - bv.co[0]
@@ -55,13 +57,35 @@ def export_shape_keys_for_object(obj, depsgraph):
             dz = sv.co[2] - bv.co[2]
             if abs(dx) > 0.0001 or abs(dy) > 0.0001 or abs(dz) > 0.0001:
                 deltas[str(i)] = [round(dx, 6), round(dy, 6), round(dz, 6)]
-        if deltas:
-            result["shape_keys"][sk.name] = {
+
+        # Eval-space deltas (post-modifier, includes subdivision smoothing)
+        # Computed by evaluating mesh with this shape key active vs basis
+        for s in shape_keys:
+            s.value = 0.0
+        sk.value = 1.0
+        depsgraph.update()
+        deformed_positions = get_evaluated_positions(obj, depsgraph)
+        sk.value = 0.0
+        depsgraph.update()
+
+        eval_deltas = {}
+        for i, (bp, dp) in enumerate(zip(eval_positions, deformed_positions)):
+            dx = dp[0] - bp[0]
+            dy = dp[1] - bp[1]
+            dz = dp[2] - bp[2]
+            if abs(dx) > 0.0001 or abs(dy) > 0.0001 or abs(dz) > 0.0001:
+                eval_deltas[str(i)] = [round(dx, 6), round(dy, 6), round(dz, 6)]
+
+        if deltas or eval_deltas:
+            entry = {
                 "min": sk.slider_min,
                 "max": sk.slider_max,
                 "deltas": deltas
             }
-            print(f"  Shape key '{sk.name}': {len(deltas)} vertices affected")
+            if eval_deltas:
+                entry["eval_deltas"] = eval_deltas
+            result["shape_keys"][sk.name] = entry
+            print(f"  Shape key '{sk.name}': {len(deltas)} base / {len(eval_deltas)} eval vertices affected")
         else:
             print(f"  Shape key '{sk.name}': no vertex movement (skipped)")
 
