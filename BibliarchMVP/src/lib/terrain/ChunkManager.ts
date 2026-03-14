@@ -6,7 +6,7 @@ import {
   isInBounds,
 } from '@/types/world'
 import { getMaterialColor } from './materials'
-import { createToonTerrainMaterial } from '@/lib/shaders/toonMaterial'
+// import { createToonTerrainMaterial } from '@/lib/shaders/toonMaterial'
 
 const CHUNK_SIZE = 64
 
@@ -150,9 +150,9 @@ export class ChunkManager {
 
     const geometry = this.buildChunkGeometry(startX, startZ, cellsX, cellsZ, terrain)
 
-    const material = createToonTerrainMaterial({
-      steps: 4,
-      ambient: 0.35,
+    const material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      flatShading: false,
     })
 
     const mesh = new THREE.Mesh(geometry, material)

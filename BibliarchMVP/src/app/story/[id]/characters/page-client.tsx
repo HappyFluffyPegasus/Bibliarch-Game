@@ -714,6 +714,8 @@ export function CharactersPage() {
                       const key = `${target.meshName}:${target.targetName}`
                       const value = selectedCharacter.morphTargets?.[key] ?? 0
                       const displayName = target.targetName
+                      const isWeight = target.targetName.toLowerCase() === 'weight'
+                      const sliderMax = isWeight ? 225 : 100
 
                       return (
                         <div key={key} className="space-y-1">
@@ -729,7 +731,7 @@ export function CharactersPage() {
                             value={[value * 100]}
                             onValueChange={(v) => handleMorphTargetChange(target.meshName, target.targetName, v[0] / 100)}
                             min={0}
-                            max={100}
+                            max={sliderMax}
                             step={1}
                             className="w-full"
                           />
