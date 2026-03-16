@@ -553,7 +553,7 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
     set((s) => {
       if (s.navigationStack.length === 0) return {}
       const parentId = s.navigationStack[s.navigationStack.length - 1]
-      const levelOrder: WorldLevel[] = ['world', 'country', 'city', 'building', 'interior']
+      const levelOrder: WorldLevel[] = ['world', 'country', 'city', 'building']
       const currentIdx = levelOrder.indexOf(s.currentLevel)
       const parentLevel = currentIdx > 0 ? levelOrder[currentIdx - 1] : 'world'
       return {

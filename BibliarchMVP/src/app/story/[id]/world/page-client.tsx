@@ -767,8 +767,8 @@ export function WorldPage() {
 
     const node = hw.nodes[nodeId]
 
-    // Ensure building/interior-level nodes have buildingData
-    if ((node.level === 'building' || node.level === 'interior') && !node.buildingData) {
+    // Ensure building-level nodes have buildingData
+    if (node.level === 'building' && !node.buildingData) {
       node.buildingData = createBuildingData(32)
     }
 
@@ -811,11 +811,8 @@ export function WorldPage() {
     enterNode(nodeId, node.level)
     setHasUnsavedChanges(false)
 
-    // Auto-configure UI for building/interior level
+    // Auto-configure UI for building level
     if (node.level === 'building') {
-      setActiveTool('place-wall')
-      setPanelVisible('toolbox', true)
-    } else if (node.level === 'interior') {
       setActiveTool('place-wall')
       setPanelVisible('toolbox', true)
     }
@@ -879,46 +876,6 @@ export function WorldPage() {
     exitToParent()
     setHasUnsavedChanges(false)
   }, [world, storyId, activeNodeId, navigationStack, persistWorld, exitToParent])
-
-  /** Enter the interior of a building node */
-  const handleEnterInterior = useCallback(async () => {
-    if (!hierarchicalWorld || !activeNodeId) return
-    const node = hierarchicalWorld.nodes[activeNodeId]
-    if (!node || node.level !== 'building') return
-
-    // Check if an interior child already exists
-    let interiorNodeId = node.childIds.find(id => {
-      const child = hierarchicalWorld.nodes[id]
-      return child && child.level === 'interior'
-    })
-
-    if (!interiorNodeId) {
-      // Create interior node
-      const interiorNode = createWorldNode(
-        activeNodeId,
-        'interior',
-        `${node.name} Interior`,
-        null,
-        32,
-        32,
-      )
-      // Interior terrain: no water, flat
-      interiorNode.terrain.seaLevel = 0
-      interiorNode.terrain.maxHeight = 10
-      // Inherit base elevation from parent building
-      const parentElevation = node.buildingData?.baseElevation ?? 0
-      interiorNode.buildingData = createBuildingData(32, 0.5, parentElevation)
-
-      hierarchicalWorld.nodes[interiorNode.id] = interiorNode
-      node.childIds = [...node.childIds, interiorNode.id]
-      interiorNodeId = interiorNode.id
-
-      setHierarchicalWorld({ ...hierarchicalWorld })
-      setHasUnsavedChanges(true)
-    }
-
-    await handleEnterNode(interiorNodeId)
-  }, [hierarchicalWorld, activeNodeId, handleEnterNode])
 
   /** Handle breadcrumb navigation */
   const handleBreadcrumbNavigate = useCallback(async (targetNodeId: string) => {
@@ -2276,9 +2233,9 @@ export function WorldPage() {
 
   // ── Building handlers ──────────────────────────────────────
 
-  // Auto-init building data when entering building/interior level
+  // Auto-init building data when entering building level
   useEffect(() => {
-    if ((currentLevel === 'building' || currentLevel === 'interior') && hierarchicalWorld && activeNodeId) {
+    if (currentLevel === 'building' && hierarchicalWorld && activeNodeId) {
       const node = hierarchicalWorld.nodes[activeNodeId]
       if (node && !node.buildingData) {
         node.buildingData = createBuildingData(32, 0.5)
@@ -2683,7 +2640,6 @@ export function WorldPage() {
     onAddFloor: handleAddFloor,
     hasFloors: !!currentNode?.buildingData,
     maxFloor: currentNode?.buildingData?.floors ? Math.max(...currentNode.buildingData.floors.map(f => f.level)) : 0,
-    onEnterInterior: handleEnterInterior,
     sunAngle,
     sunElevation,
     skyColor,
@@ -2787,8 +2743,8 @@ export function WorldPage() {
                   }}
                 />
               </DockPanel>
-              <DockPanel id="toolbox" title={currentLevel === 'interior' ? 'Furniture' : 'Toolbox'} icon={<Package className="w-3.5 h-3.5 text-green-400" />}>
-                {currentLevel === 'interior' ? (
+              <DockPanel id="toolbox" title={currentLevel === 'building' ? 'Furniture' : 'Toolbox'} icon={<Package className="w-3.5 h-3.5 text-green-400" />}>
+                {currentLevel === 'building' ? (
                   <div className="p-2 space-y-2 max-h-[400px] overflow-y-auto">
                     {FURNITURE_CATEGORIES.map((cat) => {
                       const items = getFurnitureByCategory(cat.id)
