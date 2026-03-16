@@ -645,18 +645,19 @@ export default function WorldViewport3D({
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
     const worldSize = Math.max(worldSizeX, worldSizeZ)
 
-    if (currentLevel === 'building') {
-      // Building interior: position camera for top-down building view
+    if (currentLevel === 'building' || currentLevel === 'interior') {
+      // Building/interior: position camera for top-down view
       const bd = buildingDataRef.current
       const bldgSize = bd ? bd.gridSize * bd.gridCellSize : worldSize * 0.5
       const bldgCenter = bldgSize / 2
-      camera.position.set(bldgCenter + bldgSize * 0.4, bldgSize * 0.8, bldgCenter + bldgSize * 0.4)
+      const baseY = bd?.baseElevation ?? 0
+      camera.position.set(bldgCenter + bldgSize * 0.4, baseY + bldgSize * 0.8, bldgCenter + bldgSize * 0.4)
       camera.near = 0.1
-      camera.far = bldgSize * 10
+      camera.far = Math.max(bldgSize * 10, worldSize * 4)
       camera.updateProjectionMatrix()
-      controls.target.set(bldgCenter, 0, bldgCenter)
+      controls.target.set(bldgCenter, baseY, bldgCenter)
       controls.minDistance = 1
-      controls.maxDistance = bldgSize * 5
+      controls.maxDistance = Math.max(bldgSize * 5, worldSize * 2)
       controls.update()
     } else {
       const cx = worldSizeX * 0.5
@@ -924,34 +925,40 @@ export default function WorldViewport3D({
     }
   }, [roadDrawMode, roadWaypoints, terrain, roadWidth])
 
-  // ── Toggle terrain/object visibility at building level ───
+  // ── Toggle terrain/object visibility at building/interior level ───
   useEffect(() => {
-    const isBuilding = currentLevel === 'building'
+    const isInterior = currentLevel === 'interior'
+    const isBuildingOrInterior = currentLevel === 'building' || isInterior
+    // At interior level, hide terrain entirely. At building level, keep terrain visible for context.
     if (chunkManagerRef.current) {
-      chunkManagerRef.current.getGroup().visible = !isBuilding
+      chunkManagerRef.current.getGroup().visible = !isInterior
     }
     if (objectManagerRef.current) {
-      objectManagerRef.current.getGroup().visible = !isBuilding
+      objectManagerRef.current.getGroup().visible = !isInterior
     }
-    // Also hide roads, lots, borders at building level
+    // Hide roads, lots, borders at building/interior level
     if (roadManagerRef.current) {
-      roadManagerRef.current.getGroup().visible = !isBuilding
+      roadManagerRef.current.getGroup().visible = !isBuildingOrInterior
     }
     if (lotManagerRef.current) {
-      lotManagerRef.current.getGroup().visible = !isBuilding
+      lotManagerRef.current.getGroup().visible = !isBuildingOrInterior
     }
     if (borderPreviewRef.current) {
-      borderPreviewRef.current.visible = !isBuilding
+      borderPreviewRef.current.visible = !isBuildingOrInterior
     }
-    // Disable fog inside buildings
-    if (isBuilding && sceneRef.current) {
+    // Hide water at building/interior level
+    if (waterMeshRef.current) {
+      waterMeshRef.current.visible = !isBuildingOrInterior
+    }
+    // Disable fog inside buildings/interiors
+    if (isBuildingOrInterior && sceneRef.current) {
       sceneRef.current.fog = null
     }
   }, [currentLevel])
 
   // ── Sync building ─────────────────────────────────────────
   useEffect(() => {
-    if (wallManagerRef.current && buildingData && currentLevel === 'building') {
+    if (wallManagerRef.current && buildingData && (currentLevel === 'building' || currentLevel === 'interior')) {
       wallManagerRef.current.syncBuilding(buildingData, activeFloor, floorVisibility)
     } else if (wallManagerRef.current) {
       wallManagerRef.current.dispose()
@@ -1314,7 +1321,7 @@ export default function WorldViewport3D({
     const scene = sceneRef.current
     if (!scene) return
 
-    if (!fogEnabled || currentLevelRef.current === 'building') {
+    if (!fogEnabled || currentLevelRef.current === 'building' || currentLevelRef.current === 'interior') {
       scene.fog = null
       return
     }
@@ -1449,19 +1456,21 @@ export default function WorldViewport3D({
 
     setupRaycaster()
 
-    // At building level, skip terrain chunks and raycast against the floor plane directly
-    if (currentLevelRef.current === 'building') {
+    // At building/interior level, raycast against the building floor plane
+    const lvl = currentLevelRef.current
+    if (lvl === 'building' || lvl === 'interior') {
       const bd = buildingDataRef.current
       if (bd) {
         const floor = bd.floors.find(f => f.level === activeFloorRef.current)
-        const floorY = floor?.floorHeight ?? 0
+        const floorY = (floor?.floorHeight ?? 0) + (bd.baseElevation ?? 0)
         const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -floorY)
         const floorTarget = new THREE.Vector3()
         const floorHit = raycasterRef.current.ray.intersectPlane(floorPlane, floorTarget)
         if (floorHit) return floorHit
       }
-      // Fallback to y=0 ground plane for building level
-      const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+      // Fallback to baseElevation ground plane
+      const baseY = buildingDataRef.current?.baseElevation ?? 0
+      const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -baseY)
       const target = new THREE.Vector3()
       return raycasterRef.current.ray.intersectPlane(groundPlane, target)
     }
@@ -1792,7 +1801,8 @@ export default function WorldViewport3D({
           const wallMgr = wallManagerRef.current
           if (wallMgr) {
             const bd = buildingDataRef.current
-            const floorY = bd?.floors.find(f => f.level === activeFloorRef.current)?.floorHeight ?? 0
+            const baseY = bd?.baseElevation ?? 0
+            const floorY = (bd?.floors.find(f => f.level === activeFloorRef.current)?.floorHeight ?? 0) + baseY
             wallMgr.showGhostWall(
               wallStartPointRef.current.x, wallStartPointRef.current.z,
               point.x, point.z,

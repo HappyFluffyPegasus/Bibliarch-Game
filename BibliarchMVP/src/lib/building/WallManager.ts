@@ -65,13 +65,15 @@ export class WallManager {
   syncBuilding(data: BuildingData, activeFloor: number, floorVisibility: 'active-only' | 'transparent' | 'all' = 'transparent'): void {
     this.clearAll()
 
+    const baseY = data.baseElevation ?? 0
+
     // Grid overlay
-    this.createGridOverlay(data)
+    this.createGridOverlay(data, baseY)
 
     const floor = data.floors.find(f => f.level === activeFloor)
     if (!floor) return
 
-    const floorY = floor.floorHeight
+    const floorY = floor.floorHeight + baseY
 
     // Render walls
     for (const wall of floor.walls) {
@@ -119,22 +121,21 @@ export class WallManager {
     if (floorVisibility !== 'active-only') {
       for (const otherFloor of data.floors) {
         if (otherFloor.level === activeFloor) continue
-        const opacity = floorVisibility === 'transparent' ? 0.15 : 1.0
+        const otherFloorY = otherFloor.floorHeight + baseY
         for (const wall of otherFloor.walls) {
           if (floorVisibility === 'all') {
-            this.addWallMesh(wall, otherFloor.floorHeight)
+            this.addWallMesh(wall, otherFloorY)
           } else {
-            this.addGhostWall(wall, otherFloor.floorHeight)
+            this.addGhostWall(wall, otherFloorY)
           }
         }
         if (floorVisibility === 'all') {
           for (const tile of otherFloor.floorTiles) {
-            this.addFloorTileMesh(tile, data.gridCellSize, otherFloor.floorHeight)
+            this.addFloorTileMesh(tile, data.gridCellSize, otherFloorY)
           }
-          // Furniture on other floors at full opacity
           const otherFurniture = data.furniture.filter(f => f.floorLevel === otherFloor.level)
           for (const furn of otherFurniture) {
-            this.addFurnitureMesh(furn, otherFloor.floorHeight)
+            this.addFurnitureMesh(furn, otherFloorY)
           }
         }
       }
@@ -444,10 +445,10 @@ export class WallManager {
     this.furnitureGroup.add(mesh)
   }
 
-  private createGridOverlay(data: BuildingData): void {
+  private createGridOverlay(data: BuildingData, baseY: number = 0): void {
     const totalSize = data.gridSize * data.gridCellSize
     const grid = new THREE.GridHelper(totalSize, data.gridSize, 0x444466, 0x333344)
-    grid.position.set(totalSize / 2, 0.02, totalSize / 2)
+    grid.position.set(totalSize / 2, baseY + 0.02, totalSize / 2)
     grid.material.opacity = 0.3
     grid.material.transparent = true
     this.gridOverlay.add(grid)

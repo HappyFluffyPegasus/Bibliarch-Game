@@ -197,7 +197,7 @@ export function wallLength(wall: WallSegment): number {
 }
 
 /** Create a default BuildingData */
-export function createBuildingData(gridSize: number = 32, cellSize: number = 0.5): BuildingData {
+export function createBuildingData(gridSize: number = 32, cellSize: number = 0.5, baseElevation: number = 0): BuildingData {
   return {
     gridSize,
     gridCellSize: cellSize,
@@ -212,6 +212,7 @@ export function createBuildingData(gridSize: number = 32, cellSize: number = 0.5
     }],
     furniture: [],
     activeFloor: 0,
+    baseElevation,
   }
 }
 

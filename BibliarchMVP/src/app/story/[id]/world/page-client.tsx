@@ -119,6 +119,7 @@ import {
   DetectedRoom,
   BuildingFloor,
   FurniturePlacement,
+  getHeight,
 } from "@/types/world"
 import { TERRAIN_MATERIALS, getMaterialsByCategory } from "@/lib/terrain/materials"
 import { OBJECT_CATALOG, getCatalogEntry, getCatalogByCategory, registerCustomItem, unregisterCustomItem } from "@/lib/terrain/objectCatalog"
@@ -766,8 +767,8 @@ export function WorldPage() {
 
     const node = hw.nodes[nodeId]
 
-    // Ensure building-level nodes have buildingData
-    if (node.level === 'building' && !node.buildingData) {
+    // Ensure building/interior-level nodes have buildingData
+    if ((node.level === 'building' || node.level === 'interior') && !node.buildingData) {
       node.buildingData = createBuildingData(32)
     }
 
@@ -810,8 +811,11 @@ export function WorldPage() {
     enterNode(nodeId, node.level)
     setHasUnsavedChanges(false)
 
-    // Auto-configure UI for building level
+    // Auto-configure UI for building/interior level
     if (node.level === 'building') {
+      setActiveTool('place-wall')
+      setPanelVisible('toolbox', true)
+    } else if (node.level === 'interior') {
       setActiveTool('place-wall')
       setPanelVisible('toolbox', true)
     }
@@ -875,6 +879,46 @@ export function WorldPage() {
     exitToParent()
     setHasUnsavedChanges(false)
   }, [world, storyId, activeNodeId, navigationStack, persistWorld, exitToParent])
+
+  /** Enter the interior of a building node */
+  const handleEnterInterior = useCallback(async () => {
+    if (!hierarchicalWorld || !activeNodeId) return
+    const node = hierarchicalWorld.nodes[activeNodeId]
+    if (!node || node.level !== 'building') return
+
+    // Check if an interior child already exists
+    let interiorNodeId = node.childIds.find(id => {
+      const child = hierarchicalWorld.nodes[id]
+      return child && child.level === 'interior'
+    })
+
+    if (!interiorNodeId) {
+      // Create interior node
+      const interiorNode = createWorldNode(
+        activeNodeId,
+        'interior',
+        `${node.name} Interior`,
+        null,
+        32,
+        32,
+      )
+      // Interior terrain: no water, flat
+      interiorNode.terrain.seaLevel = 0
+      interiorNode.terrain.maxHeight = 10
+      // Inherit base elevation from parent building
+      const parentElevation = node.buildingData?.baseElevation ?? 0
+      interiorNode.buildingData = createBuildingData(32, 0.5, parentElevation)
+
+      hierarchicalWorld.nodes[interiorNode.id] = interiorNode
+      node.childIds = [...node.childIds, interiorNode.id]
+      interiorNodeId = interiorNode.id
+
+      setHierarchicalWorld({ ...hierarchicalWorld })
+      setHasUnsavedChanges(true)
+    }
+
+    await handleEnterNode(interiorNodeId)
+  }, [hierarchicalWorld, activeNodeId, handleEnterNode])
 
   /** Handle breadcrumb navigation */
   const handleBreadcrumbNavigate = useCallback(async (targetNodeId: string) => {
@@ -2135,16 +2179,25 @@ export function WorldPage() {
     let buildingNodeId = lot.linkedBuildingId
 
     if (!buildingNodeId || !hierarchicalWorld.nodes[buildingNodeId]) {
+      // Sample terrain height at lot center for base elevation
+      const lotCenterX = Math.round(lot.startX + lot.width / 2)
+      const lotCenterZ = Math.round(lot.startZ + lot.depth / 2)
+      const normalizedHeight = getHeight(node.terrain, lotCenterX, lotCenterZ)
+      const baseElevation = normalizedHeight * node.terrain.maxHeight
+
       // Create a new building node for this lot
       const buildingNode = createWorldNode(
         activeNodeId,
         'building',
-        `${lot.name} Interior`,
+        `${lot.name}`,
         { startX: lot.startX, startZ: lot.startZ, width: lot.width, depth: lot.depth },
         32,
         32,
       )
-      buildingNode.buildingData = createBuildingData(32)
+      // Building terrain: no water, low maxHeight since it's an interior
+      buildingNode.terrain.seaLevel = 0
+      buildingNode.terrain.maxHeight = 10
+      buildingNode.buildingData = createBuildingData(32, 0.5, baseElevation)
 
       // Add to world
       hierarchicalWorld.nodes[buildingNode.id] = buildingNode
@@ -2223,9 +2276,9 @@ export function WorldPage() {
 
   // ── Building handlers ──────────────────────────────────────
 
-  // Auto-init building data when entering building level
+  // Auto-init building data when entering building/interior level
   useEffect(() => {
-    if (currentLevel === 'building' && hierarchicalWorld && activeNodeId) {
+    if ((currentLevel === 'building' || currentLevel === 'interior') && hierarchicalWorld && activeNodeId) {
       const node = hierarchicalWorld.nodes[activeNodeId]
       if (node && !node.buildingData) {
         node.buildingData = createBuildingData(32, 0.5)
@@ -2630,6 +2683,7 @@ export function WorldPage() {
     onAddFloor: handleAddFloor,
     hasFloors: !!currentNode?.buildingData,
     maxFloor: currentNode?.buildingData?.floors ? Math.max(...currentNode.buildingData.floors.map(f => f.level)) : 0,
+    onEnterInterior: handleEnterInterior,
     sunAngle,
     sunElevation,
     skyColor,
@@ -2733,8 +2787,8 @@ export function WorldPage() {
                   }}
                 />
               </DockPanel>
-              <DockPanel id="toolbox" title={currentLevel === 'building' ? 'Furniture' : 'Toolbox'} icon={<Package className="w-3.5 h-3.5 text-green-400" />}>
-                {currentLevel === 'building' ? (
+              <DockPanel id="toolbox" title={currentLevel === 'interior' ? 'Furniture' : 'Toolbox'} icon={<Package className="w-3.5 h-3.5 text-green-400" />}>
+                {currentLevel === 'interior' ? (
                   <div className="p-2 space-y-2 max-h-[400px] overflow-y-auto">
                     {FURNITURE_CATEGORIES.map((cat) => {
                       const items = getFurnitureByCategory(cat.id)

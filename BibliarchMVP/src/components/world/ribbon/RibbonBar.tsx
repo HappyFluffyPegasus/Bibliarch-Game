@@ -40,6 +40,7 @@ export interface RibbonCallbacks {
   onAddFloor: () => void
   hasFloors: boolean
   maxFloor: number
+  onEnterInterior?: () => void
 
   // Environment
   sunAngle: number
@@ -88,7 +89,7 @@ export default function RibbonBar({ ribbonTab, onTabChange, currentLevel, callba
             {callbacks.hasUnsavedChanges && <span className="text-xs text-amber-500">●</span>}
           </div>
           {TAB_ORDER
-            .filter(tab => !(tab === 'terrain' && currentLevel === 'building'))
+            .filter(tab => !(tab === 'terrain' && (currentLevel === 'building' || currentLevel === 'interior')))
             .map(tab => (
             <button
               key={tab}

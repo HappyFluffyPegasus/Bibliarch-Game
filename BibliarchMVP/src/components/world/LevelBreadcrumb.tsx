@@ -1,6 +1,6 @@
 "use client"
 
-import { ChevronRight, Globe, Flag, Building2, Home } from "lucide-react"
+import { ChevronRight, Globe, Flag, Building2, Home, Sofa } from "lucide-react"
 import { WorldLevel, WorldNode } from "@/types/world"
 import { cn } from "@/lib/utils"
 
@@ -20,6 +20,7 @@ const LEVEL_ICONS: Record<WorldLevel, React.ElementType> = {
   country: Flag,
   city: Building2,
   building: Home,
+  interior: Sofa,
 }
 
 const LEVEL_LABELS: Record<WorldLevel, string> = {
@@ -27,6 +28,7 @@ const LEVEL_LABELS: Record<WorldLevel, string> = {
   country: 'Country',
   city: 'City',
   building: 'Building',
+  interior: 'Interior',
 }
 
 export default function LevelBreadcrumb({ segments, onNavigate }: LevelBreadcrumbProps) {

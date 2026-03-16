@@ -353,13 +353,15 @@ export interface BuildingData {
   floors: BuildingFloor[]
   furniture: FurniturePlacement[]
   activeFloor: number
+  /** World-space Y offset — matches terrain height at the lot's position */
+  baseElevation: number
 }
 
 // ============================================================
 // HIERARCHICAL WORLD BUILDING
 // ============================================================
 
-export type WorldLevel = 'world' | 'country' | 'city' | 'building'
+export type WorldLevel = 'world' | 'country' | 'city' | 'building' | 'interior'
 
 export interface EnvironmentSettings {
   sunAngle: number
@@ -617,15 +619,17 @@ export const LEVEL_TOOLS: Record<WorldLevel, EditorTool[]> = {
   world:    ['sculpt', 'paint-material', 'place-object', 'select', 'delete', 'cartography', 'draw-border'],
   country:  ['sculpt', 'paint-material', 'place-object', 'select', 'delete', 'draw-border'],
   city:     ['sculpt', 'paint-material', 'place-object', 'select', 'delete', 'draw-border', 'draw-lot', 'draw-road'],
-  building: ['select', 'delete', 'place-wall', 'place-door', 'paint-floor', 'place-furniture'],
+  building: ['select', 'delete', 'place-wall', 'place-door', 'place-object'],
+  interior: ['select', 'delete', 'place-wall', 'place-door', 'paint-floor', 'place-furniture'],
 }
 
 /** Object category filters per level */
 export const LEVEL_OBJECT_CATEGORIES: Record<WorldLevel, string[]> = {
-  world:    ['decoration'],  // Only natural features at world scale
+  world:    ['decoration'],
   country:  ['building', 'decoration', 'vegetation'],
   city:     ['building', 'decoration', 'prop', 'vegetation'],
-  building: ['decoration', 'prop'],  // Indoor items only
+  building: ['decoration', 'prop'],
+  interior: ['decoration', 'prop'],
 }
 
 /** Get the child level for a given level */
@@ -634,7 +638,8 @@ export function getChildLevel(level: WorldLevel): WorldLevel | null {
     world: 'country',
     country: 'city',
     city: 'building',
-    building: null,
+    building: 'interior',
+    interior: null,
   }
   return childMap[level]
 }

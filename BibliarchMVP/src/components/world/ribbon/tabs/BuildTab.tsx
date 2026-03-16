@@ -2,7 +2,7 @@
 
 import {
   MousePointer, Trash2, Package, Pentagon, LayoutGrid, Route,
-  Square, DoorOpen, PaintBucket, Armchair,
+  Square, DoorOpen, PaintBucket, Armchair, LogIn,
   ChevronUp, ChevronDown, Plus, Eye, EyeOff, Ghost,
 } from "lucide-react"
 import RibbonGroup from "../RibbonGroup"
@@ -33,6 +33,10 @@ export default function BuildTab({ callbacks, currentLevel }: BuildTabProps) {
   const allowed = LEVEL_TOOLS[currentLevel]
   const can = (tool: string) => allowed.includes(tool as any)
 
+  const isInterior = currentLevel === 'interior'
+  const isBuilding = currentLevel === 'building'
+  const isBuildingOrInterior = isBuilding || isInterior
+
   return (
     <>
       <RibbonGroup label="Select">
@@ -41,13 +45,13 @@ export default function BuildTab({ callbacks, currentLevel }: BuildTabProps) {
       </RibbonGroup>
 
       {/* Objects / Furniture */}
-      <RibbonGroup label={currentLevel === 'building' ? 'Furniture' : 'Objects'}>
-        {currentLevel !== 'building' && (
+      <RibbonGroup label={isInterior ? 'Furniture' : 'Objects'}>
+        {!isInterior && (
           <RibbonButton icon={<Package className="w-4 h-4" />} label="Place" active={activeTool === 'place-object'} onClick={() => setActiveTool('place-object')} size="large" disabled={!can('place-object')} />
         )}
         <button
           onClick={() => {
-            if (currentLevel === 'building') setActiveTool('place-furniture')
+            if (isInterior) setActiveTool('place-furniture')
             else setActiveTool('place-object')
             setPanelVisible('toolbox', !panels.toolbox.visible)
           }}
@@ -57,8 +61,8 @@ export default function BuildTab({ callbacks, currentLevel }: BuildTabProps) {
               : 'bg-[#2d2d2d] hover:bg-[#383838] text-[#ccc]'
           }`}
         >
-          {currentLevel === 'building' ? <Armchair className="w-3.5 h-3.5" /> : <Package className="w-3.5 h-3.5" />}
-          {currentLevel === 'building' ? ' Furniture' : ' Toolbox'}
+          {isInterior ? <Armchair className="w-3.5 h-3.5" /> : <Package className="w-3.5 h-3.5" />}
+          {isInterior ? ' Furniture' : ' Toolbox'}
         </button>
       </RibbonGroup>
 
@@ -80,13 +84,30 @@ export default function BuildTab({ callbacks, currentLevel }: BuildTabProps) {
         <RibbonButton icon={<Route className="w-4 h-4" />} label="Road" active={activeTool === 'draw-road'} onClick={() => setActiveTool('draw-road')} size="large" disabled={!can('draw-road')} />
       </RibbonGroup>
 
-      {/* Building tools */}
-      <RibbonGroup label="Building">
+      {/* Building Architecture tools (building level = exterior structure) */}
+      <RibbonGroup label={isInterior ? 'Interior' : 'Structure'}>
         <RibbonButton icon={<Square className="w-4 h-4" />} label="Wall" active={activeTool === 'place-wall'} onClick={() => setActiveTool('place-wall')} size="large" disabled={!can('place-wall')} />
         <RibbonButton icon={<DoorOpen className="w-4 h-4" />} label="Door" active={activeTool === 'place-door'} onClick={() => setActiveTool('place-door')} size="large" disabled={!can('place-door')} />
-        <RibbonButton icon={<PaintBucket className="w-4 h-4" />} label="Floor" active={activeTool === 'paint-floor'} onClick={() => setActiveTool('paint-floor')} size="large" disabled={!can('paint-floor')} />
-        <RibbonButton icon={<Armchair className="w-4 h-4" />} label="Furnish" active={activeTool === 'place-furniture'} onClick={() => setActiveTool('place-furniture')} size="large" disabled={!can('place-furniture')} />
+        {isInterior && (
+          <>
+            <RibbonButton icon={<PaintBucket className="w-4 h-4" />} label="Floor" active={activeTool === 'paint-floor'} onClick={() => setActiveTool('paint-floor')} size="large" disabled={!can('paint-floor')} />
+            <RibbonButton icon={<Armchair className="w-4 h-4" />} label="Furnish" active={activeTool === 'place-furniture'} onClick={() => setActiveTool('place-furniture')} size="large" disabled={!can('place-furniture')} />
+          </>
+        )}
       </RibbonGroup>
+
+      {/* Enter Interior button at building level */}
+      {isBuilding && callbacks.onEnterInterior && (
+        <RibbonGroup label="Navigate">
+          <button
+            onClick={callbacks.onEnterInterior}
+            className="h-7 px-3 flex items-center gap-1.5 rounded text-[11px] bg-[#0066cc] hover:bg-[#0077dd] text-white transition-colors"
+          >
+            <LogIn className="w-3.5 h-3.5" /> Enter Interior
+          </button>
+        </RibbonGroup>
+      )}
+
       {callbacks.hasFloors && (
         <RibbonGroup label="Floor" noDivider>
           <button onClick={() => setActiveFloor(Math.max(0, activeFloor - 1))} disabled={activeFloor === 0} className="h-7 w-7 flex items-center justify-center rounded hover:bg-[#383838] text-[#ccc] disabled:text-[#666]"><ChevronDown className="w-4 h-4" /></button>
