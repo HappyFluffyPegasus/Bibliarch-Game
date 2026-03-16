@@ -19,6 +19,42 @@ const HAIR_KEYWORDS = ['hair', 'pigtail', 'ponytail', 'bob', 'bangs', 'bun', 'br
 const SKIN_KEYWORDS = ['body', 'skin', 'head', 'face', 'hand', 'arm', 'leg', 'foot']
 const EYE_KEYWORDS = ['eye', 'iris', 'eye white', 'eye_white']
 
+// Keywords for clothing categories (used to determine which color to apply)
+const TOP_KEYWORDS = ['top', 'shirt', 'jacket', 'hoodie', 'sweater', 'vest', 'blouse', 'coat']
+const PANTS_KEYWORDS = ['pant', 'jean', 'short', 'trouser', 'bottom', 'legging', 'skirt']
+const DRESS_KEYWORDS = ['dress', 'gown', 'robe']
+const SHOE_KEYWORDS = ['shoe', 'boot', 'sandal', 'heel', 'sneaker', 'slipper']
+const SOCK_KEYWORDS = ['sock', 'stocking']
+const ACCESSORY_KEYWORDS = ['hat', 'glasses', 'necklace', 'bracelet', 'watch', 'scarf', 'glove', 'bag', 'belt']
+
+/**
+ * Determine the correct clothing color for a mesh based on its name.
+ * Matches mesh names against clothing category keywords and returns the
+ * corresponding color from CategoryColors, falling back to tops.primary.
+ */
+function getClothingColor(lowerName: string, colors: CategoryColors): string {
+  if (TOP_KEYWORDS.some(kw => lowerName.includes(kw))) {
+    return colors.tops?.primary || '#cccccc'
+  }
+  if (PANTS_KEYWORDS.some(kw => lowerName.includes(kw))) {
+    return colors.pants || '#cccccc'
+  }
+  if (DRESS_KEYWORDS.some(kw => lowerName.includes(kw))) {
+    return colors.dresses || '#cccccc'
+  }
+  if (SHOE_KEYWORDS.some(kw => lowerName.includes(kw))) {
+    return colors.shoes || '#cccccc'
+  }
+  if (SOCK_KEYWORDS.some(kw => lowerName.includes(kw))) {
+    return colors.socks || '#cccccc'
+  }
+  if (ACCESSORY_KEYWORDS.some(kw => lowerName.includes(kw))) {
+    return colors.accessories || '#cccccc'
+  }
+  // Default fallback for unrecognized clothing meshes
+  return colors.tops?.primary || '#cccccc'
+}
+
 // Shared model cache to avoid reloading for each character
 let modelCache: THREE.Group | null = null
 let modelLoadingPromise: Promise<THREE.Group> | null = null
@@ -96,6 +132,9 @@ export class CharacterRenderer {
     fbx.scale.setScalar(0.01)
     fbx.rotation.y = CHARACTER_BASE_ROTATION_Y
 
+    // Force all nodes visible first — parent visibility=false blocks child rendering
+    fbx.traverse((node) => { node.visible = true })
+
     // Force matrix world update and rebind skinned meshes
     fbx.updateMatrixWorld(true)
     fbx.traverse((node) => {
@@ -111,6 +150,7 @@ export class CharacterRenderer {
         const isBody = lowerName === 'body'
         const isEye = EYE_KEYWORDS.some(kw => lowerName.includes(kw.toLowerCase()) || node.name === kw)
         node.visible = isBody || isEye
+        node.frustumCulled = false  // SkinnedMesh bounding sphere is unreliable after 0.01 scale + rebind
       }
     })
 
@@ -217,6 +257,7 @@ export class CharacterRenderer {
 
   /**
    * Apply materials with colors
+   * Matches the exact same pipeline as the character creator (Viewer3D.tsx)
    */
   private applyMaterials(colors: CategoryColors): void {
     if (!this.fbxModel) return
@@ -227,9 +268,44 @@ export class CharacterRenderer {
       const meshName = node.name
       const lowerName = meshName.toLowerCase()
 
-      // Skip eye meshes - keep original material completely unchanged
-      const isEyeMesh = EYE_KEYWORDS.some(kw => lowerName.includes(kw.toLowerCase()) || meshName === kw)
+      // Check if this is an eye mesh - use MeshBasicMaterial (matching character creator)
+      const isEyeMesh = lowerName === 'eye' || lowerName === 'iris' ||
+                         lowerName.includes('eye white') || lowerName.includes('eye_white')
+
       if (isEyeMesh) {
+        // Eye meshes: MeshBasicMaterial (unlit) matching character creator exactly
+        const eyeMats = Array.isArray(node.material) ? node.material : [node.material]
+        const newMats = eyeMats.map((mat) => {
+          // Eye whites: pure flat white, no shading, no lighting
+          if (lowerName.includes('eye white') || lowerName.includes('eye_white')) {
+            const m = new THREE.MeshBasicMaterial({
+              color: 0xffffff,
+              side: THREE.DoubleSide,
+            })
+            ;(m as any).morphTargets = true
+            m.needsUpdate = true
+            return m
+          }
+          // Iris: unlit MeshBasicMaterial so texture shows without lighting
+          const map = (mat as any).map || null
+          if (map) {
+            map.colorSpace = THREE.SRGBColorSpace
+            map.needsUpdate = true
+          }
+          const m = new THREE.MeshBasicMaterial({
+            map,
+            color: 0xffffff,
+          })
+          ;(m as any).morphTargets = true
+          m.needsUpdate = true
+          return m
+        })
+        node.material = newMats.length === 1 ? newMats[0] : newMats
+        // Render eyes after body so they show through face cutouts
+        node.renderOrder = 1
+        node.castShadow = true
+        node.receiveShadow = true
+        node.frustumCulled = false
         return
       }
 
@@ -257,7 +333,8 @@ export class CharacterRenderer {
         }
 
         const isFaceTextureMat = matNameLower.includes('chill') || (map && isSkinMesh)
-        const isEyeWhiteMat = matNameLower.includes('eye white')
+        const isEyeWhiteMat = matNameLower.includes('eye white') || matNameLower.includes('eye_white') || matNameLower.includes('eyewhite')
+        const hasOriginalMap = !isHairMesh && map
 
         if (isHairMesh) {
           baseColor = new THREE.Color(colors.hair)
@@ -270,12 +347,16 @@ export class CharacterRenderer {
         } else if (isSkinMesh && !map) {
           baseColor = new THREE.Color(colors.body.skinTone)
         } else if (!isSkinMesh && !isHairMesh && !map) {
-          baseColor = new THREE.Color(colors.tops?.primary || 0xcccccc)
+          baseColor = new THREE.Color(getClothingColor(lowerName, colors))
         }
 
         const toonMat = createColoredShadowMaterial({
-          color: (map && !isHairMesh && !isFaceTextureMat) ? new THREE.Color(0xffffff) : baseColor,
-          map: map ?? undefined,
+          // Match character creator: white color for textured non-hair/non-face to avoid darkening
+          color: isHairMesh ? baseColor
+            : isFaceTextureMat ? baseColor
+            : isEyeWhiteMat ? new THREE.Color(0xffffff)
+            : (hasOriginalMap ? new THREE.Color(0xffffff) : baseColor),
+          map: isHairMesh ? (map ?? undefined) : (map ?? undefined),
         })
 
         // Face texture PNG has transparent eye holes — alphaTest cuts them out

@@ -1,8 +1,8 @@
 "use client"
 
 import { useState, useCallback, type MouseEvent } from "react"
-import { ChevronRight, ChevronDown, Flag, Building2, Home, Pentagon, X, LogIn, Mountain } from "lucide-react"
-import type { WorldObject, WorldNode, WorldLevel, PolygonBorder } from "@/types/world"
+import { ChevronRight, ChevronDown, Flag, Building2, Home, Pentagon, X, LogIn, Mountain, Route, LayoutGrid } from "lucide-react"
+import type { WorldObject, WorldNode, WorldLevel, PolygonBorder, RoadSegment, CityLot } from "@/types/world"
 import { OBJECT_CATALOG } from "@/lib/terrain/objectCatalog"
 import type { WorldObjectCategory } from "@/types/world"
 
@@ -13,6 +13,11 @@ interface ExplorerTreeProps {
   currentLevel: WorldLevel
   selectedObjectIds: string[]
   polygonBorders?: PolygonBorder[]
+  roadSegments?: RoadSegment[]
+  onDeleteRoad?: (id: string) => void
+  lots?: CityLot[]
+  onEnterLot?: (lotId: string) => void
+  onDeleteLot?: (lotId: string) => void
   selectedExplorerItem?: string | null
   onSelectObject: (id: string, additive: boolean) => void
   onDeleteObject: (ids: string[]) => void
@@ -147,6 +152,11 @@ export default function ExplorerTree({
   currentLevel,
   selectedObjectIds,
   polygonBorders,
+  roadSegments,
+  onDeleteRoad,
+  lots: lotsProp,
+  onEnterLot,
+  onDeleteLot,
   selectedExplorerItem,
   onSelectObject,
   onDeleteObject,
@@ -160,6 +170,8 @@ export default function ExplorerTree({
     workspace: true,
     regions: true,
     borders: false,
+    roads: false,
+    lots: true,
     objects: true,
   })
 
@@ -178,6 +190,10 @@ export default function ExplorerTree({
   const hasRegions = !!childLevel
   const borders = polygonBorders ?? []
   const hasBorders = borders.length > 0
+  const roads = roadSegments ?? []
+  const hasRoads = roads.length > 0
+  const lotsList = lotsProp ?? []
+  const hasLots = lotsList.length > 0
 
   return (
     <div className="py-1">
@@ -277,6 +293,96 @@ export default function ExplorerTree({
                       >
                         <X className="w-3 h-3" />
                       </button>
+                    }
+                  />
+                ))}
+            </>
+          )}
+
+          {/* ── Roads folder ── */}
+          {hasRoads && (
+            <>
+              <TreeRow
+                depth={1}
+                label={`Roads (${roads.length})`}
+                expandable
+                expanded={expanded.roads}
+                onToggle={() => toggle("roads")}
+                icon={<Route className="w-3 h-3 text-yellow-400/60" />}
+              />
+              {expanded.roads &&
+                roads.map((road) => (
+                  <TreeRow
+                    key={road.id}
+                    depth={2}
+                    label={`${road.type} (${road.waypoints.length} pts)`}
+                    colorDot={road.type === 'highway' ? '#666' : road.type === 'footpath' ? '#aa9' : '#555'}
+                    trailing={
+                      onDeleteRoad ? (
+                        <button
+                          className="text-gray-500 hover:text-red-400"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onDeleteRoad(road.id)
+                          }}
+                          title="Delete road"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      ) : undefined
+                    }
+                  />
+                ))}
+            </>
+          )}
+
+          {/* ── Lots folder ── */}
+          {hasLots && (
+            <>
+              <TreeRow
+                depth={1}
+                label={`Lots (${lotsList.length})`}
+                expandable
+                expanded={expanded.lots !== false}
+                onToggle={() => toggle("lots")}
+                icon={<LayoutGrid className="w-3 h-3 text-purple-400/60" />}
+              />
+              {expanded.lots !== false &&
+                lotsList.map((lot) => (
+                  <TreeRow
+                    key={lot.id}
+                    depth={2}
+                    label={lot.name}
+                    colorDot={lot.color}
+                    onDoubleClick={() => onEnterLot?.(lot.id)}
+                    onClick={() => {}}
+                    trailing={
+                      <span className="flex items-center gap-0.5">
+                        {onEnterLot && (
+                          <button
+                            className="text-sky-500 hover:text-sky-300"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onEnterLot(lot.id)
+                            }}
+                            title="Enter lot"
+                          >
+                            <LogIn className="w-3 h-3" />
+                          </button>
+                        )}
+                        {onDeleteLot && (
+                          <button
+                            className="text-gray-500 hover:text-red-400"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onDeleteLot(lot.id)
+                            }}
+                            title="Delete lot"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </span>
                     }
                   />
                 ))}

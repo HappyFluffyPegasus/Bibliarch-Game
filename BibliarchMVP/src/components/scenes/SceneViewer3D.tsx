@@ -4,6 +4,9 @@ import { useEffect, useRef, useCallback, useState, useImperativeHandle, forwardR
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { SceneCharacterManager } from '@/lib/scenes/SceneCharacterManager'
+import { ChunkManager } from '@/lib/terrain/ChunkManager'
+import { idbGet } from '@/services/worldStorage'
+import { deserializeWorld, type SerializedWorld } from '@/types/world'
 import type { SceneCharacter, DialogueLine, CharacterData, TransformGizmoMode, CameraKeyframe, MovementKeyframe, AnimationKeyframe, CharacterAnimationState, SceneProp } from '@/types/scenes'
 
 // Re-export types for backward compatibility
@@ -101,6 +104,9 @@ interface SceneViewer3DProps {
   props?: SceneProp[]
   // Record mode (allows interaction during playback)
   isRecording?: boolean
+  // World backdrop
+  storyId?: string
+  locationId?: string | null
 }
 
 // Create a simple camera mesh (looks like a movie camera)
@@ -340,7 +346,9 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
   onContextMenu: onContextMenuProp,
   lightingPreset = 'default',
   props: scenePropsProp = [],
-  isRecording = false
+  isRecording = false,
+  storyId,
+  locationId
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
@@ -369,6 +377,10 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
   // Props group ref
   const propsGroupRef = useRef<THREE.Group | null>(null)
   const propMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map())
+
+  // Backdrop refs
+  const backdropGroupRef = useRef<THREE.Group | null>(null)
+  const chunkManagerRef = useRef<ChunkManager | null>(null)
 
   // Keep viewThroughCamera ref in sync
   useEffect(() => {
@@ -467,8 +479,7 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(width, height)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    renderer.shadowMap.enabled = false
     container.appendChild(renderer.domElement)
     rendererRef.current = renderer
 
@@ -530,15 +541,7 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
 
     const mainLight = new THREE.DirectionalLight(preset.main.color, preset.main.intensity)
     mainLight.position.set(...preset.main.position)
-    mainLight.castShadow = true
-    mainLight.shadow.mapSize.width = 2048
-    mainLight.shadow.mapSize.height = 2048
-    mainLight.shadow.camera.near = 0.5
-    mainLight.shadow.camera.far = 100
-    mainLight.shadow.camera.left = -20
-    mainLight.shadow.camera.right = 20
-    mainLight.shadow.camera.top = 20
-    mainLight.shadow.camera.bottom = -20
+    mainLight.castShadow = false
     scene.add(mainLight)
     mainLightRef.current = mainLight
 
@@ -615,6 +618,14 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
       } else {
         controls.update()
       }
+
+      // Disable frustum culling on all meshes to avoid NaN bounding sphere errors
+      // from scaled SkinnedMeshes and morph targets
+      scene.traverse((node) => {
+        if ((node as THREE.Mesh).isMesh && node.frustumCulled) {
+          node.frustumCulled = false
+        }
+      })
 
       renderer.render(scene, viewCamera)
     }
@@ -848,6 +859,71 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
     }
   }, [lightingPreset])
 
+  // Load world terrain backdrop when storyId + locationId are set
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!scene || !storyId || !locationId) {
+      // Clean up existing backdrop
+      if (backdropGroupRef.current) {
+        scene?.remove(backdropGroupRef.current)
+        backdropGroupRef.current = null
+      }
+      if (chunkManagerRef.current) {
+        chunkManagerRef.current.dispose()
+        chunkManagerRef.current = null
+      }
+      return
+    }
+
+    const loadBackdrop = async () => {
+      try {
+        const data = await idbGet<SerializedWorld>(`bibliarch-world-${storyId}`)
+        if (!data) return
+
+        const world = deserializeWorld(data)
+        const location = world.locations?.find(l => l.id === locationId)
+        if (!location) return
+
+        // Clean up previous
+        if (backdropGroupRef.current) {
+          scene.remove(backdropGroupRef.current)
+        }
+        if (chunkManagerRef.current) {
+          chunkManagerRef.current.dispose()
+        }
+
+        // Create terrain group
+        const terrainGroup = new THREE.Group()
+        terrainGroup.name = 'SceneBackdrop'
+        scene.add(terrainGroup)
+        backdropGroupRef.current = terrainGroup
+
+        // Create chunk manager and render terrain
+        if (world.terrain && world.terrain.heights && world.terrain.heights.length > 0) {
+          const chunkManager = new ChunkManager()
+          terrainGroup.add(chunkManager.getGroup())
+          chunkManager.setTerrain(world.terrain)
+          chunkManagerRef.current = chunkManager
+        }
+      } catch (e) {
+        console.error('Failed to load world backdrop:', e)
+      }
+    }
+
+    loadBackdrop()
+
+    return () => {
+      if (chunkManagerRef.current) {
+        chunkManagerRef.current.dispose()
+        chunkManagerRef.current = null
+      }
+      if (backdropGroupRef.current) {
+        scene.remove(backdropGroupRef.current)
+        backdropGroupRef.current = null
+      }
+    }
+  }, [storyId, locationId])
+
   // View through camera effect - toggle visibility/controls (sync happens in main loop)
   useEffect(() => {
     if (!sceneCameraRef.current) return
@@ -902,19 +978,32 @@ const SceneViewer3D = forwardRef<SceneViewer3DRef, SceneViewer3DProps>(function 
   // Apply animation keyframes - find the most recent keyframe at or before currentTime for each character
   const lastAppliedAnimRef = useRef<Map<string, string>>(new Map())
   useEffect(() => {
-    if (!characterManagerRef.current || animationKeyframes.length === 0) return
+    if (!characterManagerRef.current) return
 
     characters.forEach(char => {
+      if (animationKeyframes.length === 0) {
+        // No keyframes — reset to bind pose if something was previously applied
+        const lastKey = lastAppliedAnimRef.current.get(char.id)
+        if (lastKey) {
+          lastAppliedAnimRef.current.delete(char.id)
+          characterManagerRef.current?.applyAnimationState(char.id, {
+            basePose: null, emotion: null, emotionIntensity: 1, clipAnimation: null, clipLoop: false
+          })
+        }
+        return
+      }
+
       const charAnimKfs = animationKeyframes
         .filter(kf => kf.characterId === char.id && kf.time <= currentTime)
         .sort((a, b) => b.time - a.time) // Most recent first
 
       if (charAnimKfs.length > 0) {
         const activeKf = charAnimKfs[0]
-        // Only apply if this is a different keyframe than last applied (avoid re-triggering)
-        const lastAppliedId = lastAppliedAnimRef.current.get(char.id)
-        if (lastAppliedId !== activeKf.id) {
-          lastAppliedAnimRef.current.set(char.id, activeKf.id)
+        // Build a fingerprint of id + animation content to detect both new keyframes AND updated ones
+        const fingerprint = `${activeKf.id}:${activeKf.animation.basePose}:${activeKf.animation.clipAnimation}`
+        const lastFingerprint = lastAppliedAnimRef.current.get(char.id)
+        if (lastFingerprint !== fingerprint) {
+          lastAppliedAnimRef.current.set(char.id, fingerprint)
           characterManagerRef.current?.applyAnimationState(char.id, activeKf.animation)
         }
       }

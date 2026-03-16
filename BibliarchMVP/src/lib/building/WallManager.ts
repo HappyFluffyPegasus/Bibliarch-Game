@@ -1,6 +1,7 @@
 import * as THREE from 'three'
-import { BuildingData, WallSegment, WallOpening, FloorTile, DetectedRoom } from '@/types/world'
+import { BuildingData, WallSegment, WallOpening, FloorTile, DetectedRoom, FurniturePlacement } from '@/types/world'
 import { splitWallAtOpening, getRoomCentroid } from './wallUtils'
+import { getFurnitureEntry } from './furnitureCatalog'
 
 // Material colors
 const WALL_MATERIAL_COLORS: Record<string, number> = {
@@ -31,6 +32,7 @@ export class WallManager {
   private labelGroup: THREE.Group
   private gridOverlay: THREE.Group
   private ghostGroup: THREE.Group
+  private furnitureGroup: THREE.Group
 
   constructor() {
     this.group = new THREE.Group()
@@ -45,11 +47,14 @@ export class WallManager {
     this.gridOverlay.name = 'building-grid'
     this.ghostGroup = new THREE.Group()
     this.ghostGroup.name = 'ghost-preview'
+    this.furnitureGroup = new THREE.Group()
+    this.furnitureGroup.name = 'furniture'
     this.group.add(this.wallGroup)
     this.group.add(this.floorGroup)
     this.group.add(this.labelGroup)
     this.group.add(this.gridOverlay)
     this.group.add(this.ghostGroup)
+    this.group.add(this.furnitureGroup)
   }
 
   getGroup(): THREE.Group {
@@ -57,7 +62,7 @@ export class WallManager {
   }
 
   /** Full rebuild for visible floor */
-  syncBuilding(data: BuildingData, activeFloor: number): void {
+  syncBuilding(data: BuildingData, activeFloor: number, floorVisibility: 'active-only' | 'transparent' | 'all' = 'transparent'): void {
     this.clearAll()
 
     // Grid overlay
@@ -104,11 +109,34 @@ export class WallManager {
       this.addRoomLabel(room, data.gridSize, data.gridCellSize, floorY)
     }
 
-    // Ghost other floors (semi-transparent)
-    for (const otherFloor of data.floors) {
-      if (otherFloor.level === activeFloor) continue
-      for (const wall of otherFloor.walls) {
-        this.addGhostWall(wall, otherFloor.floorHeight)
+    // Render furniture for this floor
+    const floorFurniture = data.furniture.filter(f => f.floorLevel === activeFloor)
+    for (const furn of floorFurniture) {
+      this.addFurnitureMesh(furn, floorY)
+    }
+
+    // Other floors based on visibility mode
+    if (floorVisibility !== 'active-only') {
+      for (const otherFloor of data.floors) {
+        if (otherFloor.level === activeFloor) continue
+        const opacity = floorVisibility === 'transparent' ? 0.15 : 1.0
+        for (const wall of otherFloor.walls) {
+          if (floorVisibility === 'all') {
+            this.addWallMesh(wall, otherFloor.floorHeight)
+          } else {
+            this.addGhostWall(wall, otherFloor.floorHeight)
+          }
+        }
+        if (floorVisibility === 'all') {
+          for (const tile of otherFloor.floorTiles) {
+            this.addFloorTileMesh(tile, data.gridCellSize, otherFloor.floorHeight)
+          }
+          // Furniture on other floors at full opacity
+          const otherFurniture = data.furniture.filter(f => f.floorLevel === otherFloor.level)
+          for (const furn of otherFurniture) {
+            this.addFurnitureMesh(furn, otherFloor.floorHeight)
+          }
+        }
       }
     }
   }
@@ -204,6 +232,7 @@ export class WallManager {
     this.clearGroup(this.floorGroup)
     this.clearGroup(this.labelGroup)
     this.clearGroup(this.gridOverlay)
+    this.clearGroup(this.furnitureGroup)
     this.clearGhost()
   }
 
@@ -367,6 +396,52 @@ export class WallManager {
     sprite.position.set(centroid.x, floorY + 1.5, centroid.z)
     sprite.scale.set(4, 1, 1)
     this.labelGroup.add(sprite)
+  }
+
+  private addFurnitureMesh(furn: FurniturePlacement, floorY: number): void {
+    const entry = getFurnitureEntry(furn.itemType)
+    const width = entry?.width ?? 0.5
+    const depth = entry?.depth ?? 0.5
+    const height = entry?.height ?? 0.8
+    const color = entry?.color ?? 0xaa8866
+    const name = entry?.name ?? furn.itemType
+
+    // Box placeholder mesh
+    const geo = new THREE.BoxGeometry(width, height, depth)
+    const mat = new THREE.MeshLambertMaterial({ color })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.set(
+      furn.position[0],
+      floorY + height / 2,
+      furn.position[2]
+    )
+    mesh.rotation.y = furn.rotation
+    mesh.userData.furnitureId = furn.id
+
+    // Sprite label above the furniture
+    const canvas = document.createElement('canvas')
+    canvas.width = 256
+    canvas.height = 64
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold 20px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.fillText(name, 128, 40)
+
+      const texture = new THREE.CanvasTexture(canvas)
+      const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.8 })
+      const sprite = new THREE.Sprite(spriteMat)
+      sprite.position.set(
+        furn.position[0],
+        floorY + height + 0.3,
+        furn.position[2]
+      )
+      sprite.scale.set(2, 0.5, 1)
+      this.furnitureGroup.add(sprite)
+    }
+
+    this.furnitureGroup.add(mesh)
   }
 
   private createGridOverlay(data: BuildingData): void {

@@ -3,7 +3,7 @@
 import {
   MousePointer, Trash2, Package, Pentagon, LayoutGrid, Route,
   Square, DoorOpen, PaintBucket, Armchair,
-  ChevronUp, ChevronDown, Plus,
+  ChevronUp, ChevronDown, Plus, Eye, EyeOff, Ghost,
 } from "lucide-react"
 import RibbonGroup from "../RibbonGroup"
 import RibbonButton from "../RibbonButton"
@@ -27,6 +27,8 @@ export default function BuildTab({ callbacks, currentLevel }: BuildTabProps) {
   const clearBorderVertices = useWorldBuilderStore((s) => s.clearBorderVertices)
   const activeFloor = useWorldBuilderStore((s) => s.activeFloor)
   const setActiveFloor = useWorldBuilderStore((s) => s.setActiveFloor)
+  const floorVisibility = useWorldBuilderStore((s) => s.floorVisibility)
+  const setFloorVisibility = useWorldBuilderStore((s) => s.setFloorVisibility)
 
   const allowed = LEVEL_TOOLS[currentLevel]
   const can = (tool: string) => allowed.includes(tool as any)
@@ -38,21 +40,25 @@ export default function BuildTab({ callbacks, currentLevel }: BuildTabProps) {
         <RibbonButton icon={<Trash2 className="w-4 h-4" />} label="Delete" active={activeTool === 'delete'} onClick={() => setActiveTool('delete')} variant="danger" size="large" disabled={!can('delete')} />
       </RibbonGroup>
 
-      {/* Objects */}
-      <RibbonGroup label="Objects">
-        <RibbonButton icon={<Package className="w-4 h-4" />} label="Place" active={activeTool === 'place-object'} onClick={() => setActiveTool('place-object')} size="large" disabled={!can('place-object')} />
+      {/* Objects / Furniture */}
+      <RibbonGroup label={currentLevel === 'building' ? 'Furniture' : 'Objects'}>
+        {currentLevel !== 'building' && (
+          <RibbonButton icon={<Package className="w-4 h-4" />} label="Place" active={activeTool === 'place-object'} onClick={() => setActiveTool('place-object')} size="large" disabled={!can('place-object')} />
+        )}
         <button
-          onClick={() => { setActiveTool('place-object'); setPanelVisible('toolbox', !panels.toolbox.visible) }}
-          disabled={!can('place-object')}
+          onClick={() => {
+            if (currentLevel === 'building') setActiveTool('place-furniture')
+            else setActiveTool('place-object')
+            setPanelVisible('toolbox', !panels.toolbox.visible)
+          }}
           className={`h-7 px-2 flex items-center gap-1 rounded text-[11px] ${
-            !can('place-object')
-              ? 'text-[#666] cursor-not-allowed'
-              : panels.toolbox.visible
-                ? 'bg-green-600 text-white'
-                : 'bg-[#2d2d2d] hover:bg-[#383838] text-[#ccc]'
+            panels.toolbox.visible
+              ? 'bg-green-600 text-white'
+              : 'bg-[#2d2d2d] hover:bg-[#383838] text-[#ccc]'
           }`}
         >
-          <Package className="w-3.5 h-3.5" /> Toolbox
+          {currentLevel === 'building' ? <Armchair className="w-3.5 h-3.5" /> : <Package className="w-3.5 h-3.5" />}
+          {currentLevel === 'building' ? ' Furniture' : ' Toolbox'}
         </button>
       </RibbonGroup>
 
@@ -87,6 +93,22 @@ export default function BuildTab({ callbacks, currentLevel }: BuildTabProps) {
           <span className="text-[11px] text-[#ccc] px-1">Floor {activeFloor}</span>
           <button onClick={() => setActiveFloor(activeFloor + 1)} disabled={activeFloor >= callbacks.maxFloor} className="h-7 w-7 flex items-center justify-center rounded hover:bg-[#383838] text-[#ccc] disabled:text-[#666]"><ChevronUp className="w-4 h-4" /></button>
           <button onClick={callbacks.onAddFloor} className="h-7 w-7 flex items-center justify-center rounded hover:bg-[#383838] text-[#ccc]" title="Add floor"><Plus className="w-4 h-4" /></button>
+          <div className="w-px h-5 bg-[#3d3d3d] mx-1" />
+          <button
+            onClick={() => setFloorVisibility('active-only')}
+            className={`h-7 px-2 flex items-center gap-1 rounded text-[11px] ${floorVisibility === 'active-only' ? 'bg-[#0066cc] text-white' : 'hover:bg-[#383838] text-[#ccc]'}`}
+            title="Show active floor only"
+          ><EyeOff className="w-3.5 h-3.5" /> Hide</button>
+          <button
+            onClick={() => setFloorVisibility('transparent')}
+            className={`h-7 px-2 flex items-center gap-1 rounded text-[11px] ${floorVisibility === 'transparent' ? 'bg-[#0066cc] text-white' : 'hover:bg-[#383838] text-[#ccc]'}`}
+            title="Show other floors as transparent"
+          ><Ghost className="w-3.5 h-3.5" /> Ghost</button>
+          <button
+            onClick={() => setFloorVisibility('all')}
+            className={`h-7 px-2 flex items-center gap-1 rounded text-[11px] ${floorVisibility === 'all' ? 'bg-[#0066cc] text-white' : 'hover:bg-[#383838] text-[#ccc]'}`}
+            title="Show all floors"
+          ><Eye className="w-3.5 h-3.5" /> Show</button>
         </RibbonGroup>
       )}
     </>

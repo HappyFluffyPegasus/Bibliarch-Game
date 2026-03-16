@@ -714,7 +714,7 @@ export function ScenesPage() {
       basePose: poseId,
       emotion: selectedCharacter?.animation?.emotion || null,
       emotionIntensity: selectedCharacter?.animation?.emotionIntensity || 1,
-      clipAnimation: posePath,
+      clipAnimation: posePath ? poseId : null,
       clipLoop: true
     }
 
@@ -1272,6 +1272,8 @@ export function ScenesPage() {
                     lightingPreset={(currentScene.lightingPreset as LightingPreset) || 'default'}
                     props={currentScene.props || []}
                     isRecording={isRecording}
+                    storyId={storyId}
+                    locationId={currentScene.locationId}
                   />
 
                   {/* Status indicator */}
@@ -1300,21 +1302,23 @@ export function ScenesPage() {
                   {/* Top right controls */}
                   <div className="absolute top-4 right-4 flex items-center gap-2">
                     {/* Location backdrop picker */}
-                    {worldLocations.length > 0 && (
-                      <div className="flex items-center gap-1 bg-slate-800/80 rounded-full px-2 py-1">
-                        <MapPin className="w-3 h-3 text-emerald-400" />
-                        <select
-                          value={currentScene.locationId || ''}
-                          onChange={(e) => updateCurrentScene({ locationId: e.target.value || undefined })}
-                          className="bg-slate-800 text-xs text-slate-200 outline-none cursor-pointer border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
-                        >
-                          <option value="">No Location</option>
-                          {worldLocations.map(loc => (
+                    <div className="flex items-center gap-1 bg-slate-800/80 rounded-full px-2 py-1">
+                      <MapPin className="w-3 h-3 text-emerald-400" />
+                      <select
+                        value={currentScene.locationId || ''}
+                        onChange={(e) => updateCurrentScene({ locationId: e.target.value || undefined })}
+                        className="bg-slate-800 text-xs text-slate-200 outline-none cursor-pointer border-slate-600 [&>option]:bg-slate-800 [&>option]:text-slate-200"
+                      >
+                        <option value="">No Location</option>
+                        {worldLocations.length > 0 ? (
+                          worldLocations.map(loc => (
                             <option key={loc.id} value={loc.id}>{loc.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
+                          ))
+                        ) : (
+                          <option value="" disabled>Build a world first</option>
+                        )}
+                      </select>
+                    </div>
 
                     {/* Timeline event link */}
                     {timelineEvents.length > 0 && (

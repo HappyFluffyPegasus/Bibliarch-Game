@@ -12,6 +12,7 @@ import { FirstPersonController } from '@/lib/terrain/FirstPersonController'
 import { BorderManager } from '@/lib/borders/BorderManager'
 import { LotManager } from '@/lib/city/LotManager'
 import { RoadNetworkManager } from '@/lib/city/RoadNetworkManager'
+import { computeRoadRibbon } from '@/lib/city/roadUtils'
 import { WallManager } from '@/lib/building/WallManager'
 
 export interface WorldViewport3DProps {
@@ -80,9 +81,13 @@ export interface WorldViewport3DProps {
   wallStartPoint?: { x: number; z: number } | null
   wallHeight?: number
   wallMaterial?: string
+  floorVisibility?: 'active-only' | 'transparent' | 'all'
   onWallClick?: (worldPos: [number, number, number]) => void
-  onFloorPaint?: (worldPos: [number, number, number]) => void
+  onFloorPaint?: (worldPos: [number, number, number], endPos?: [number, number, number]) => void
   onFurniturePlace?: (worldPos: [number, number, number]) => void
+
+  // Lot preview (two-click sizing)
+  lotCorner1?: { x: number; z: number } | null
 
   // Transform mode for selected objects
   transformMode?: 'translate' | 'scale' | 'rotate'
@@ -154,9 +159,11 @@ export default function WorldViewport3D({
   wallStartPoint,
   wallHeight = 3,
   wallMaterial = 'drywall',
+  floorVisibility = 'transparent',
   onWallClick,
   onFloorPaint,
   onFurniturePlace,
+  lotCorner1,
   transformMode = 'translate',
   cameraPreset,
   cameraPresetCounter,
@@ -268,6 +275,29 @@ export default function WorldViewport3D({
   onFurniturePlaceRef.current = onFurniturePlace
   const lastLotClickTimeRef = useRef(0)
   const lastLotClickIdRef = useRef<string | null>(null)
+  const lotCorner1Ref = useRef(lotCorner1)
+  lotCorner1Ref.current = lotCorner1
+  const lotsRef = useRef(lots)
+  lotsRef.current = lots
+
+  // Building tool refs (for use inside event handlers)
+  const wallDrawModeRef = useRef(wallDrawMode)
+  wallDrawModeRef.current = wallDrawMode
+  const wallStartPointRef = useRef(wallStartPoint)
+  wallStartPointRef.current = wallStartPoint
+  const wallHeightRef = useRef(wallHeight)
+  wallHeightRef.current = wallHeight
+  const wallMaterialRef = useRef(wallMaterial)
+  wallMaterialRef.current = wallMaterial
+  const activeFloorRef = useRef(activeFloor)
+  activeFloorRef.current = activeFloor
+  const buildingDataRef = useRef(buildingData)
+  buildingDataRef.current = buildingData
+  const currentLevelRef = useRef(currentLevel)
+  currentLevelRef.current = currentLevel
+
+  // Floor drag-to-fill ref
+  const floorDragStartRef = useRef<[number, number, number] | null>(null)
 
   // ── Initialize Three.js scene ──────────────────────────────
   useEffect(() => {
@@ -280,16 +310,18 @@ export default function WorldViewport3D({
     // Scene
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x87CEEB)
-    scene.fog = new THREE.Fog(0x87CEEB, 200, 500)
     sceneRef.current = scene
 
     // Camera
     const worldSizeX = terrain.size * terrain.cellSize
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
     const worldSize = Math.max(worldSizeX, worldSizeZ)
+    scene.fog = new THREE.Fog(0x87CEEB, Math.max(worldSize * 0.5, 100), Math.max(worldSize * 1.5, 400))
+    const terrainTop = terrain.maxHeight || worldSize * 0.12
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.5, worldSize * 3)
-    camera.position.set(worldSizeX * 0.15, worldSize * 0.12, worldSizeZ * 0.15)
-    camera.lookAt(worldSizeX * 0.4, 0, worldSizeZ * 0.4)
+    const camHeight = Math.max(terrainTop * 0.5 + worldSize * 0.08, worldSize * 0.3)
+    camera.position.set(worldSizeX * 0.15, camHeight, worldSizeZ * 0.15)
+    camera.lookAt(worldSizeX * 0.4, Math.min(terrainTop * 0.2, camHeight * 0.5), worldSizeZ * 0.4)
     cameraRef.current = camera
 
     // Renderer — no antialias, no shadows, capped pixel ratio for performance
@@ -599,9 +631,9 @@ export default function WorldViewport3D({
   }, [terrain.size, terrain.sizeZ, terrain.cellSize, terrain.maxHeight, cameraMode])
 
   // ── Reset camera when terrain dimensions change (level navigation) ──
-  const prevTerrainSizeRef = useRef(`${terrain.size}-${terrain.sizeZ}-${terrain.cellSize}`)
+  const prevTerrainSizeRef = useRef(`${terrain.size}-${terrain.sizeZ}-${terrain.cellSize}-${currentLevel}`)
   useEffect(() => {
-    const key = `${terrain.size}-${terrain.sizeZ}-${terrain.cellSize}`
+    const key = `${terrain.size}-${terrain.sizeZ}-${terrain.cellSize}-${currentLevel}`
     if (key === prevTerrainSizeRef.current) return
     prevTerrainSizeRef.current = key
 
@@ -613,22 +645,39 @@ export default function WorldViewport3D({
     const worldSizeZ = terrain.sizeZ * terrain.cellSize
     const worldSize = Math.max(worldSizeX, worldSizeZ)
 
-    const cx = worldSizeX * 0.5
-    const cz = worldSizeZ * 0.5
-    const fovRad = (camera.fov * Math.PI) / 180
-    const fitDistance = (worldSize / 2) / Math.tan(fovRad / 2)
-    // Position at ~45-degree angle looking at terrain center
-    const dist = fitDistance * 0.6
-    camera.position.set(cx + dist * 0.5, dist * 0.7, cz + dist * 0.5)
-    camera.near = Math.max(0.5, worldSize * 0.001)
-    camera.far = worldSize * 4
-    camera.updateProjectionMatrix()
+    if (currentLevel === 'building') {
+      // Building interior: position camera for top-down building view
+      const bd = buildingDataRef.current
+      const bldgSize = bd ? bd.gridSize * bd.gridCellSize : worldSize * 0.5
+      const bldgCenter = bldgSize / 2
+      camera.position.set(bldgCenter + bldgSize * 0.4, bldgSize * 0.8, bldgCenter + bldgSize * 0.4)
+      camera.near = 0.1
+      camera.far = bldgSize * 10
+      camera.updateProjectionMatrix()
+      controls.target.set(bldgCenter, 0, bldgCenter)
+      controls.minDistance = 1
+      controls.maxDistance = bldgSize * 5
+      controls.update()
+    } else {
+      const cx = worldSizeX * 0.5
+      const cz = worldSizeZ * 0.5
+      const fovRad = (camera.fov * Math.PI) / 180
+      const fitDistance = (worldSize / 2) / Math.tan(fovRad / 2)
+      // Position at ~45-degree angle looking at terrain center
+      const dist = fitDistance * 0.6
+      const terrainTop = terrain.maxHeight || 0
+      const resetHeight = Math.max(terrainTop * 0.5, worldSize * 0.3, 15)
+      camera.position.set(cx + dist * 0.3, resetHeight, cz + dist * 0.3)
+      camera.near = Math.max(0.5, worldSize * 0.001)
+      camera.far = worldSize * 4
+      camera.updateProjectionMatrix()
 
-    controls.target.set(cx, 0, cz)
-    controls.minDistance = Math.max(5, worldSize * 0.01)
-    controls.maxDistance = worldSize * 3
-    controls.update()
-  }, [terrain.size, terrain.sizeZ, terrain.cellSize])
+      controls.target.set(cx, Math.min(terrainTop * 0.2, resetHeight * 0.3), cz)
+      controls.minDistance = Math.max(5, worldSize * 0.01)
+      controls.maxDistance = worldSize * 3
+      controls.update()
+    }
+  }, [terrain.size, terrain.sizeZ, terrain.cellSize, currentLevel])
 
   // ── Camera preset handler ──────────────────────
   useEffect(() => {
@@ -786,6 +835,38 @@ export default function WorldViewport3D({
     }
   }, [lots, terrain, showLots])
 
+  // ── Lot preview rectangle (two-click sizing) ──────────────
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!scene) return
+
+    const old = scene.getObjectByName('lot-preview')
+    if (old) scene.remove(old)
+
+    if (!lotCorner1) return
+
+    const cs = terrain.cellSize || 1
+    const geo = new THREE.PlaneGeometry(1, 1)
+    geo.rotateX(-Math.PI / 2)
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x9966ff,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.name = 'lot-preview'
+    mesh.position.set(lotCorner1.x * cs, 0.2, lotCorner1.z * cs)
+    mesh.renderOrder = 12
+    scene.add(mesh)
+
+    return () => {
+      scene.remove(mesh)
+      geo.dispose()
+      mat.dispose()
+    }
+  }, [lotCorner1, terrain.cellSize])
+
   // ── Sync roads ────────────────────────────────────────────
   useEffect(() => {
     if (roadManagerRef.current && roadNetwork && showRoads) {
@@ -801,8 +882,9 @@ export default function WorldViewport3D({
     if (!scene) return
 
     // Clean up old preview
-    if (roadPreviewRef.current) {
-      roadPreviewRef.current.traverse(child => {
+    const oldPreview = scene.getObjectByName('road-preview')
+    if (oldPreview) {
+      oldPreview.traverse(child => {
         if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose()
         if ((child as THREE.Mesh).material) {
           const mat = (child as THREE.Mesh).material
@@ -810,27 +892,71 @@ export default function WorldViewport3D({
           else (mat as THREE.Material).dispose()
         }
       })
-      scene.remove(roadPreviewRef.current)
-      roadPreviewRef.current = null
+      scene.remove(oldPreview)
     }
 
-    if (roadDrawMode === 'drawing' && roadWaypoints.length > 0 && roadManagerRef.current) {
-      const preview = roadManagerRef.current.renderPreview(roadWaypoints, null, roadWidth, terrain)
-      if (preview) {
-        scene.add(preview)
-        roadPreviewRef.current = preview
-      }
+    if (roadDrawMode !== 'drawing' || roadWaypoints.length < 2) return
+
+    const { positions, uvs, indices } = computeRoadRibbon(roadWaypoints, roadWidth, terrain)
+    if (positions.length === 0) return
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+    geo.setIndex(indices)
+    geo.computeVertexNormals()
+
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x666666,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+    })
+
+    const preview = new THREE.Mesh(geo, mat)
+    preview.name = 'road-preview'
+    scene.add(preview)
+
+    return () => {
+      scene.remove(preview)
+      geo.dispose()
+      mat.dispose()
     }
   }, [roadDrawMode, roadWaypoints, terrain, roadWidth])
+
+  // ── Toggle terrain/object visibility at building level ───
+  useEffect(() => {
+    const isBuilding = currentLevel === 'building'
+    if (chunkManagerRef.current) {
+      chunkManagerRef.current.getGroup().visible = !isBuilding
+    }
+    if (objectManagerRef.current) {
+      objectManagerRef.current.getGroup().visible = !isBuilding
+    }
+    // Also hide roads, lots, borders at building level
+    if (roadManagerRef.current) {
+      roadManagerRef.current.getGroup().visible = !isBuilding
+    }
+    if (lotManagerRef.current) {
+      lotManagerRef.current.getGroup().visible = !isBuilding
+    }
+    if (borderPreviewRef.current) {
+      borderPreviewRef.current.visible = !isBuilding
+    }
+    // Disable fog inside buildings
+    if (isBuilding && sceneRef.current) {
+      sceneRef.current.fog = null
+    }
+  }, [currentLevel])
 
   // ── Sync building ─────────────────────────────────────────
   useEffect(() => {
     if (wallManagerRef.current && buildingData && currentLevel === 'building') {
-      wallManagerRef.current.syncBuilding(buildingData, activeFloor)
+      wallManagerRef.current.syncBuilding(buildingData, activeFloor, floorVisibility)
     } else if (wallManagerRef.current) {
       wallManagerRef.current.dispose()
     }
-  }, [buildingData, activeFloor, currentLevel])
+  }, [buildingData, activeFloor, currentLevel, floorVisibility])
 
   // ── Wall ghost preview ────────────────────────────────────
   useEffect(() => {
@@ -1188,7 +1314,7 @@ export default function WorldViewport3D({
     const scene = sceneRef.current
     if (!scene) return
 
-    if (!fogEnabled) {
+    if (!fogEnabled || currentLevelRef.current === 'building') {
       scene.fog = null
       return
     }
@@ -1319,14 +1445,36 @@ export default function WorldViewport3D({
 
   const raycastTerrain = useCallback((): THREE.Vector3 | null => {
     const camera = cameraRef.current
-    const chunkMgr = chunkManagerRef.current
-    if (!camera || !chunkMgr) return null
+    if (!camera) return null
 
     setupRaycaster()
-    const hits = raycasterRef.current.intersectObjects(chunkMgr.getChunkMeshes(), false)
-    if (hits.length > 0) {
-      return hits[0].point
+
+    // At building level, skip terrain chunks and raycast against the floor plane directly
+    if (currentLevelRef.current === 'building') {
+      const bd = buildingDataRef.current
+      if (bd) {
+        const floor = bd.floors.find(f => f.level === activeFloorRef.current)
+        const floorY = floor?.floorHeight ?? 0
+        const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -floorY)
+        const floorTarget = new THREE.Vector3()
+        const floorHit = raycasterRef.current.ray.intersectPlane(floorPlane, floorTarget)
+        if (floorHit) return floorHit
+      }
+      // Fallback to y=0 ground plane for building level
+      const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+      const target = new THREE.Vector3()
+      return raycasterRef.current.ray.intersectPlane(groundPlane, target)
     }
+
+    // Try terrain chunk meshes first (non-building levels)
+    const chunkMgr = chunkManagerRef.current
+    if (chunkMgr) {
+      const hits = raycasterRef.current.intersectObjects(chunkMgr.getChunkMeshes(), false)
+      if (hits.length > 0) {
+        return hits[0].point
+      }
+    }
+
     // Fallback: intersect ground plane at y=0 so clicks always register
     const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
     const target = new THREE.Vector3()
@@ -1494,10 +1642,23 @@ export default function WorldViewport3D({
         updateMouseNDC(e)
         const point = raycastTerrain()
         if (point) {
-          // Check for lot click/double-click
-          if (lotManagerRef.current) {
-            const now = performance.now()
-            // Simple lot selection (not draw mode) — handled by parent
+          // Check for lot double-click (enter building)
+          const lotsArr = lotsRef.current
+          if (lotManagerRef.current && lotsArr) {
+            const hitLotId = lotManagerRef.current.findLotAtPosition(point.x, point.z, lotsArr, terrainRef.current)
+            if (hitLotId) {
+              const now = performance.now()
+              if (lastLotClickIdRef.current === hitLotId && now - lastLotClickTimeRef.current < 400) {
+                onLotDoubleClickRef.current?.(hitLotId)
+                lastLotClickTimeRef.current = 0
+                lastLotClickIdRef.current = null
+                return
+              }
+              lastLotClickTimeRef.current = now
+              lastLotClickIdRef.current = hitLotId
+            } else {
+              lastLotClickIdRef.current = null
+            }
           }
           onLotClickRef.current?.([point.x, point.y, point.z])
         }
@@ -1533,9 +1694,9 @@ export default function WorldViewport3D({
 
       if (tool === 'paint-floor') {
         updateMouseNDC(e)
-        isPaintingRef.current = true
         const point = raycastTerrain()
         if (point) {
+          floorDragStartRef.current = [point.x, point.y, point.z]
           onFloorPaintRef.current?.([point.x, point.y, point.z])
         }
         return
@@ -1611,6 +1772,36 @@ export default function WorldViewport3D({
           ghost.position.set(point.x, point.y, point.z)
         }
 
+        // Lot preview rectangle update
+        if (tool === 'draw-lot' && lotCorner1Ref.current) {
+          const preview = sceneRef.current?.getObjectByName('lot-preview')
+          if (preview) {
+            const c1 = lotCorner1Ref.current
+            const cs = terrainRef.current.cellSize || 1
+            const cx = (c1.x * cs + point.x) / 2
+            const cz = (c1.z * cs + point.z) / 2
+            const w = Math.abs(point.x - c1.x * cs)
+            const d = Math.abs(point.z - c1.z * cs)
+            preview.position.set(cx, point.y + 0.2, cz)
+            preview.scale.set(Math.max(w, 0.1), 1, Math.max(d, 0.1))
+          }
+        }
+
+        // Wall ghost preview
+        if (tool === 'place-wall' && wallDrawModeRef.current === 'drawing' && wallStartPointRef.current) {
+          const wallMgr = wallManagerRef.current
+          if (wallMgr) {
+            const bd = buildingDataRef.current
+            const floorY = bd?.floors.find(f => f.level === activeFloorRef.current)?.floorHeight ?? 0
+            wallMgr.showGhostWall(
+              wallStartPointRef.current.x, wallStartPointRef.current.z,
+              point.x, point.z,
+              wallHeightRef.current, floorY,
+              wallMaterialRef.current
+            )
+          }
+        }
+
         // Throttle React state updates separately (causes full page re-render)
         if (now - lastCursorStateTime > STATE_INTERVAL) {
           lastCursorStateTime = now
@@ -1676,6 +1867,15 @@ export default function WorldViewport3D({
         setMarqueeRect(null)
       }
 
+      // Floor drag-to-fill: on release, fill rectangle from start to end
+      if (floorDragStartRef.current && activeToolRef.current === 'paint-floor') {
+        const point = raycastTerrain()
+        if (point) {
+          onFloorPaintRef.current?.([point.x, point.y, point.z], floorDragStartRef.current)
+        }
+        floorDragStartRef.current = null
+      }
+
       if (isPaintingRef.current) {
         isPaintingRef.current = false
         onTerrainChanged()
@@ -1691,6 +1891,7 @@ export default function WorldViewport3D({
     const handleMouseLeave = () => {
       isMarqueeRef.current = false
       setMarqueeRect(null)
+      floorDragStartRef.current = null
       if (brushCursorRef.current) brushCursorRef.current.visible = false
       if (ghostMeshRef.current) ghostMeshRef.current.visible = false
       onCursorMove(null, null)

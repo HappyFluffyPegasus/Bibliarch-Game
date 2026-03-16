@@ -226,6 +226,7 @@ interface WorldBuilderState {
   floorMaterial: string
   showWalls: boolean
   showRoomLabels: boolean
+  floorVisibility: 'active-only' | 'transparent' | 'all'
 
   // Dock panels
   panels: Record<DockPanelId, DockPanelState>
@@ -328,6 +329,7 @@ interface WorldBuilderState {
   setFloorMaterial: (material: string) => void
   setShowWalls: (show: boolean) => void
   setShowRoomLabels: (show: boolean) => void
+  setFloorVisibility: (mode: 'active-only' | 'transparent' | 'all') => void
 
   // Dock panels
   setPanelVisible: (id: DockPanelId, visible: boolean) => void
@@ -426,6 +428,7 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   floorMaterial: 'wood',
   showWalls: true,
   showRoomLabels: true,
+  floorVisibility: 'transparent',
 
   panels: structuredClone(DEFAULT_PANELS),
   leftDockWidth: 260,
@@ -599,6 +602,7 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   setFloorMaterial: (material) => set({ floorMaterial: material }),
   setShowWalls: (show) => set({ showWalls: show }),
   setShowRoomLabels: (show) => set({ showRoomLabels: show }),
+  setFloorVisibility: (mode) => set({ floorVisibility: mode }),
 
   // Dock panels
   setPanelVisible: (id, visible) =>

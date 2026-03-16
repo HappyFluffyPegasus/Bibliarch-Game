@@ -17,48 +17,24 @@ const EMOTIONS = [
   { id: 'surprised', label: 'Surprised', icon: Zap, color: 'text-amber-400' },
 ]
 
-// Pose categories with Mixamo animations
+// Pose categories - only poses with actual FBX files in /public/animations/
 const POSE_CATEGORIES = [
   {
     name: 'Idle',
     poses: [
-      { id: 'idle', label: 'Standing', path: null },
-      { id: 'idle-happy', label: 'Happy Idle', path: '/animations/Happy Idle.fbx' },
-      { id: 'idle-sad', label: 'Sad Idle', path: '/animations/Sad Idle.fbx' },
-      { id: 'arms-crossed', label: 'Arms Crossed', path: '/animations/Standing Arms Crossed.fbx' },
-    ]
-  },
-  {
-    name: 'Talking',
-    poses: [
-      { id: 'talking', label: 'Talking', path: '/animations/Talking.fbx' },
-      { id: 'explaining', label: 'Explaining', path: '/animations/Explaining.fbx' },
-      { id: 'arguing', label: 'Arguing', path: '/animations/Arguing.fbx' },
+      { id: 'idle-neutral', label: 'Standing', path: null },
     ]
   },
   {
     name: 'Actions',
     poses: [
-      { id: 'walking', label: 'Walking', path: '/animations/Walking.fbx' },
-      { id: 'running', label: 'Running', path: '/animations/Running.fbx' },
-      { id: 'sitting', label: 'Sitting', path: '/animations/Sitting.fbx' },
-      { id: 'waving', label: 'Waving', path: '/animations/Waving.fbx' },
-    ]
-  },
-  {
-    name: 'Reactions',
-    poses: [
-      { id: 'laughing', label: 'Laughing', path: '/animations/Laughing.fbx' },
-      { id: 'crying', label: 'Crying', path: '/animations/Crying.fbx' },
-      { id: 'surprised', label: 'Surprised', path: '/animations/Surprised.fbx' },
-      { id: 'thinking', label: 'Thinking', path: '/animations/Thinking.fbx' },
+      { id: 'body-block', label: 'Body Block', path: '/animations/Body Block.fbx' },
     ]
   },
   {
     name: 'Dance',
     poses: [
-      { id: 'hip-hop', label: 'Hip Hop', path: '/animations/Hip Hop Dancing.fbx' },
-      { id: 'samba', label: 'Samba', path: '/animations/Samba Dancing.fbx' },
+      { id: 'hip-hop', label: 'Hip Hop', path: '/animations/Hip Hop Dancing (1).fbx' },
     ]
   },
 ]

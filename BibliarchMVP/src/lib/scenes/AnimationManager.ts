@@ -167,9 +167,11 @@ export class AnimationManager {
         this.currentAction.paused = true
       }
     } else {
-      // Built-in pose - reset to bind pose for now
-      // In a full implementation, this would apply bone transforms
-      this.resetToBindPose()
+      // No animation file — just stop current animation and let character hold last pose
+      if (this.currentAction) {
+        this.currentAction.fadeOut(0.5)
+        this.currentAction = null
+      }
     }
   }
 

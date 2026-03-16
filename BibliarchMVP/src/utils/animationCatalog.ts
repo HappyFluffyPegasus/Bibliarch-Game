@@ -19,27 +19,8 @@ export interface AnimationEntry {
 // ============================================================
 
 export const POSES: AnimationEntry[] = [
-  // Idle poses
+  // Idle pose (default T-pose / bind pose, no FBX needed)
   { id: 'idle-neutral', name: 'Neutral', path: null, type: 'pose', category: 'idle' },
-  { id: 'idle-relaxed', name: 'Relaxed', path: null, type: 'pose', category: 'idle' },
-  { id: 'idle-confident', name: 'Confident', path: null, type: 'pose', category: 'idle' },
-  { id: 'idle-crossed-arms', name: 'Crossed Arms', path: null, type: 'pose', category: 'idle' },
-  { id: 'idle-hands-hips', name: 'Hands on Hips', path: null, type: 'pose', category: 'idle' },
-
-  // Conversational poses
-  { id: 'talking-gesture', name: 'Gesturing', path: null, type: 'pose', category: 'talking' },
-  { id: 'talking-thinking', name: 'Thinking', path: null, type: 'pose', category: 'talking' },
-  { id: 'talking-explaining', name: 'Explaining', path: null, type: 'pose', category: 'talking' },
-
-  // Action poses
-  { id: 'action-pointing', name: 'Pointing', path: null, type: 'pose', category: 'action' },
-  { id: 'action-waving', name: 'Waving', path: null, type: 'pose', category: 'action' },
-  { id: 'action-shrugging', name: 'Shrugging', path: null, type: 'pose', category: 'action' },
-
-  // Emotional poses
-  { id: 'pose-sad', name: 'Sad Stance', path: null, type: 'pose', category: 'emotional' },
-  { id: 'pose-defensive', name: 'Defensive', path: null, type: 'pose', category: 'emotional' },
-  { id: 'pose-defeated', name: 'Defeated', path: '/animations/Defeated.fbx', type: 'pose', category: 'emotional' },
 ]
 
 // ============================================================
@@ -95,26 +76,6 @@ export const ANIMATION_CLIPS: AnimationEntry[] = [
     type: 'clip',
     category: 'action',
     looping: false
-  },
-
-  // Idle animations (looping)
-  {
-    id: 'breathing-idle',
-    name: 'Breathing Idle',
-    path: '/animations/Breathing Idle.fbx',
-    type: 'clip',
-    category: 'idle',
-    looping: true
-  },
-
-  // Conversational animations
-  {
-    id: 'talking-1',
-    name: 'Talking',
-    path: '/animations/Talking.fbx',
-    type: 'clip',
-    category: 'talking',
-    looping: true
   },
 ]
 

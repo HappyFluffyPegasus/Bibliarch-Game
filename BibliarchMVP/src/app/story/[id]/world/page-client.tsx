@@ -335,6 +335,7 @@ export function WorldPage() {
   const [world, setWorld] = useState<World | null>(null)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [editorPhase, setEditorPhase] = useState<'setup' | 'cartography' | 'editor'>('setup')
+  const [startLevel, setStartLevel] = useState<WorldLevel>('world')
   const terrainRef = useRef<TerrainData | null>(null)
 
   // Undo/redo: capture terrain state at stroke start
@@ -486,6 +487,7 @@ export function WorldPage() {
   const setSelectedFurnitureType = useWorldBuilderStore((s) => s.setSelectedFurnitureType)
   const floorMaterial = useWorldBuilderStore((s) => s.floorMaterial)
   const setFloorMaterial = useWorldBuilderStore((s) => s.setFloorMaterial)
+  const floorVisibility = useWorldBuilderStore((s) => s.floorVisibility)
 
   // Dock panels
   const panels = useWorldBuilderStore((s) => s.panels)
@@ -764,6 +766,11 @@ export function WorldPage() {
 
     const node = hw.nodes[nodeId]
 
+    // Ensure building-level nodes have buildingData
+    if (node.level === 'building' && !node.buildingData) {
+      node.buildingData = createBuildingData(32)
+    }
+
     // Propagate parent terrain changes if snapshot exists
     if (node.parentBoundsSnapshot && node.boundsInParent && node.parentId) {
       const parentNode = hw.nodes[node.parentId]
@@ -802,7 +809,13 @@ export function WorldPage() {
     }
     enterNode(nodeId, node.level)
     setHasUnsavedChanges(false)
-  }, [world, storyId, persistWorld, enterNode])
+
+    // Auto-configure UI for building level
+    if (node.level === 'building') {
+      setActiveTool('place-wall')
+      setPanelVisible('toolbox', true)
+    }
+  }, [world, storyId, persistWorld, enterNode, setActiveTool, setPanelVisible])
 
   /** Navigate back to parent node */
   const handleExitToParent = useCallback(async () => {
@@ -1975,7 +1988,7 @@ export function WorldPage() {
       vertices: [...borderVertices],
       color: borderColor,
       style: borderStyle,
-      fillOpacity: 0.1,
+      fillOpacity: 0.15,
     }
 
     // Compute bounding box from vertices (in world coords) → grid coords
@@ -2110,6 +2123,44 @@ export function WorldPage() {
     setHierarchicalWorld({ ...hierarchicalWorld })
     setHasUnsavedChanges(true)
   }, [hierarchicalWorld, activeNodeId])
+
+  const handleEnterLot = useCallback(async (lotId: string) => {
+    if (!hierarchicalWorld || !activeNodeId) return
+    const node = hierarchicalWorld.nodes[activeNodeId]
+    if (!node || !node.lots) return
+
+    const lot = node.lots.find(l => l.id === lotId)
+    if (!lot) return
+
+    let buildingNodeId = lot.linkedBuildingId
+
+    if (!buildingNodeId || !hierarchicalWorld.nodes[buildingNodeId]) {
+      // Create a new building node for this lot
+      const buildingNode = createWorldNode(
+        activeNodeId,
+        'building',
+        `${lot.name} Interior`,
+        { startX: lot.startX, startZ: lot.startZ, width: lot.width, depth: lot.depth },
+        32,
+        32,
+      )
+      buildingNode.buildingData = createBuildingData(32)
+
+      // Add to world
+      hierarchicalWorld.nodes[buildingNode.id] = buildingNode
+      node.childIds = [...node.childIds, buildingNode.id]
+
+      // Link lot to building node
+      lot.linkedBuildingId = buildingNode.id
+      buildingNodeId = buildingNode.id
+
+      setHierarchicalWorld({ ...hierarchicalWorld })
+      setHasUnsavedChanges(true)
+    }
+
+    // Navigate into the building
+    await handleEnterNode(buildingNodeId!)
+  }, [hierarchicalWorld, activeNodeId, handleEnterNode])
 
   // ── Road handlers ──────────────────────────────────────────
   const handleRoadClick = useCallback((worldPos: [number, number, number]) => {
@@ -2259,7 +2310,7 @@ export function WorldPage() {
     pushUndo({ type: 'opening-place', openingId: newOpening.id, floorLevel: activeFloor })
   }, [hierarchicalWorld, activeNodeId, activeFloor, pushUndo])
 
-  const handleFloorPaint = useCallback((worldPos: [number, number, number]) => {
+  const handleFloorPaint = useCallback((worldPos: [number, number, number], endPos?: [number, number, number]) => {
     if (!hierarchicalWorld || !activeNodeId) return
     const node = hierarchicalWorld.nodes[activeNodeId]
     if (!node?.buildingData) return
@@ -2268,15 +2319,34 @@ export function WorldPage() {
     const floor = bd.floors.find(f => f.level === activeFloor)
     if (!floor) return
 
-    const gx = Math.floor(worldPos[0] / bd.gridCellSize)
-    const gz = Math.floor(worldPos[2] / bd.gridCellSize)
+    // If endPos is provided, fill the rectangle between endPos (drag start) and worldPos (drag end)
+    if (endPos) {
+      const minGx = Math.min(Math.floor(worldPos[0] / bd.gridCellSize), Math.floor(endPos[0] / bd.gridCellSize))
+      const maxGx = Math.max(Math.floor(worldPos[0] / bd.gridCellSize), Math.floor(endPos[0] / bd.gridCellSize))
+      const minGz = Math.min(Math.floor(worldPos[2] / bd.gridCellSize), Math.floor(endPos[2] / bd.gridCellSize))
+      const maxGz = Math.max(Math.floor(worldPos[2] / bd.gridCellSize), Math.floor(endPos[2] / bd.gridCellSize))
 
-    // Add or update floor tile
-    const existing = floor.floorTiles.findIndex(t => t.x === gx && t.z === gz)
-    if (existing >= 0) {
-      floor.floorTiles[existing] = { x: gx, z: gz, material: floorMaterial }
+      for (let x = minGx; x <= maxGx; x++) {
+        for (let z = minGz; z <= maxGz; z++) {
+          const existing = floor.floorTiles.findIndex(t => t.x === x && t.z === z)
+          if (existing >= 0) {
+            floor.floorTiles[existing] = { x, z, material: floorMaterial }
+          } else {
+            floor.floorTiles = [...floor.floorTiles, { x, z, material: floorMaterial }]
+          }
+        }
+      }
     } else {
-      floor.floorTiles = [...floor.floorTiles, { x: gx, z: gz, material: floorMaterial }]
+      const gx = Math.floor(worldPos[0] / bd.gridCellSize)
+      const gz = Math.floor(worldPos[2] / bd.gridCellSize)
+
+      // Add or update single floor tile
+      const existing = floor.floorTiles.findIndex(t => t.x === gx && t.z === gz)
+      if (existing >= 0) {
+        floor.floorTiles[existing] = { x: gx, z: gz, material: floorMaterial }
+      } else {
+        floor.floorTiles = [...floor.floorTiles, { x: gx, z: gz, material: floorMaterial }]
+      }
     }
     node.buildingData = { ...bd }
     setHierarchicalWorld({ ...hierarchicalWorld })
@@ -2337,6 +2407,13 @@ export function WorldPage() {
 
   // ── Setup phase screen ────────────────────────────────────
   if (editorPhase === 'setup') {
+    const LEVEL_COLORS: Record<string, { border: string; bg: string; icon: string }> = {
+      sky: { border: 'border-sky-500', bg: 'bg-sky-500/10', icon: 'text-sky-400' },
+      amber: { border: 'border-amber-500', bg: 'bg-amber-500/10', icon: 'text-amber-400' },
+      blue: { border: 'border-blue-500', bg: 'bg-blue-500/10', icon: 'text-blue-400' },
+      green: { border: 'border-green-500', bg: 'bg-green-500/10', icon: 'text-green-400' },
+    }
+
     return (
       <div className="h-screen flex flex-col bg-gray-900 text-white">
         <header className="border-b border-gray-700 bg-gray-900 px-4 py-2 flex items-center gap-3 shrink-0">
@@ -2344,82 +2421,113 @@ export function WorldPage() {
           <h1 className="text-sm font-semibold">World Builder</h1>
         </header>
         <div className="flex-1 flex items-center justify-center">
-          <div className="max-w-lg w-full px-6 space-y-8 text-center">
+          <div className="max-w-2xl w-full px-6 space-y-8 text-center">
             <div>
-              <h2 className="text-2xl font-bold mb-2">Create Your World</h2>
-              <p className="text-sm text-gray-400">Choose how to start building your terrain.</p>
+              <h2 className="text-2xl font-bold mb-2">Create Your Area</h2>
+              <p className="text-sm text-gray-400">Choose where to start building.</p>
+            </div>
+
+            {/* Hierarchy level cards */}
+            <div className="grid grid-cols-3 gap-3">
+              {([
+                { level: 'world' as WorldLevel, icon: Globe, label: 'World', desc: 'Continents, oceans, countries', color: 'sky' },
+                { level: 'country' as WorldLevel, icon: Flag, label: 'Country', desc: 'Cities, landscapes, regions', color: 'amber' },
+                { level: 'city' as WorldLevel, icon: Building2, label: 'City', desc: 'Lots, roads, buildings', color: 'blue' },
+              ]).map(({ level, icon: Icon, label, desc, color }) => {
+                const colors = LEVEL_COLORS[color]
+                return (
+                  <button
+                    key={level}
+                    onClick={() => setStartLevel(level)}
+                    className={`p-4 rounded-xl border transition-all text-left space-y-2 ${
+                      startLevel === level
+                        ? `${colors.border} ${colors.bg}`
+                        : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+                    }`}
+                  >
+                    <Icon className={`w-6 h-6 ${colors.icon}`} />
+                    <h3 className="text-sm font-semibold">{label}</h3>
+                    <p className="text-[10px] text-gray-500">{desc}</p>
+                  </button>
+                )
+              })}
             </div>
 
             {/* Size selector */}
             <div className="flex items-center justify-center gap-3">
-              <label className="text-xs text-gray-400">Width</label>
-              <input
-                type="number"
-                min={16}
-                max={4096}
-                step={1}
-                className="bg-gray-800 text-sm border border-gray-700 rounded px-3 py-1.5 w-24 text-center"
-                value={world.terrain.size}
-                onChange={(e) => {
-                  const v = Math.max(16, Math.min(4096, Number(e.target.value) || 256))
-                  handleNewWorld(v, world.terrain.sizeZ)
-                }}
-              />
-              <span className="text-gray-500">x</span>
-              <label className="text-xs text-gray-400">Height</label>
-              <input
-                type="number"
-                min={16}
-                max={4096}
-                step={1}
-                className="bg-gray-800 text-sm border border-gray-700 rounded px-3 py-1.5 w-24 text-center"
-                value={world.terrain.sizeZ}
-                onChange={(e) => {
-                  const v = Math.max(16, Math.min(4096, Number(e.target.value) || 256))
-                  handleNewWorld(world.terrain.size, v)
-                }}
-              />
-            </div>
+                <label className="text-xs text-gray-400">Width</label>
+                <input
+                  type="number"
+                  min={16}
+                  max={4096}
+                  step={1}
+                  className="bg-gray-800 text-sm border border-gray-700 rounded px-3 py-1.5 w-24 text-center"
+                  value={world.terrain.size}
+                  onChange={(e) => {
+                    const v = Math.max(16, Math.min(4096, Number(e.target.value) || 256))
+                    handleNewWorld(v, world.terrain.sizeZ)
+                  }}
+                />
+                <span className="text-gray-500">x</span>
+                <label className="text-xs text-gray-400">Height</label>
+                <input
+                  type="number"
+                  min={16}
+                  max={4096}
+                  step={1}
+                  className="bg-gray-800 text-sm border border-gray-700 rounded px-3 py-1.5 w-24 text-center"
+                  value={world.terrain.sizeZ}
+                  onChange={(e) => {
+                    const v = Math.max(16, Math.min(4096, Number(e.target.value) || 256))
+                    handleNewWorld(world.terrain.size, v)
+                  }}
+                />
+              </div>
 
-            {/* Two cards */}
-            <div className="grid grid-cols-2 gap-4">
-              {/* Upload Heightmap */}
-              <button
-                onClick={() => heightmapInputRef.current?.click()}
-                className="group p-6 rounded-xl border border-gray-700 bg-gray-800/50 hover:border-sky-500 hover:bg-gray-800 transition-all text-left space-y-3"
-              >
-                <Upload className="w-8 h-8 text-sky-400 group-hover:scale-110 transition-transform" />
-                <h3 className="text-sm font-semibold">Upload Heightmap</h3>
-                <p className="text-xs text-gray-500">
-                  Import a grayscale PNG or JPEG image as terrain elevation data.
-                </p>
-              </button>
+            {/* Creation options - only show for world/country */}
+            {(startLevel === 'world' || startLevel === 'country') && (
+              <div className="grid grid-cols-2 gap-4">
+                {/* Upload Heightmap */}
+                <button
+                  onClick={() => heightmapInputRef.current?.click()}
+                  className="group p-6 rounded-xl border border-gray-700 bg-gray-800/50 hover:border-sky-500 hover:bg-gray-800 transition-all text-left space-y-3"
+                >
+                  <Upload className="w-8 h-8 text-sky-400 group-hover:scale-110 transition-transform" />
+                  <h3 className="text-sm font-semibold">Upload Heightmap</h3>
+                  <p className="text-xs text-gray-500">
+                    Import a grayscale PNG or JPEG image as terrain elevation data.
+                  </p>
+                </button>
 
-              {/* Paint Map */}
-              <button
-                onClick={() => {
-                  setActiveTool('cartography')
-                  setEditorPhase('cartography')
-                }}
-                className="group p-6 rounded-xl border border-gray-700 bg-gray-800/50 hover:border-emerald-500 hover:bg-gray-800 transition-all text-left space-y-3"
-              >
-                <MapIcon className="w-8 h-8 text-emerald-400 group-hover:scale-110 transition-transform" />
-                <h3 className="text-sm font-semibold">Paint Map</h3>
-                <p className="text-xs text-gray-500">
-                  Draw biome regions, then generate terrain from your painted map.
-                </p>
-              </button>
-            </div>
+                {/* Paint Map */}
+                <button
+                  onClick={() => {
+                    setActiveTool('cartography')
+                    setEditorPhase('cartography')
+                  }}
+                  className="group p-6 rounded-xl border border-gray-700 bg-gray-800/50 hover:border-emerald-500 hover:bg-gray-800 transition-all text-left space-y-3"
+                >
+                  <MapIcon className="w-8 h-8 text-emerald-400 group-hover:scale-110 transition-transform" />
+                  <h3 className="text-sm font-semibold">Paint Map</h3>
+                  <p className="text-xs text-gray-500">
+                    Draw biome regions, then generate terrain from your painted map.
+                  </p>
+                </button>
+              </div>
+            )}
 
-            {/* Skip link */}
+            {/* Start button */}
             <button
               onClick={() => {
+                if (startLevel !== 'world') {
+                  enterNode(activeNodeId || '', startLevel)
+                }
                 setActiveTool('sculpt')
                 setEditorPhase('editor')
               }}
-              className="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2 transition-colors"
+              className="px-8 py-2.5 bg-sky-600 hover:bg-sky-500 rounded-lg text-sm font-medium transition-colors"
             >
-              Skip to blank editor
+              Start Building
             </button>
 
             {/* Hidden file input for heightmap */}
@@ -2483,7 +2591,6 @@ export function WorldPage() {
   // Compute dock column visibility
   const hasVisibleLeft = (['explorer', 'toolbox', 'locations'] as const).some(id => {
     if (!panels[id].visible) return false
-    if (id === 'toolbox' && currentLevel === 'building') return false
     return true
   })
 
@@ -2612,53 +2719,97 @@ export function WorldPage() {
                     setExplorerSelection('terrain')
                     setActiveTool('sculpt')
                   }}
+                  roadSegments={currentNode?.roadNetwork?.segments}
+                  onDeleteRoad={handleDeleteRoad}
+                  lots={currentNode?.lots}
+                  onEnterLot={handleEnterLot}
+                  onDeleteLot={(lotId) => {
+                    if (!hierarchicalWorld || !activeNodeId) return
+                    const node = hierarchicalWorld.nodes[activeNodeId]
+                    if (!node || !node.lots) return
+                    node.lots = node.lots.filter(l => l.id !== lotId)
+                    setHierarchicalWorld({ ...hierarchicalWorld })
+                    setHasUnsavedChanges(true)
+                  }}
                 />
               </DockPanel>
-              <DockPanel id="toolbox" title="Toolbox" icon={<Package className="w-3.5 h-3.5 text-green-400" />} autoHide={currentLevel === 'building'}>
-                <div className="p-2 space-y-2 max-h-[400px] overflow-y-auto">
-                  <input
-                    type="text"
-                    value={toolboxSearch}
-                    onChange={(e) => setToolboxSearch(e.target.value)}
-                    placeholder="Search objects..."
-                    className="w-full bg-[#1e1e1e] text-xs border border-[#3d3d3d] rounded px-2 py-1.5 text-[#ccc] placeholder:text-[#666] focus:outline-none focus:border-[#0066cc]"
-                  />
-                  {[
-                    { label: 'Buildings', items: buildingObjects },
-                    { label: 'Decorations', items: decorationObjects },
-                    { label: 'Props', items: propObjects },
-                    { label: 'Vegetation', items: vegetationObjects },
-                  ].map((group) => {
-                    const filtered = toolboxSearch
-                      ? group.items.filter(e => e.name.toLowerCase().includes(toolboxSearch.toLowerCase()))
-                      : group.items
-                    if (filtered.length === 0) return null
-                    return (
-                      <div key={group.label}>
-                        <label className="text-[9px] text-[#666] mb-0.5 block">{group.label}</label>
-                        <div className="grid grid-cols-2 gap-0.5">
-                          {filtered.map((entry) => (
-                            <button
-                              key={entry.type}
-                              onClick={() => {
-                                setSelectedObjectType(selectedObjectType === entry.type ? null : entry.type)
-                                setActiveTool('place-object')
-                              }}
-                              className={`py-1.5 px-1 text-[9px] rounded border transition-colors flex flex-col items-center gap-0.5 ${
-                                selectedObjectType === entry.type
-                                  ? 'border-[#0066cc] bg-[#0066cc]/20 text-[#4da6ff]'
-                                  : 'border-[#3d3d3d] text-[#999] hover:bg-[#383838]'
-                              }`}
-                            >
-                              <div className="w-6 h-6 rounded" style={{ backgroundColor: entry.defaultColor }} />
-                              <span className="truncate w-full text-center">{entry.name}</span>
-                            </button>
-                          ))}
+              <DockPanel id="toolbox" title={currentLevel === 'building' ? 'Furniture' : 'Toolbox'} icon={<Package className="w-3.5 h-3.5 text-green-400" />}>
+                {currentLevel === 'building' ? (
+                  <div className="p-2 space-y-2 max-h-[400px] overflow-y-auto">
+                    {FURNITURE_CATEGORIES.map((cat) => {
+                      const items = getFurnitureByCategory(cat.id)
+                      return (
+                        <div key={cat.id}>
+                          <label className="text-[9px] text-[#666] mb-0.5 block">{cat.label}</label>
+                          <div className="grid grid-cols-2 gap-0.5">
+                            {items.map((entry) => (
+                              <button
+                                key={entry.id}
+                                onClick={() => {
+                                  setSelectedFurnitureType(selectedFurnitureType === entry.id ? null : entry.id)
+                                  setActiveTool('place-furniture')
+                                }}
+                                className={`py-1.5 px-1 text-[9px] rounded border transition-colors flex flex-col items-center gap-0.5 ${
+                                  selectedFurnitureType === entry.id
+                                    ? 'border-[#0066cc] bg-[#0066cc]/20 text-[#4da6ff]'
+                                    : 'border-[#3d3d3d] text-[#999] hover:bg-[#383838]'
+                                }`}
+                              >
+                                <div className="w-6 h-6 rounded" style={{ backgroundColor: `#${entry.color.toString(16).padStart(6, '0')}` }} />
+                                <span className="truncate w-full text-center">{entry.name}</span>
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )
-                  })}
-                </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-2 space-y-2 max-h-[400px] overflow-y-auto">
+                    <input
+                      type="text"
+                      value={toolboxSearch}
+                      onChange={(e) => setToolboxSearch(e.target.value)}
+                      placeholder="Search objects..."
+                      className="w-full bg-[#1e1e1e] text-xs border border-[#3d3d3d] rounded px-2 py-1.5 text-[#ccc] placeholder:text-[#666] focus:outline-none focus:border-[#0066cc]"
+                    />
+                    {[
+                      { label: 'Buildings', items: buildingObjects },
+                      { label: 'Decorations', items: decorationObjects },
+                      { label: 'Props', items: propObjects },
+                      { label: 'Vegetation', items: vegetationObjects },
+                    ].map((group) => {
+                      const filtered = toolboxSearch
+                        ? group.items.filter(e => e.name.toLowerCase().includes(toolboxSearch.toLowerCase()))
+                        : group.items
+                      if (filtered.length === 0) return null
+                      return (
+                        <div key={group.label}>
+                          <label className="text-[9px] text-[#666] mb-0.5 block">{group.label}</label>
+                          <div className="grid grid-cols-2 gap-0.5">
+                            {filtered.map((entry) => (
+                              <button
+                                key={entry.type}
+                                onClick={() => {
+                                  setSelectedObjectType(selectedObjectType === entry.type ? null : entry.type)
+                                  setActiveTool('place-object')
+                                }}
+                                className={`py-1.5 px-1 text-[9px] rounded border transition-colors flex flex-col items-center gap-0.5 ${
+                                  selectedObjectType === entry.type
+                                    ? 'border-[#0066cc] bg-[#0066cc]/20 text-[#4da6ff]'
+                                    : 'border-[#3d3d3d] text-[#999] hover:bg-[#383838]'
+                                }`}
+                              >
+                                <div className="w-6 h-6 rounded" style={{ backgroundColor: entry.defaultColor }} />
+                                <span className="truncate w-full text-center">{entry.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </DockPanel>
               <DockPanel id="locations" title="Locations" icon={<MapPin className="w-3.5 h-3.5 text-[#4da6ff]" />}>
                 <div className="p-2">
@@ -2806,6 +2957,8 @@ export function WorldPage() {
               lots={currentNode?.lots}
               showLots={showLots}
               onLotClick={handleLotClick}
+              onLotDoubleClick={handleEnterLot}
+              lotCorner1={lotCorner1}
               roadNetwork={currentNode?.roadNetwork}
               showRoads={showRoads}
               roadDrawMode={roadDrawMode}
@@ -2818,6 +2971,7 @@ export function WorldPage() {
               wallStartPoint={wallStartPoint}
               wallHeight={wallHeight}
               wallMaterial={wallMat}
+              floorVisibility={floorVisibility}
               onWallClick={activeTool === 'place-door' ? handleDoorClick : handleWallClick}
               onFloorPaint={handleFloorPaint}
               onFurniturePlace={handleFurniturePlace}

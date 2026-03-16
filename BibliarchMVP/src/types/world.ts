@@ -614,7 +614,7 @@ export function createHierarchicalWorld(
 
 /** Tool restrictions per level */
 export const LEVEL_TOOLS: Record<WorldLevel, EditorTool[]> = {
-  world:    ['sculpt', 'paint-material', 'select', 'cartography', 'draw-border'],
+  world:    ['sculpt', 'paint-material', 'place-object', 'select', 'delete', 'cartography', 'draw-border'],
   country:  ['sculpt', 'paint-material', 'place-object', 'select', 'delete', 'draw-border'],
   city:     ['sculpt', 'paint-material', 'place-object', 'select', 'delete', 'draw-border', 'draw-lot', 'draw-road'],
   building: ['select', 'delete', 'place-wall', 'place-door', 'paint-floor', 'place-furniture'],
