@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useCallback, type MouseEvent } from "react"
-import { ChevronRight, ChevronDown, Flag, Building2, Home, Pentagon, X, LogIn, Mountain, Route, LayoutGrid } from "lucide-react"
+import { useState, useCallback, useRef, useEffect, type MouseEvent } from "react"
+import { ChevronRight, ChevronDown, Flag, Building2, Home, Pentagon, X, LogIn, Mountain, Route, LayoutGrid, Trash2 } from "lucide-react"
 import type { WorldObject, WorldNode, WorldLevel, PolygonBorder, RoadSegment, CityLot } from "@/types/world"
 import { OBJECT_CATALOG } from "@/lib/terrain/objectCatalog"
 import type { WorldObjectCategory } from "@/types/world"
@@ -22,6 +22,7 @@ interface ExplorerTreeProps {
   onSelectObject: (id: string, additive: boolean) => void
   onDeleteObject: (ids: string[]) => void
   onEnterRegion: (id: string) => void
+  onDeleteRegion?: (id: string) => void
   onDeleteBorder: (id: string) => void
   onDrawBorder: () => void
   onSelectTerrain?: () => void
@@ -39,6 +40,7 @@ interface TreeRowProps {
   onToggle?: () => void
   onClick?: (e: MouseEvent) => void
   onDoubleClick?: () => void
+  onContextMenu?: (e: MouseEvent) => void
   trailing?: React.ReactNode
   colorDot?: string
 }
@@ -53,6 +55,7 @@ function TreeRow({
   onToggle,
   onClick,
   onDoubleClick,
+  onContextMenu,
   trailing,
   colorDot,
 }: TreeRowProps) {
@@ -66,6 +69,7 @@ function TreeRow({
       style={{ paddingLeft: depth * 16 + 4 }}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
     >
       {/* Expand/collapse chevron */}
       {expandable ? (
@@ -143,6 +147,48 @@ function levelIcon(level: string) {
   }
 }
 
+// ── Context menu ──────────────────────────────────────────────
+
+interface ContextMenuState {
+  x: number
+  y: number
+  regionId: string
+  regionName: string
+}
+
+function ContextMenu({
+  x, y, regionName, onDelete, onClose,
+}: {
+  x: number; y: number; regionName: string
+  onDelete: () => void; onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (e: globalThis.MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-[9999] bg-gray-800 border border-gray-600 rounded shadow-lg py-1 min-w-[140px]"
+      style={{ left: x, top: y }}
+    >
+      <button
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-red-400 hover:bg-gray-700 text-left"
+        onClick={() => { onDelete(); onClose() }}
+      >
+        <Trash2 className="w-3 h-3" />
+        Delete &ldquo;{regionName}&rdquo;
+      </button>
+    </div>
+  )
+}
+
 // ── Main ExplorerTree component ───────────────────────────────
 
 export default function ExplorerTree({
@@ -161,10 +207,14 @@ export default function ExplorerTree({
   onSelectObject,
   onDeleteObject,
   onEnterRegion,
+  onDeleteRegion,
   onDeleteBorder,
   onDrawBorder,
   onSelectTerrain,
 }: ExplorerTreeProps) {
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+
   // Expand/collapse state
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     workspace: true,
@@ -196,7 +246,18 @@ export default function ExplorerTree({
   const hasLots = lotsList.length > 0
 
   return (
-    <div className="py-1">
+    <div className="py-1" onContextMenu={(e) => { /* allow nested handlers */ }}>
+      {/* ── Context menu ── */}
+      {contextMenu && onDeleteRegion && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          regionName={contextMenu.regionName}
+          onDelete={() => onDeleteRegion(contextMenu.regionId)}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
       {/* ── Workspace root ── */}
       <TreeRow
         depth={0}
@@ -245,6 +306,10 @@ export default function ExplorerTree({
                       icon={levelIcon(childLevel!)}
                       onDoubleClick={() => onEnterRegion(region.id)}
                       onClick={() => {}}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        setContextMenu({ x: e.clientX, y: e.clientY, regionId: region.id, regionName: region.name })
+                      }}
                       trailing={
                         <button
                           className="text-sky-500 hover:text-sky-300"

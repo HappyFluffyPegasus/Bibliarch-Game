@@ -53,6 +53,8 @@ export class FirstPersonController {
   private handleMouseMoveDrag: (e: MouseEvent) => void
   private handleMouseUpDrag: (e: MouseEvent) => void
   private handleContextMenu: (e: Event) => void
+  private handleClickLock: (e: MouseEvent) => void
+  private handlePointerLockError: () => void
 
   // Internals (cached to avoid per-frame allocations)
   private direction = new THREE.Vector3()
@@ -68,6 +70,11 @@ export class FirstPersonController {
     this.domElement = domElement
     this.controls = new PointerLockControls(camera, domElement)
 
+    // Suppress the PointerLockControls "Unable to use Pointer Lock API" error.
+    // It fires on pointerlockerror events which are non-fatal (e.g. no user gesture).
+    this.handlePointerLockError = () => { /* silenced — handled via promise catch */ }
+    domElement.ownerDocument.addEventListener('pointerlockerror', this.handlePointerLockError)
+
     // Shift lock state is driven entirely by pointer lock events.
     // This handles ESC, lock failures, and toggle correctly.
     this.controls.addEventListener('lock', () => {
@@ -78,6 +85,14 @@ export class FirstPersonController {
       this._shiftLocked = false
       this._onShiftLockChange?.(false)
     })
+
+    // Left-click on canvas toggles pointer lock (browsers require a click
+    // gesture for requestPointerLock — keydown alone may be rejected).
+    this.handleClickLock = (e: MouseEvent) => {
+      if (e.button === 0 && !this.controls.isLocked) {
+        this.toggleShiftLock()
+      }
+    }
 
     this.handleKeyDown = (e: KeyboardEvent) => {
       // Don't capture when in inputs
@@ -272,6 +287,7 @@ export class FirstPersonController {
     document.addEventListener('mousemove', this.handleMouseMoveDrag)
     document.addEventListener('mouseup', this.handleMouseUpDrag)
     this.domElement.addEventListener('contextmenu', this.handleContextMenu)
+    this.domElement.addEventListener('click', this.handleClickLock)
   }
 
   unbindEvents(): void {
@@ -281,6 +297,7 @@ export class FirstPersonController {
     document.removeEventListener('mousemove', this.handleMouseMoveDrag)
     document.removeEventListener('mouseup', this.handleMouseUpDrag)
     this.domElement.removeEventListener('contextmenu', this.handleContextMenu)
+    this.domElement.removeEventListener('click', this.handleClickLock)
     this.resetKeys()
     this.isDragLooking = false
   }
@@ -407,6 +424,7 @@ export class FirstPersonController {
 
   dispose(): void {
     this.unbindEvents()
+    this.domElement.ownerDocument.removeEventListener('pointerlockerror', this.handlePointerLockError)
     this.controls.dispose()
   }
 }

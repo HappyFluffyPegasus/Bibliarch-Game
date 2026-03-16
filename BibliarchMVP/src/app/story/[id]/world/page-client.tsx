@@ -549,7 +549,7 @@ export function WorldPage() {
       }
     }
 
-    const applyWorld = (w: World, existingHW?: HierarchicalWorld) => {
+    const applyWorld = async (w: World, existingHW?: HierarchicalWorld) => {
       setWorld(w)
       terrainRef.current = w.terrain
       initCartography(w)
@@ -560,7 +560,54 @@ export function WorldPage() {
       // Initialize hierarchical world
       const hw = existingHW || migrateLegacyWorld(w)
       setHierarchicalWorld(hw)
+      hwRef.current = hw
       resetNavigation(hw.rootNodeId)
+
+      // Restore saved hierarchy position from sessionStorage
+      try {
+        const saved = sessionStorage.getItem(`bibliarch-nav-${storyId}`)
+        if (saved) {
+          const { nodeId, stack, level } = JSON.parse(saved) as {
+            nodeId: string; stack: string[]; level: string
+          }
+          // Verify the target node still exists in the hierarchy
+          if (nodeId && nodeId !== hw.rootNodeId && hw.nodes[nodeId]) {
+            // Walk the navigation stack: load each node along the path
+            for (let i = 0; i < stack.length; i++) {
+              const nid = stack[i]
+              if (!hw.nodes[nid]) break
+            }
+            // Load the target node's full data
+            const nodeData = await loadNodeData(storyId, nodeId)
+            if (nodeData) {
+              const fullNode = deserializeWorldNode(nodeData)
+              hw.nodes[nodeId] = fullNode
+              if (fullNode.level === 'building' && !fullNode.buildingData) {
+                fullNode.buildingData = createBuildingData(32)
+              }
+              const nodeWorld: World = {
+                id: hw.id, storyId: hw.storyId, name: fullNode.name,
+                terrain: fullNode.terrain, objects: fullNode.objects,
+                cartographyData: fullNode.cartographyData,
+                locations: fullNode.locations,
+                createdAt: fullNode.createdAt, updatedAt: fullNode.updatedAt,
+              }
+              setWorld(nodeWorld)
+              terrainRef.current = nodeWorld.terrain
+              // Restore store navigation state directly
+              useWorldBuilderStore.setState({
+                activeNodeId: nodeId,
+                navigationStack: stack,
+                currentLevel: level as any,
+                selectedObjectIds: [],
+              })
+              if (fullNode.level === 'building') {
+                useWorldBuilderStore.getState().setActiveTool('place-wall')
+              }
+            }
+          }
+        }
+      } catch { /* ignore restore errors */ }
     }
 
     const loadFromParsed = (parsed: SerializedWorld) => {
@@ -640,6 +687,30 @@ export function WorldPage() {
 
     loadWorld()
   }, [storyId])
+
+  // Persist hierarchy navigation to sessionStorage and update URL hash
+  useEffect(() => {
+    if (!activeNodeId || !hierarchicalWorld) return
+    sessionStorage.setItem(`bibliarch-nav-${storyId}`, JSON.stringify({
+      nodeId: activeNodeId,
+      stack: navigationStack,
+      level: currentLevel,
+    }))
+    // Update URL hash to show breadcrumb path (e.g. #/CountryName/CityName)
+    const hw = hierarchicalWorld
+    const pathParts: string[] = []
+    for (const nid of navigationStack) {
+      if (nid === hw.rootNodeId) continue
+      const node = hw.nodes[nid]
+      if (node) pathParts.push(encodeURIComponent(node.name))
+    }
+    if (activeNodeId !== hw.rootNodeId) {
+      const current = hw.nodes[activeNodeId]
+      if (current) pathParts.push(encodeURIComponent(current.name))
+    }
+    const hash = pathParts.length > 0 ? `#/${pathParts.join('/')}` : ''
+    window.history.replaceState(null, '', `/story/${storyId}/world${hash}`)
+  }, [storyId, activeNodeId, navigationStack, currentLevel, hierarchicalWorld])
 
   // Register custom items in the object catalog so they appear in the dropdown
   const customItems = useStoryStore((s) => s.customItems[storyId] ?? EMPTY_CUSTOM_ITEMS)
@@ -826,38 +897,37 @@ export function WorldPage() {
     // Save current node first
     await persistWorld(world)
 
-    // Blend child terrain back into parent and update snapshot
+    const parentId = navigationStack[navigationStack.length - 1]
+
+    // Load the full parent node from cache/IDB first (it may only be a stub
+    // in hw.nodes if it was loaded from hierarchy metadata).
+    const cached = nodeCacheRef.current.get(parentId)
+    const parentData = cached || await loadNodeData(storyId, parentId)
+    if (parentData) {
+      hw.nodes[parentId] = deserializeWorldNode(parentData)
+    }
+
+    const parentNode = hw.nodes[parentId]
+    if (!parentNode) return
+
+    // Blend child terrain back into the (now-loaded) parent and update snapshot
     if (activeNodeId) {
       const currentNode = hw.nodes[activeNodeId]
-      const parentId = navigationStack[navigationStack.length - 1]
-      const parentNode = hw.nodes[parentId]
-      if (currentNode && parentNode && currentNode.boundsInParent) {
+      if (currentNode && currentNode.boundsInParent) {
         blendChildIntoParent(parentNode.terrain, currentNode.terrain, currentNode.boundsInParent)
         blendWithFeather(parentNode.terrain, currentNode.boundsInParent)
         // Update snapshot so next enter detects further changes
         currentNode.parentBoundsSnapshot = extractBoundsSnapshot(parentNode.terrain, currentNode.boundsInParent)
       }
-    }
 
-    // Cache current node before leaving
-    if (activeNodeId) {
-      const currentNode = hw.nodes[activeNodeId]
+      // Cache child node (with updated snapshot) before leaving
       if (currentNode) {
         nodeCacheRef.current.set(activeNodeId, serializeWorldNode(currentNode))
       }
     }
 
-    const parentId = navigationStack[navigationStack.length - 1]
-    // Check cache first, then IDB
-    const cached = nodeCacheRef.current.get(parentId)
-    const parentData = cached || await loadNodeData(storyId, parentId)
-    if (parentData) {
-      const parentNode = deserializeWorldNode(parentData)
-      hw.nodes[parentId] = parentNode
-    }
-
-    const parentNode = hw.nodes[parentId]
-    if (!parentNode) return
+    // Persist the blended parent to IDB so future loads have the changes
+    await saveNodeData(storyId, serializeWorldNode(parentNode))
 
     const parentWorld: World = {
       id: hw.id,
@@ -2250,7 +2320,9 @@ export function WorldPage() {
     if (!node?.buildingData) return
 
     const bd = node.buildingData
-    const snapped = snapToWallGrid(worldPos[0], worldPos[2], bd.gridSize, bd.gridCellSize)
+    // Snap to terrain grid: pass cellSize*2 because snapToWallGrid halves it internally
+    const gridCell = (terrainRef.current?.cellSize ?? bd.gridCellSize) * 2
+    const snapped = snapToWallGrid(worldPos[0], worldPos[2], bd.gridSize, gridCell)
 
     if (!wallStartPoint) {
       setWallStartPoint(snapped)
@@ -2739,6 +2811,25 @@ export function WorldPage() {
                     if (!node || !node.lots) return
                     node.lots = node.lots.filter(l => l.id !== lotId)
                     setHierarchicalWorld({ ...hierarchicalWorld })
+                    setHasUnsavedChanges(true)
+                  }}
+                  onDeleteRegion={(regionId) => {
+                    if (!hierarchicalWorld || !activeNodeId) return
+                    const hw = hwRef.current
+                    if (!hw) return
+                    const parentNode = hw.nodes[activeNodeId]
+                    if (!parentNode) return
+
+                    // Remove from parent's childIds
+                    parentNode.childIds = parentNode.childIds.filter(id => id !== regionId)
+
+                    // Remove the node from the hierarchy
+                    delete hw.nodes[regionId]
+
+                    // Delete persisted node data from IDB
+                    deleteNodeData(storyId, regionId)
+
+                    setHierarchicalWorld({ ...hw })
                     setHasUnsavedChanges(true)
                   }}
                 />

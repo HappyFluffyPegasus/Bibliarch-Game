@@ -1794,16 +1794,19 @@ export default function WorldViewport3D({
           }
         }
 
-        // Wall ghost preview
+        // Wall ghost preview — snap endpoint to terrain grid
         if (tool === 'place-wall' && wallDrawModeRef.current === 'drawing' && wallStartPointRef.current) {
           const wallMgr = wallManagerRef.current
           if (wallMgr) {
             const bd = buildingDataRef.current
             const baseY = bd?.baseElevation ?? 0
             const floorY = (bd?.floors.find(f => f.level === activeFloorRef.current)?.floorHeight ?? 0) + baseY
+            const cs = terrainRef.current?.cellSize ?? 1
+            const snapX = Math.round(point.x / cs) * cs
+            const snapZ = Math.round(point.z / cs) * cs
             wallMgr.showGhostWall(
               wallStartPointRef.current.x, wallStartPointRef.current.z,
-              point.x, point.z,
+              snapX, snapZ,
               wallHeightRef.current, floorY,
               wallMaterialRef.current
             )
