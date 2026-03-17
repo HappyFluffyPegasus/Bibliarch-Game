@@ -61,6 +61,22 @@ export class WallManager {
     return this.group
   }
 
+  /** Get all pickable meshes (walls + furniture) for raycasting */
+  getPickableMeshes(): THREE.Object3D[] {
+    const meshes: THREE.Object3D[] = []
+    for (const child of this.wallGroup.children) {
+      if ((child as THREE.Mesh).isMesh && child.userData.wallId) {
+        meshes.push(child)
+      }
+    }
+    for (const child of this.furnitureGroup.children) {
+      if ((child as THREE.Mesh).isMesh && child.userData.furnitureId) {
+        meshes.push(child)
+      }
+    }
+    return meshes
+  }
+
   /** Full rebuild for visible floor */
   syncBuilding(data: BuildingData, activeFloor: number, floorVisibility: 'active-only' | 'transparent' | 'all' = 'transparent'): void {
     this.clearAll()
@@ -259,7 +275,8 @@ export class WallManager {
     if (length < 0.01) return
 
     const color = WALL_MATERIAL_COLORS[wall.material] || 0xcccccc
-    const geo = new THREE.BoxGeometry(length, wall.height, wall.thickness)
+    // Extend wall by half-thickness on each end so corners overlap cleanly
+    const geo = new THREE.BoxGeometry(length + wall.thickness, wall.height, wall.thickness)
     const mat = new THREE.MeshLambertMaterial({ color })
     const mesh = new THREE.Mesh(geo, mat)
 

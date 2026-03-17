@@ -540,14 +540,18 @@ export const useWorldBuilderStore = create<WorldBuilderState>()((set, get) => ({
   setActiveNodeId: (id) => set({ activeNodeId: id }),
 
   enterNode: (nodeId, level) =>
-    set((s) => ({
-      activeNodeId: nodeId,
-      currentLevel: level,
-      navigationStack: s.activeNodeId
-        ? [...s.navigationStack, s.activeNodeId]
-        : s.navigationStack,
-      selectedObjectIds: [],
-    })),
+    set((s) => {
+      // Don't enter the same node we're already in
+      if (s.activeNodeId === nodeId) return {}
+      return {
+        activeNodeId: nodeId,
+        currentLevel: level,
+        navigationStack: s.activeNodeId
+          ? [...s.navigationStack, s.activeNodeId]
+          : s.navigationStack,
+        selectedObjectIds: [],
+      }
+    }),
 
   exitToParent: () =>
     set((s) => {

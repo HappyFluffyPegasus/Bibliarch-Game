@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { TerrainData, EditorTool, BrushSettings, MaterialBrushSettings, WorldObject, LevelBounds, PolygonBorder, CityLot, RoadNetwork, BuildingData, RoadWaypoint, WorldLevel, isPointInPolygon } from '@/types/world'
+import { TerrainData, EditorTool, BrushSettings, MaterialBrushSettings, WorldObject, LevelBounds, PolygonBorder, CityLot, RoadNetwork, BuildingData, RoadWaypoint, WorldLevel, WorldNode, isPointInPolygon } from '@/types/world'
 import { ChunkManager, worldToGrid } from '@/lib/terrain/ChunkManager'
 
 import { ObjectManager } from '@/lib/terrain/ObjectManager'
@@ -13,6 +13,7 @@ import { BorderManager } from '@/lib/borders/BorderManager'
 import { LotManager } from '@/lib/city/LotManager'
 import { RoadNetworkManager } from '@/lib/city/RoadNetworkManager'
 import { computeRoadRibbon } from '@/lib/city/roadUtils'
+import { getFurnitureEntry } from '@/lib/building/furnitureCatalog'
 import { WallManager } from '@/lib/building/WallManager'
 
 export interface WorldViewport3DProps {
@@ -40,6 +41,10 @@ export interface WorldViewport3DProps {
   onFpsUpdate: (fps: number) => void
   onObjectPlace: (worldPos: [number, number, number]) => void
   onObjectSelect: (objectId: string | null, additive: boolean) => void
+  onDeleteAtPoint?: (worldPos: [number, number, number], objectId: string | null, wallId?: string, furnitureId?: string) => void
+  onBuildingSelect?: (wallId: string | null, furnitureId: string | null) => void
+  selectedWallId?: string | null
+  selectedFurnitureType?: string | null
   onObjectMove: (objectId: string, newPos: [number, number, number]) => void
   onObjectMoveEnd?: (objectId: string, newPos: [number, number, number]) => void
   onCameraUpdate?: (position: [number, number, number], yaw: number) => void
@@ -65,6 +70,7 @@ export interface WorldViewport3DProps {
   borderColor?: string
   onBorderClick?: (worldPos: [number, number, number]) => void
   lots?: CityLot[]
+  buildingNodes?: Map<string, WorldNode>
   showLots?: boolean
   onLotClick?: (worldPos: [number, number, number]) => void
   onLotSelect?: (lotId: string | null) => void
@@ -121,6 +127,10 @@ export default function WorldViewport3D({
   onFpsUpdate,
   onObjectPlace,
   onObjectSelect,
+  onDeleteAtPoint,
+  onBuildingSelect,
+  selectedWallId,
+  selectedFurnitureType,
   onObjectMove,
   onObjectMoveEnd,
   onCameraUpdate,
@@ -143,6 +153,7 @@ export default function WorldViewport3D({
   borderColor = '#ff6b35',
   onBorderClick,
   lots,
+  buildingNodes,
   showLots = true,
   onLotClick,
   onLotSelect,
@@ -236,12 +247,16 @@ export default function WorldViewport3D({
   // Stable callback refs
   const onObjectPlaceRef = useRef(onObjectPlace)
   const onObjectSelectRef = useRef(onObjectSelect)
+  const onDeleteAtPointRef = useRef(onDeleteAtPoint)
+  const onBuildingSelectRef = useRef(onBuildingSelect)
   const onObjectMoveRef = useRef(onObjectMove)
   const onObjectMoveEndRef = useRef(onObjectMoveEnd)
   const onCameraModeChangeRef = useRef(onCameraModeChange)
   const onSubModeChangeRef = useRef(onSubModeChange)
   onObjectPlaceRef.current = onObjectPlace
   onObjectSelectRef.current = onObjectSelect
+  onDeleteAtPointRef.current = onDeleteAtPoint
+  onBuildingSelectRef.current = onBuildingSelect
   onObjectMoveRef.current = onObjectMove
   onObjectMoveEndRef.current = onObjectMoveEnd
   onCameraModeChangeRef.current = onCameraModeChange
@@ -830,11 +845,11 @@ export default function WorldViewport3D({
   // ── Sync lots ─────────────────────────────────────────────
   useEffect(() => {
     if (lotManagerRef.current && lots && showLots) {
-      lotManagerRef.current.syncLots(lots, terrain)
+      lotManagerRef.current.syncLots(lots, terrain, buildingNodes)
     } else if (lotManagerRef.current) {
       lotManagerRef.current.syncLots([], terrain)
     }
-  }, [lots, terrain, showLots])
+  }, [lots, terrain, showLots, buildingNodes])
 
   // ── Lot preview rectangle (two-click sizing) ──────────────
   useEffect(() => {
@@ -972,6 +987,22 @@ export default function WorldViewport3D({
     }
   }, [wallDrawMode, wallStartPoint, buildingData])
 
+  // ── Highlight selected wall ─────────────────────────────────
+  useEffect(() => {
+    const wallMgr = wallManagerRef.current
+    if (!wallMgr || !buildingData || currentLevel !== 'building') return
+    const bd = buildingData
+    const baseY = bd.baseElevation ?? 0
+    const floor = bd.floors.find(f => f.level === activeFloor)
+    const floorY = (floor?.floorHeight ?? 0) + baseY
+    if (selectedWallId && floor) {
+      const wall = floor.walls.find(w => w.id === selectedWallId)
+      wallMgr.highlightWall(wall ?? null, floorY)
+    } else {
+      wallMgr.highlightWall(null, 0)
+    }
+  }, [selectedWallId, buildingData, activeFloor, currentLevel])
+
   // ── Ghost preview for object placement ────────────────────
   useEffect(() => {
     const scene = sceneRef.current
@@ -1012,7 +1043,29 @@ export default function WorldViewport3D({
         ghostMeshRef.current = ghost
       }
     }
-  }, [activeTool, selectedObjectType])
+
+    // Create ghost for furniture placement
+    if (activeTool === 'place-furniture' && selectedFurnitureType) {
+      const entry = getFurnitureEntry(selectedFurnitureType)
+      if (entry) {
+        const geo = new THREE.BoxGeometry(entry.width, entry.height, entry.depth)
+        const mat = new THREE.MeshBasicMaterial({
+          color: entry.color,
+          transparent: true,
+          opacity: 0.4,
+          depthWrite: false,
+        })
+        const mesh = new THREE.Mesh(geo, mat)
+        const ghost = new THREE.Group()
+        ghost.add(mesh)
+        ghost.visible = false
+        ghost.renderOrder = 998
+        ghost.userData.height = entry.height
+        scene.add(ghost)
+        ghostMeshRef.current = ghost
+      }
+    }
+  }, [activeTool, selectedObjectType, selectedFurnitureType])
 
   // ── Update grid helper ─────────────────────────────────────
   useEffect(() => {
@@ -1504,6 +1557,27 @@ export default function WorldViewport3D({
     return null
   }, [setupRaycaster])
 
+  /** Raycast against building walls and furniture */
+  const raycastBuilding = useCallback((): { wallId?: string; furnitureId?: string; point: THREE.Vector3 } | null => {
+    const wallMgr = wallManagerRef.current
+    if (!wallMgr) return null
+
+    setupRaycaster()
+    const pickables = wallMgr.getPickableMeshes()
+    if (pickables.length === 0) return null
+
+    const hits = raycasterRef.current.intersectObjects(pickables, false)
+    if (hits.length > 0) {
+      const hit = hits[0]
+      const wallId = hit.object.userData.wallId as string | undefined
+      const furnitureId = hit.object.userData.furnitureId as string | undefined
+      if (wallId || furnitureId) {
+        return { wallId, furnitureId, point: hit.point }
+      }
+    }
+    return null
+  }, [setupRaycaster])
+
   const handleBrushStroke = useCallback(() => {
     const point = raycastTerrain()
     if (!point) return
@@ -1581,12 +1655,19 @@ export default function WorldViewport3D({
             objHit.point
           )
         } else {
-          // Click on empty space — start marquee tracking
-          isMarqueeRef.current = true
-          const rect = container.getBoundingClientRect()
-          marqueeStartRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-          marqueeEndRef.current = { ...marqueeStartRef.current }
-          onObjectSelectRef.current(null, false)
+          // Try building elements (walls/furniture)
+          const bldgHit = raycastBuilding()
+          if (bldgHit) {
+            onBuildingSelectRef.current?.(bldgHit.wallId ?? null, bldgHit.furnitureId ?? null)
+          } else {
+            // Click on empty space — start marquee tracking
+            isMarqueeRef.current = true
+            const rect = container.getBoundingClientRect()
+            marqueeStartRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+            marqueeEndRef.current = { ...marqueeStartRef.current }
+            onObjectSelectRef.current(null, false)
+            onBuildingSelectRef.current?.(null, null)
+          }
         }
         return
       }
@@ -1595,7 +1676,15 @@ export default function WorldViewport3D({
         updateMouseNDC(e)
         const objHit = raycastObjects()
         if (objHit) {
-          onObjectSelectRef.current(objHit.objectId, false)
+          const p = objHit.point
+          onDeleteAtPointRef.current?.([p.x, p.y, p.z], objHit.objectId)
+          return
+        }
+        const bldgHit = raycastBuilding()
+        if (bldgHit) {
+          const p = bldgHit.point
+          onDeleteAtPointRef.current?.([p.x, p.y, p.z], null, bldgHit.wallId, bldgHit.furnitureId)
+          return
         }
         return
       }
@@ -1778,6 +1867,14 @@ export default function WorldViewport3D({
           ghost.visible = true
           ghost.position.set(point.x, point.y, point.z)
         }
+        if (ghost && tool === 'place-furniture') {
+          ghost.visible = true
+          const bd = buildingDataRef.current
+          const baseY = bd?.baseElevation ?? 0
+          const floorY = (bd?.floors.find(f => f.level === activeFloorRef.current)?.floorHeight ?? 0) + baseY
+          const h = ghost.userData.height ?? 0.8
+          ghost.position.set(point.x, floorY + h / 2, point.z)
+        }
 
         // Lot preview rectangle update
         if (tool === 'draw-lot' && lotCorner1Ref.current) {
@@ -1941,7 +2038,7 @@ export default function WorldViewport3D({
       case 'place-furniture':
         return 'copy'
       case 'delete':
-        return 'not-allowed'
+        return 'pointer'
       case 'select':
         return 'pointer'
       case 'draw-border':

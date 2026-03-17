@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { CityLot, TerrainData, LOT_ZONING_COLORS, LotZoning } from '@/types/world'
+import { CityLot, TerrainData, LOT_ZONING_COLORS, LotZoning, WorldNode } from '@/types/world'
 
 /**
  * Manages rendering of city lots (rectangular parcels) in the 3D scene.
@@ -18,12 +18,22 @@ export class LotManager {
     return this.group
   }
 
-  syncLots(lots: CityLot[], terrain: TerrainData): void {
+  syncLots(lots: CityLot[], terrain: TerrainData, buildingNodes?: Map<string, WorldNode>): void {
     this.disposeAll()
 
     for (const lot of lots) {
       const lotGroup = this.createLotMesh(lot, terrain)
       lotGroup.userData.lotId = lot.id
+
+      // If lot has a linked building, render a solid block for it
+      if (lot.linkedBuildingId && buildingNodes) {
+        const bldgNode = buildingNodes.get(lot.linkedBuildingId)
+        if (bldgNode?.buildingData) {
+          const blockMesh = this.createBuildingBlock(lot, terrain, bldgNode)
+          if (blockMesh) lotGroup.add(blockMesh)
+        }
+      }
+
       this.lotMeshes.set(lot.id, lotGroup)
       this.group.add(lotGroup)
     }
@@ -164,6 +174,49 @@ export class LotManager {
     }
 
     return group
+  }
+
+  /** Render a solid block representing a building on a lot */
+  private createBuildingBlock(lot: CityLot, terrain: TerrainData, bldgNode: WorldNode): THREE.Mesh | null {
+    const bd = bldgNode.buildingData
+    if (!bd) return null
+
+    const cs = terrain.cellSize
+
+    // Find tallest wall across all floors
+    let maxHeight = 3 // default 1 floor
+    for (const floor of bd.floors) {
+      if (floor.walls.length > 0) {
+        const tallest = Math.max(...floor.walls.map(w => w.height))
+        const top = floor.floorHeight + tallest
+        if (top > maxHeight) maxHeight = top
+      }
+    }
+
+    const widthWorld = lot.width * cs
+    const depthWorld = lot.depth * cs
+    const x0 = lot.startX * cs
+    const z0 = lot.startZ * cs
+    const baseY = bd.baseElevation ?? this.getAverageHeight(lot.startX, lot.startZ, lot.width, lot.depth, terrain)
+
+    // Inset slightly from lot edges so the outline is still visible
+    const inset = cs * 0.1
+    const geo = new THREE.BoxGeometry(widthWorld - inset * 2, maxHeight, depthWorld - inset * 2)
+    const mat = new THREE.MeshLambertMaterial({
+      color: 0xccbbaa,
+      transparent: false,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.set(
+      x0 + widthWorld / 2,
+      baseY + maxHeight / 2,
+      z0 + depthWorld / 2
+    )
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    mesh.name = 'building-block'
+
+    return mesh
   }
 
   private getAverageHeight(startX: number, startZ: number, w: number, d: number, terrain: TerrainData): number {

@@ -1,7 +1,7 @@
 "use client"
 
 import { useParams } from "next/navigation"
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import dynamic from "next/dynamic"
 import {
   Globe,
@@ -382,6 +382,8 @@ export function WorldPage() {
   const [ribbonTab, setRibbonTab] = useState<'home' | 'terrain' | 'build' | 'environment' | 'view'>('home')
   const [toolboxSearch, setToolboxSearch] = useState("")
   const [explorerSelection, setExplorerSelection] = useState<string | null>(null)
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
+  const [selectedFurnitureId, setSelectedFurnitureId] = useState<string | null>(null)
   const [transformMode, setTransformMode] = useState<'translate' | 'scale' | 'rotate'>('translate')
   const [cameraPreset, setCameraPreset] = useState<'top' | 'front' | 'side' | 'perspective' | null>(null)
   const [cameraPresetCounter, setCameraPresetCounter] = useState(0)
@@ -509,6 +511,7 @@ export function WorldPage() {
   const [hierarchicalWorld, setHierarchicalWorld] = useState<HierarchicalWorld | null>(null)
   const hwRef = useRef<HierarchicalWorld | null>(null)
   const nodeCacheRef = useRef(new NodeCache(5))
+  const isRestoringRef = useRef(true) // skip session save during initial load/restore
   useEffect(() => { hwRef.current = hierarchicalWorld }, [hierarchicalWorld])
 
   // Region definition dialog state
@@ -566,25 +569,32 @@ export function WorldPage() {
       // Restore saved hierarchy position from sessionStorage
       try {
         const saved = sessionStorage.getItem(`bibliarch-nav-${storyId}`)
+        console.log('[NAV-RESTORE] saved=', saved)
         if (saved) {
           const { nodeId, stack, level } = JSON.parse(saved) as {
             nodeId: string; stack: string[]; level: string
           }
-          // Verify the target node still exists in the hierarchy
           if (nodeId && nodeId !== hw.rootNodeId && hw.nodes[nodeId]) {
-            // Walk the navigation stack: load each node along the path
-            for (let i = 0; i < stack.length; i++) {
-              const nid = stack[i]
-              if (!hw.nodes[nid]) break
-            }
-            // Load the target node's full data
+            // Load the target node directly from IDB
             const nodeData = await loadNodeData(storyId, nodeId)
             if (nodeData) {
               const fullNode = deserializeWorldNode(nodeData)
               hw.nodes[nodeId] = fullNode
+
+              // Also load all parent nodes in the stack so exitToParent works
+              for (const parentId of stack) {
+                if (parentId === hw.rootNodeId) continue
+                const parentData = await loadNodeData(storyId, parentId)
+                if (parentData) {
+                  hw.nodes[parentId] = deserializeWorldNode(parentData)
+                }
+              }
+
               if (fullNode.level === 'building' && !fullNode.buildingData) {
                 fullNode.buildingData = createBuildingData(32)
               }
+
+              // Set world to target node
               const nodeWorld: World = {
                 id: hw.id, storyId: hw.storyId, name: fullNode.name,
                 terrain: fullNode.terrain, objects: fullNode.objects,
@@ -594,20 +604,38 @@ export function WorldPage() {
               }
               setWorld(nodeWorld)
               terrainRef.current = nodeWorld.terrain
-              // Restore store navigation state directly
+              setHierarchicalWorld({ ...hw })
+              hwRef.current = hw
+
+              // Restore environment
+              if (fullNode.environment) {
+                setSunAngle(fullNode.environment.sunAngle)
+                setSunElevation(fullNode.environment.sunElevation)
+                setSkyColor(fullNode.environment.skyColor)
+                setWaterColor(fullNode.environment.waterColor)
+                setFogEnabled(fullNode.environment.fogEnabled)
+                setWeatherType(fullNode.environment.weatherType)
+              }
+
+              // Set navigation state — deduplicate stack in case of prior corruption
+              const cleanStack = stack.filter((id, i) => stack.indexOf(id) === i)
               useWorldBuilderStore.setState({
                 activeNodeId: nodeId,
-                navigationStack: stack,
+                navigationStack: cleanStack,
                 currentLevel: level as any,
                 selectedObjectIds: [],
               })
               if (fullNode.level === 'building') {
                 useWorldBuilderStore.getState().setActiveTool('place-wall')
+                useWorldBuilderStore.getState().setPanelVisible('toolbox', true)
               }
             }
           }
         }
       } catch { /* ignore restore errors */ }
+
+      // Allow session saves now that restore is complete
+      isRestoringRef.current = false
     }
 
     const loadFromParsed = (parsed: SerializedWorld) => {
@@ -691,6 +719,10 @@ export function WorldPage() {
   // Persist hierarchy navigation to sessionStorage and update URL hash
   useEffect(() => {
     if (!activeNodeId || !hierarchicalWorld) return
+    // Skip saving during initial load — the restore sets state directly,
+    // and we don't want resetNavigation(root) to overwrite the saved position.
+    if (isRestoringRef.current) return
+    console.log('[NAV-SAVE]', activeNodeId, currentLevel, navigationStack)
     sessionStorage.setItem(`bibliarch-nav-${storyId}`, JSON.stringify({
       nodeId: activeNodeId,
       stack: navigationStack,
@@ -1035,6 +1067,18 @@ export function WorldPage() {
         .filter((n): n is WorldNode => !!n && !!n.boundsInParent)
     : []
 
+  // Collect building nodes linked to lots (for rendering building blocks at city level)
+  const buildingNodesMap = useMemo(() => {
+    if (!hierarchicalWorld || !activeNode?.lots) return undefined
+    const map = new Map<string, WorldNode>()
+    for (const lot of activeNode.lots) {
+      if (lot.linkedBuildingId && hierarchicalWorld.nodes[lot.linkedBuildingId]) {
+        map.set(lot.linkedBuildingId, hierarchicalWorld.nodes[lot.linkedBuildingId])
+      }
+    }
+    return map.size > 0 ? map : undefined
+  }, [hierarchicalWorld, activeNode?.lots])
+
   // Sculpt callback
   const handleTerrainSculpt = useCallback((cx: number, cz: number, brush: BrushSettings) => {
     if (!world) return
@@ -1164,10 +1208,11 @@ export function WorldPage() {
       if (hw && activeNodeId) {
         const node = hw.nodes[activeNodeId]
         const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
-        if (floor) {
+        if (floor && node.buildingData) {
           const wall = floor.walls.find(w => w.id === command.wallId)
           if (wall) command.wallSnapshot = JSON.stringify(wall)
           floor.walls = floor.walls.filter(w => w.id !== command.wallId)
+          node.buildingData = { ...node.buildingData }
           setHierarchicalWorld({ ...hw })
         }
       }
@@ -1176,9 +1221,10 @@ export function WorldPage() {
       if (hw && activeNodeId) {
         const node = hw.nodes[activeNodeId]
         const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
-        if (floor) {
+        if (floor && node.buildingData) {
           const wall = JSON.parse(command.wallSnapshot)
           floor.walls = [...floor.walls, wall]
+          node.buildingData = { ...node.buildingData }
           setHierarchicalWorld({ ...hw })
         }
       }
@@ -1187,10 +1233,11 @@ export function WorldPage() {
       if (hw && activeNodeId) {
         const node = hw.nodes[activeNodeId]
         const floor = node?.buildingData?.floors.find(f => f.level === command.floorLevel)
-        if (floor) {
+        if (floor && node.buildingData) {
           const opening = floor.openings.find(o => o.id === command.openingId)
           if (opening) command.openingSnapshot = JSON.stringify(opening)
           floor.openings = floor.openings.filter(o => o.id !== command.openingId)
+          node.buildingData = { ...node.buildingData }
           setHierarchicalWorld({ ...hw })
         }
       }
@@ -1202,6 +1249,7 @@ export function WorldPage() {
           const furn = node.buildingData.furniture.find(f => f.id === command.furnitureId)
           if (furn) command.furnitureSnapshot = JSON.stringify(furn)
           node.buildingData.furniture = node.buildingData.furniture.filter(f => f.id !== command.furnitureId)
+          node.buildingData = { ...node.buildingData }
           setHierarchicalWorld({ ...hw })
         }
       }
@@ -3004,6 +3052,57 @@ export function WorldPage() {
               onFpsUpdate={setFps}
               onObjectPlace={handleObjectPlace}
               onObjectSelect={handleObjectSelect}
+              onBuildingSelect={(wallId, furnitureId) => {
+                setSelectedWallId(wallId)
+                setSelectedFurnitureId(furnitureId)
+                // Clear world object selection when selecting building elements
+                if (wallId || furnitureId) clearSelection()
+              }}
+              onDeleteAtPoint={(_worldPos, objectId, wallId, furnitureId) => {
+                // Delete world object
+                if (objectId && world) {
+                  const obj = world.objects.find(o => o.id === objectId)
+                  if (obj) {
+                    pushUndo({ type: 'object-delete', objectSnapshot: JSON.stringify(obj) })
+                    setWorld({ ...world, objects: world.objects.filter(o => o.id !== objectId), updatedAt: new Date() })
+                    clearSelection()
+                    setHasUnsavedChanges(true)
+                    return
+                  }
+                }
+                // Delete wall by ID from raycast
+                if (!hierarchicalWorld || !activeNodeId) return
+                const node = hierarchicalWorld.nodes[activeNodeId]
+                if (!node?.buildingData) return
+                const bd = node.buildingData
+                const floor = bd.floors.find(f => f.level === activeFloor)
+                if (!floor) return
+
+                if (wallId) {
+                  const wall = floor.walls.find(w => w.id === wallId)
+                  if (wall) {
+                    pushUndo({ type: 'wall-delete', wallSnapshot: JSON.stringify(wall), floorLevel: activeFloor })
+                    floor.walls = floor.walls.filter(w => w.id !== wallId)
+                    floor.openings = floor.openings.filter(o => o.wallId !== wallId)
+                    floor.rooms = detectRooms(floor.walls, bd.gridSize, bd.gridCellSize)
+                    node.buildingData = { ...bd }
+                    setHierarchicalWorld({ ...hierarchicalWorld })
+                    setHasUnsavedChanges(true)
+                  }
+                  return
+                }
+                // Delete furniture by ID from raycast
+                if (furnitureId) {
+                  const furn = bd.furniture.find(f => f.id === furnitureId)
+                  if (furn) {
+                    pushUndo({ type: 'furniture-place', furnitureId: furn.id, furnitureSnapshot: JSON.stringify(furn) })
+                    bd.furniture = bd.furniture.filter(f => f.id !== furnitureId)
+                    node.buildingData = { ...bd }
+                    setHierarchicalWorld({ ...hierarchicalWorld })
+                    setHasUnsavedChanges(true)
+                  }
+                }
+              }}
               onObjectMove={handleObjectMove}
               onObjectMoveEnd={handleObjectMoveEnd}
               onCameraUpdate={handleCameraUpdate}
@@ -3056,6 +3155,7 @@ export function WorldPage() {
               borderColor={borderColor}
               onBorderClick={handleBorderClick}
               lots={currentNode?.lots}
+              buildingNodes={buildingNodesMap}
               showLots={showLots}
               onLotClick={handleLotClick}
               onLotDoubleClick={handleEnterLot}
@@ -3067,6 +3167,8 @@ export function WorldPage() {
               roadWidth={ROAD_TYPE_DEFAULTS[roadType]?.width ?? 10}
               onRoadClick={handleRoadClick}
               buildingData={currentNode?.buildingData}
+              selectedWallId={selectedWallId}
+              selectedFurnitureType={selectedFurnitureType}
               activeFloor={activeFloor}
               wallDrawMode={wallDrawMode}
               wallStartPoint={wallStartPoint}
